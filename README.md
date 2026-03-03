@@ -35,7 +35,7 @@ CommaView provides a live camera view + telemetry HUD from a comma device to And
 Install/update CommaView on comma from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/install.sh | ssh comma@<comma-ip> bash
+curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma-install/install.sh | ssh comma@<comma-ip> bash
 ```
 
 Current pinned release in installer: **`v0.1.1-alpha`**
@@ -46,7 +46,7 @@ Release assets:
 ### Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/uninstall.sh | ssh comma@<comma-ip> bash
+curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma-install/uninstall.sh | ssh comma@<comma-ip> bash
 ```
 
 ---
