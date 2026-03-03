@@ -30,6 +30,16 @@ CommaView provides a live camera view + telemetry HUD from a comma device to And
 
 ---
 
+
+## Safety & Legal
+
+- Use CommaView at your own risk.
+- Do **not** use CommaView in ways that distract from driving.
+- You are responsible for complying with local laws (including display-use and distracted-driving laws).
+- See [DISCLAIMER.md](./DISCLAIMER.md) for full terms.
+
+---
+
 ## Quick start (comma install)
 
 Install/update CommaView on comma from GitHub:

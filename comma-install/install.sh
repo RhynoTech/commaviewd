@@ -26,6 +26,7 @@ need_cmd tar
 need_cmd sha256sum
 
 echo "=== CommaView ${VERSION} Installer ==="
+echo "WARNING: Use at your own risk. Do not use while driving in violation of local law."
 echo "Release: ${RELEASE_TAG}"
 echo "Repo:    ${GITHUB_REPO}"
 
