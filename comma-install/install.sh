@@ -123,6 +123,7 @@ RUNTIMEEOF
       cat > "$dst" <<'GUARDIANEOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
 PARAMS_DIR="${COMMAVIEW_PARAMS_DIR:-/data/params/d}"
 RUN_DIR="${COMMAVIEW_RUN_DIR:-/data/commaview/run}"
 LOG_DIR="${COMMAVIEW_LOG_DIR:-/data/commaview/logs}"
@@ -131,19 +132,135 @@ TAILSCALE_BIN="${COMMAVIEW_TAILSCALE_BIN:-$TAILSCALE_DIR/bin/tailscale}"
 TAILSCALED_BIN="${COMMAVIEW_TAILSCALED_BIN:-$TAILSCALE_DIR/bin/tailscaled}"
 SOCKET_PATH="${COMMAVIEW_TAILSCALE_SOCKET:-$TAILSCALE_DIR/state/tailscaled.sock}"
 STATE_FILE="${COMMAVIEW_TAILSCALE_STATE_FILE:-$TAILSCALE_DIR/state/tailscaled.state}"
+AUTHKEY_FILE="${COMMAVIEW_TAILSCALE_AUTHKEY_FILE:-$TAILSCALE_DIR/authkey}"
+INTERVAL_SEC="${COMMAVIEW_GUARDIAN_INTERVAL_SEC:-2}"
+ONESHOT="${COMMAVIEW_GUARDIAN_ONESHOT:-0}"
+
 mkdir -p "$RUN_DIR" "$LOG_DIR" "$(dirname "$SOCKET_PATH")"
-while true; do
-  enabled="$(tr -d '\000\r\n' < "$PARAMS_DIR/CommaViewTailscaleEnabled" 2>/dev/null || true)"
-  onroad="$(tr -d '\000\r\n' < "$PARAMS_DIR/IsOnroad" 2>/dev/null || true)"
-  if [ "$enabled" = "1" ] && [ "$onroad" != "1" ]; then
-    pgrep -f "$TAILSCALED_BIN" >/dev/null 2>&1 || nohup "$TAILSCALED_BIN" --state="$STATE_FILE" --socket="$SOCKET_PATH" >> "$LOG_DIR/tailscale-guardian.log" 2>&1 &
-    "$TAILSCALE_BIN" --socket "$SOCKET_PATH" up --accept-routes >> "$LOG_DIR/tailscale-guardian.log" 2>&1 || true
+PIDFILE="$RUN_DIR/tailscale_guardian.pid"
+LOGFILE="$LOG_DIR/tailscale-guardian.log"
+echo $$ > "$PIDFILE"
+
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOGFILE"
+}
+
+read_param() {
+  local key="$1"
+  local path="$PARAMS_DIR/$key"
+  if [ -f "$path" ]; then
+    tr -d '\000\r\n' < "$path"
   else
-    "$TAILSCALE_BIN" --socket "$SOCKET_PATH" down >> "$LOG_DIR/tailscale-guardian.log" 2>&1 || true
-    pkill -f "$TAILSCALED_BIN" 2>/dev/null || true
+    echo ""
   fi
-  sleep 2
+}
+
+is_onroad() {
+  [ "$(read_param IsOnroad)" = "1" ]
+}
+
+is_enabled() {
+  [ "$(read_param CommaViewTailscaleEnabled)" = "1" ]
+}
+
+tailscaled_running() {
+  pgrep -f "$TAILSCALED_BIN" >/dev/null 2>&1
+}
+
+start_tailscaled() {
+  if tailscaled_running; then
+    return 0
+  fi
+  if [ ! -x "$TAILSCALED_BIN" ]; then
+    log "tailscaled missing at $TAILSCALED_BIN"
+    return 1
+  fi
+
+  nohup "$TAILSCALED_BIN" \
+    --state="$STATE_FILE" \
+    --socket="$SOCKET_PATH" \
+    >> "$LOGFILE" 2>&1 &
+  echo $! > "$RUN_DIR/tailscaled.pid"
+  sleep 0.3
+  log "started tailscaled"
+}
+
+tailscale_down() {
+  if [ -x "$TAILSCALE_BIN" ]; then
+    "$TAILSCALE_BIN" --socket "$SOCKET_PATH" down >> "$LOGFILE" 2>&1 || true
+  fi
+}
+
+stop_tailscaled() {
+  tailscale_down
+
+  if [ -f "$RUN_DIR/tailscaled.pid" ]; then
+    local pid
+    pid="$(cat "$RUN_DIR/tailscaled.pid" 2>/dev/null || true)"
+    if [ -n "$pid" ]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+    rm -f "$RUN_DIR/tailscaled.pid"
+  fi
+
+  pkill -f "$TAILSCALED_BIN" 2>/dev/null || true
+  log "stopped tailscaled"
+}
+
+ensure_tailscale_up() {
+  if [ ! -x "$TAILSCALE_BIN" ]; then
+    log "tailscale missing at $TAILSCALE_BIN"
+    return 1
+  fi
+
+  local backend
+  backend="$($TAILSCALE_BIN --socket "$SOCKET_PATH" status --json 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState","unknown"))' 2>/dev/null || echo "unknown")"
+
+  if [ "$backend" = "Running" ]; then
+    return 0
+  fi
+
+  local authkey=""
+  if [ -f "$AUTHKEY_FILE" ]; then
+    authkey="$(tr -d '\r\n' < "$AUTHKEY_FILE")"
+  fi
+
+  if [ -n "$authkey" ]; then
+    if "$TAILSCALE_BIN" --socket "$SOCKET_PATH" up --authkey "$authkey" --accept-routes --reset >> "$LOGFILE" 2>&1; then
+      rm -f "$AUTHKEY_FILE"
+      log "tailscale up succeeded (authkey consumed and removed)"
+      return 0
+    fi
+    log "tailscale up with authkey failed"
+    return 1
+  fi
+
+  "$TAILSCALE_BIN" --socket "$SOCKET_PATH" up --accept-routes >> "$LOGFILE" 2>&1 || true
+}
+
+step_once() {
+  if is_onroad || ! is_enabled; then
+    stop_tailscaled
+    return 0
+  fi
+
+  start_tailscaled || return 0
+  ensure_tailscale_up || true
+}
+
+trap 'rm -f "$PIDFILE"' EXIT
+
+log "guardian start"
+while true; do
+  step_once
+  if [ "$ONESHOT" = "1" ]; then
+    break
+  fi
+  sleep "$INTERVAL_SEC"
 done
+log "guardian exit"
+
 GUARDIANEOF
       ;;
     tailscalectl.sh)
