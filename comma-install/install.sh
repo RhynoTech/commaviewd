@@ -171,19 +171,29 @@ start_tailscaled() {
   if tailscaled_running; then
     return 0
   fi
+
+  if [ ! -x "$TAILSCALED_BIN" ]; then
+    local runtime_installer="$TAILSCALE_DIR/install_tailscale_runtime.sh"
+    if [ -x "$runtime_installer" ]; then
+      if "$runtime_installer" >> "$LOGFILE" 2>&1; then
+        log "tailscale runtime installed by guardian"
+      else
+        log "tailscale runtime installer failed"
+      fi
+    fi
+  fi
+
   if [ ! -x "$TAILSCALED_BIN" ]; then
     log "tailscaled missing at $TAILSCALED_BIN"
     return 1
   fi
 
-  nohup "$TAILSCALED_BIN" \
-    --state="$STATE_FILE" \
-    --socket="$SOCKET_PATH" \
-    >> "$LOGFILE" 2>&1 &
+  nohup "$TAILSCALED_BIN"     --state="$STATE_FILE"     --socket="$SOCKET_PATH"     >> "$LOGFILE" 2>&1 &
   echo $! > "$RUN_DIR/tailscaled.pid"
   sleep 0.3
   log "started tailscaled"
 }
+
 
 tailscale_down() {
   if [ -x "$TAILSCALE_BIN" ]; then
