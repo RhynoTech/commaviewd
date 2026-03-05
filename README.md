@@ -146,6 +146,31 @@ Then upload both files to GitHub Release `v0.1.2-alpha` (or next tag), and updat
 
 ---
 
+
+## Maintainers: selective public publish workflow
+
+Canonical working repo: `/home/pear/CommaView`
+
+Use local `public-master` (tracks `github/master`) and export only allowlisted files:
+
+```bash
+# dry-run
+tools/publish-public.sh --source master --dry-run
+
+# real publish (fast-forward, no force push)
+tools/publish-public.sh --source master
+```
+
+Allowlisted paths:
+- `README.md`
+- `DISCLAIMER.md`
+- `LICENSE`
+- `comma-install/install.sh`
+- `comma-install/uninstall.sh`
+- `comma-install/upgrade.sh`
+
+---
+
 ## License
 
-TBD
+See `LICENSE` (All Rights Reserved).
