@@ -200,6 +200,342 @@ UPGRADEEOF
   chmod +x "$dst"
 }
 
+copy_or_embed_api_script() {
+  local src="$SCRIPT_DIR/commaview-api.py"
+  local dst="$INSTALL_DIR/commaview-api.py"
+
+  if [ -f "$src" ]; then
+    cp "$src" "$dst"
+    chmod +x "$dst"
+    return 0
+  fi
+
+  cat > "$dst" <<'APIEOF'
+#!/usr/bin/env python3
+"""CommaView Management API - runs on comma device port 5002"""
+import json
+import os
+import socket
+import subprocess
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+VERSION = "0.1.2-alpha"
+INSTALL_DIR = "/data/commaview"
+BITRATE_FILE = f"{INSTALL_DIR}/stream_bitrate"
+DEFAULT_BITRATE = 1000000
+
+TAILSCALECTL = f"{INSTALL_DIR}/tailscale/tailscalectl.sh"
+
+
+def get_stream_bitrate():
+    try:
+        with open(BITRATE_FILE) as f:
+            return int(f.read().strip())
+    except Exception:
+        return DEFAULT_BITRATE
+
+
+def set_stream_bitrate(bitrate):
+    with open(BITRATE_FILE, "w") as f:
+        f.write(str(bitrate))
+
+
+def restart_encoderd_stream(bitrate):
+    """Kill and restart encoderd --stream with new STREAM_BITRATE."""
+    subprocess.run(["pkill", "-f", "encoderd --stream"], capture_output=True)
+    import time
+    time.sleep(1)
+    env = os.environ.copy()
+    env["STREAM_BITRATE"] = str(bitrate)
+    subprocess.Popen(
+        ["/data/openpilot/system/loggerd/encoderd", "--stream"],
+        env=env,
+        stdout=open(f"{INSTALL_DIR}/logs/encoderd-stream.log", "w"),
+        stderr=subprocess.STDOUT,
+    )
+
+
+def tailscale_status():
+    if not os.path.exists(TAILSCALECTL):
+        return {
+            "enabled": False,
+            "onroad": False,
+            "daemonRunning": False,
+            "backendState": "missing",
+            "available": False,
+        }
+
+    proc = subprocess.run([TAILSCALECTL, "status", "--json"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        return {
+            "enabled": False,
+            "onroad": False,
+            "daemonRunning": False,
+            "backendState": "error",
+            "available": True,
+            "error": proc.stderr.strip() or proc.stdout.strip() or "tailscalectl status failed",
+        }
+
+    try:
+        data = json.loads(proc.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        data = {
+            "enabled": False,
+            "onroad": False,
+            "daemonRunning": False,
+            "backendState": "unknown",
+        }
+
+    data["available"] = True
+    return data
+
+
+def tailscale_set_enabled(enable: bool):
+    if not os.path.exists(TAILSCALECTL):
+        return {"ok": False, "error": "tailscalectl missing", "available": False}
+
+    cmd = "enable" if enable else "disable"
+    proc = subprocess.run([TAILSCALECTL, cmd, "--json"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "available": True,
+            "error": proc.stderr.strip() or proc.stdout.strip() or f"tailscalectl {cmd} failed",
+        }
+
+    try:
+        payload = json.loads(proc.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+
+    payload.update({"ok": True, "available": True})
+    return payload
+
+
+def tailscale_set_authkey(authkey: str):
+    if not os.path.exists(TAILSCALECTL):
+        return {"ok": False, "error": "tailscalectl missing", "available": False}
+    if not authkey:
+        return {"ok": False, "error": "auth key required", "available": True}
+
+    proc = subprocess.run([TAILSCALECTL, "set-auth-key", authkey, "--json"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "available": True,
+            "error": proc.stderr.strip() or proc.stdout.strip() or "tailscalectl set-auth-key failed",
+        }
+
+    try:
+        payload = json.loads(proc.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+
+    payload.update({"ok": True, "available": True})
+    return payload
+
+
+MDNS_SERVICE_TYPE = "_commaview._tcp.local."
+
+
+def is_running(name):
+    try:
+        r = subprocess.run(["pgrep", "-f", name], capture_output=True)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def get_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "unknown"
+
+
+def get_dongle_id():
+    try:
+        with open("/data/params/d/DongleId", "r") as f:
+            return f.read().strip()
+    except Exception:
+        return "unknown"
+
+
+def get_device_type():
+    try:
+        with open("/sys/firmware/devicetree/base/model", "r") as f:
+            return f.read().strip().rstrip("\x00")
+    except Exception:
+        return "unknown"
+
+
+def start_mdns():
+    """Advertise CommaView via mDNS/Zeroconf so Android app can auto-discover."""
+    try:
+        from zeroconf import Zeroconf, ServiceInfo
+    except ImportError:
+        print("[mDNS] zeroconf not installed, skipping mDNS advertisement")
+        print("[mDNS] Install with: pip install zeroconf")
+        return None, None
+
+    ip = get_ip()
+    if ip == "unknown":
+        print("[mDNS] No IP address, skipping mDNS")
+        return None, None
+
+    dongle_id = get_dongle_id()
+    device_type = get_device_type()
+    instance_name = f"comma-{dongle_id[-6:] if len(dongle_id) > 6 else dongle_id}"
+
+    info = ServiceInfo(
+        MDNS_SERVICE_TYPE,
+        f"{instance_name}.{MDNS_SERVICE_TYPE}",
+        addresses=[socket.inet_aton(ip)],
+        port=5002,
+        properties={
+            "version": VERSION,
+            "dongle_id": dongle_id,
+            "device": device_type,
+            "webrtc_port": "5001",
+            "ws_port": "5003",
+            "api_port": "5002",
+        },
+    )
+
+    zc = Zeroconf()
+    zc.register_service(info)
+    print(f"[mDNS] Advertising as '{instance_name}' at {ip}")
+    return zc, info
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # silence logs
+
+    def _respond(self, code, data):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+
+    def _read_json_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+
+        if length <= 0:
+            return {}
+
+        raw = self.rfile.read(length).decode(errors="ignore").strip()
+        if not raw:
+            return {}
+
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+
+    def do_GET(self):
+        if self.path == "/commaview/status":
+            self._respond(200, {
+                "version": VERSION,
+                "dongle_id": get_dongle_id(),
+                "device": get_device_type(),
+                "ip": get_ip(),
+                "services": {
+                    "camerad": is_running("camerad"),
+                    "encoderd_stream": is_running("encoderd --stream"),
+                    "webrtcd": is_running("webrtcd.py"),
+                    "commaview_api": True,
+                },
+                "webrtc_port": 5001,
+                "api_port": 5002,
+                "stream_bitrate": get_stream_bitrate(),
+                "tailscale": tailscale_status(),
+            })
+        elif self.path == "/commaview/version":
+            self._respond(200, {"version": VERSION})
+        elif self.path == "/commaview/stream/bitrate":
+            self._respond(200, {"bitrate": get_stream_bitrate()})
+        elif self.path == "/tailscale/status":
+            self._respond(200, tailscale_status())
+        else:
+            self._respond(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path == "/commaview/camerad/on":
+            subprocess.run(["bash", "-c", "echo -n 1 > /data/params/d/IsDriverViewEnabled"])
+            self._respond(200, {"ok": True, "camerad": "enabled"})
+        elif self.path == "/commaview/camerad/off":
+            subprocess.run(["bash", "-c", "echo -n 0 > /data/params/d/IsDriverViewEnabled"])
+            self._respond(200, {"ok": True, "camerad": "disabled"})
+        elif self.path.startswith("/commaview/stream/bitrate/"):
+            try:
+                bitrate = int(self.path.split("/")[-1])
+                if bitrate < 500000 or bitrate > 10000000:
+                    self._respond(400, {"error": "bitrate must be 500000-10000000"})
+                    return
+                set_stream_bitrate(bitrate)
+                restart_encoderd_stream(bitrate)
+                self._respond(200, {"ok": True, "bitrate": bitrate})
+            except ValueError:
+                self._respond(400, {"error": "invalid bitrate"})
+        elif self.path == "/commaview/start":
+            subprocess.Popen(["bash", f"{INSTALL_DIR}/start.sh"])
+            self._respond(200, {"ok": True, "action": "starting"})
+        elif self.path == "/commaview/stop":
+            subprocess.run(["bash", f"{INSTALL_DIR}/stop.sh"])
+            self._respond(200, {"ok": True, "action": "stopped"})
+        elif self.path == "/commaview/restart":
+            subprocess.run(["bash", f"{INSTALL_DIR}/stop.sh"])
+            subprocess.Popen(["bash", f"{INSTALL_DIR}/start.sh"])
+            self._respond(200, {"ok": True, "action": "restarting"})
+        elif self.path == "/tailscale/enable":
+            payload = tailscale_set_enabled(True)
+            self._respond(200 if payload.get("ok") else 500, payload)
+        elif self.path == "/tailscale/disable":
+            payload = tailscale_set_enabled(False)
+            self._respond(200 if payload.get("ok") else 500, payload)
+        elif self.path == "/tailscale/authkey":
+            body = self._read_json_body()
+            authkey = (body.get("authKey") or body.get("auth_key") or "").strip()
+            if not authkey:
+                self._respond(400, {"ok": False, "error": "auth key required"})
+                return
+            payload = tailscale_set_authkey(authkey)
+            self._respond(200 if payload.get("ok") else 500, payload)
+        else:
+            self._respond(404, {"error": "not found"})
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+
+if __name__ == "__main__":
+    zc, zc_info = start_mdns()
+    server = HTTPServer(("0.0.0.0", 5002), Handler)
+    print(f"CommaView API v{VERSION} listening on :5002")
+    try:
+        server.serve_forever()
+    finally:
+        if zc and zc_info:
+            zc.unregister_service(zc_info)
+            zc.close()
+APIEOF
+  chmod +x "$dst"
+}
+
 prompt_retry_or_continue() {
   if [ ! -t 0 ]; then
     echo "Non-interactive install; continuing without Tailscale." >&2
@@ -307,6 +643,7 @@ tar -xzf "$tmpdir/$ASSET_NAME" -C "$INSTALL_DIR" --strip-components=1
 
 deploy_tailscale_assets
 copy_or_embed_upgrade_script
+copy_or_embed_api_script
 
 if [ ! -f "$INSTALL_DIR/commaview-bridge" ]; then
   echo "ERROR: bundle missing $INSTALL_DIR/commaview-bridge" >&2
@@ -447,6 +784,7 @@ ensure_stream_encoderd() {
 stop_stream_encoderd() {
   stop_pidfile encoderd_stream
   pkill -f 'system/loggerd/encoderd --stream' 2>/dev/null || true
+pkill -f 'commaview-api.py' 2>/dev/null || true
 }
 
 ensure_offroad_stack() {
@@ -505,6 +843,12 @@ bash /data/commaview/stop.sh >/dev/null 2>&1 || true
 nohup /data/commaview/commaview-supervisor.sh >> "$LOG/supervisor.log" 2>&1 &
 echo $! > "$RUN/supervisor.pid"
 
+# Launch local API for app/status/tailscale control
+if [ -f /data/commaview/commaview-api.py ]; then
+  nohup python3 /data/commaview/commaview-api.py >> "$LOG/commaview-api.log" 2>&1 &
+  echo $! > "$RUN/commaview_api.pid"
+fi
+
 # Launch tailscale guardian (policy daemon)
 if [ -x /data/commaview/tailscale/tailscale-guardian.sh ]; then
   nohup /data/commaview/tailscale/tailscale-guardian.sh >> "$LOG/tailscale-guardian.log" 2>&1 &
@@ -533,7 +877,7 @@ if [ -f "$RUN/supervisor.pid" ]; then
 fi
 
 # stop children tracked by pidfiles
-for f in bridge.pid encoderd_stream.pid camerad_offroad.pid tailscale_guardian.pid tailscaled.pid; do
+for f in bridge.pid encoderd_stream.pid camerad_offroad.pid commaview_api.pid tailscale_guardian.pid tailscaled.pid; do
   if [ -f "$RUN/$f" ]; then
     pid=$(cat "$RUN/$f" 2>/dev/null)
     kill "$pid" 2>/dev/null || true
@@ -547,6 +891,7 @@ done
 pkill -f 'commaview-supervisor.sh' 2>/dev/null || true
 pkill -f '/data/commaview/commaview-bridge' 2>/dev/null || true
 pkill -f 'system/loggerd/encoderd --stream' 2>/dev/null || true
+pkill -f 'commaview-api.py' 2>/dev/null || true
 pkill -f 'tailscale-guardian.sh' 2>/dev/null || true
 pkill -f '/data/commaview/tailscale/bin/tailscaled' 2>/dev/null || true
 
@@ -578,6 +923,7 @@ chmod +x \
   "$INSTALL_DIR/commaview-supervisor.sh" \
   "$INSTALL_DIR/start.sh" \
   "$INSTALL_DIR/stop.sh" \
+  "$INSTALL_DIR/commaview-api.py" \
   "$INSTALL_DIR/uninstall.sh" \
   "$INSTALL_DIR/upgrade.sh" \
   "$INSTALL_DIR/tailscale/install_tailscale_runtime.sh" \
