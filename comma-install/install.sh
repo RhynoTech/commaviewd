@@ -358,6 +358,10 @@ main() {
 
   case "$cmd" in
     enable)
+      if is_onroad; then
+        echo "ERROR: cannot enable tailscale while onroad" >&2
+        exit 2
+      fi
       write_param CommaViewTailscaleEnabled 1
       ;;
     disable)
@@ -884,7 +888,6 @@ TAILSCALED_BIN=/data/commaview/tailscale/bin/tailscaled
 TAILSCALE_SOCKET=/data/commaview/tailscale/state/tailscaled.sock
 TAILSCALE_STATE_FILE=/data/commaview/tailscale/state/tailscaled.state
 TAILSCALE_CHECK_OFFROAD_SEC=15
-TAILSCALE_CHECK_ONROAD_SEC=60
 
 BRIDGE_BACKOFF_SEQUENCE=(1 2 4 8)
 BRIDGE_BACKOFF_MAX_SEC=8
@@ -893,7 +896,7 @@ bridge_backoff_index=0
 bridge_backoff_sec=0
 bridge_last_start_epoch=0
 
-tailscale_next_check_epoch=0
+tailscale_next_offroad_check_epoch=0
 
 mkdir -p "$LOG_DIR" "$RUN_DIR"
 
@@ -1030,25 +1033,14 @@ ensure_tailscale_up() {
   fi
 }
 
-ensure_tailscale_policy() {
-  local now cadence
+ensure_tailscale_policy_offroad() {
+  local now
   now="$(date +%s)"
-  if is_onroad; then
-    cadence="$TAILSCALE_CHECK_ONROAD_SEC"
-  else
-    cadence="$TAILSCALE_CHECK_OFFROAD_SEC"
-  fi
 
-  if [ "$now" -lt "$tailscale_next_check_epoch" ]; then
+  if [ "$now" -lt "$tailscale_next_offroad_check_epoch" ]; then
     return 0
   fi
-  tailscale_next_check_epoch=$((now + cadence))
-
-  if is_onroad; then
-    log "tailscale policy: onroad -> force down"
-    force_tailscale_down_and_stop
-    return 0
-  fi
+  tailscale_next_offroad_check_epoch=$((now + TAILSCALE_CHECK_OFFROAD_SEC))
 
   if is_tailscale_enabled; then
     log "tailscale policy: offroad+enabled -> ensure running"
@@ -1057,6 +1049,19 @@ ensure_tailscale_policy() {
   else
     log "tailscale policy: offroad+disabled -> force down"
     force_tailscale_down_and_stop
+  fi
+}
+
+on_mode_transition() {
+  local mode="$1"
+  tailscale_next_offroad_check_epoch=0
+
+  if [ "$mode" = "onroad" ]; then
+    log "tailscale policy: onroad-enter -> force down"
+    force_tailscale_down_and_stop
+  else
+    log "tailscale policy: offroad-enter -> evaluate"
+    ensure_tailscale_policy_offroad
   fi
 }
 
@@ -1072,11 +1077,13 @@ while true; do
   if [ "$mode" != "$prev_mode" ]; then
     log "mode switch: ${prev_mode:-none} -> $mode"
     prev_mode="$mode"
-    tailscale_next_check_epoch=0
+    tailscale_next_offroad_check_epoch=0
   fi
 
   ensure_bridge_running_prod
-  ensure_tailscale_policy
+  if [ "$mode" = "offroad" ]; then
+    ensure_tailscale_policy_offroad
+  fi
   sleep 1
 done
 SUPERVISOREOF
