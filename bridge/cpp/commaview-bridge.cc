@@ -1,0 +1,604 @@
+/**
+ * CommaView Unified Bridge (C++)
+ *
+ * Streams HEVC video on all ports and telemetry JSON on road+wide ports.
+ *
+ * Ports:
+ *   8200 road, 8201 wide, 8202 driver
+ *
+ * Framing:
+ *   [4-byte big-endian length][payload]
+ *   payload[0] = 0x01 (video): [type][header_len_be32][header][data]
+ *   payload[0] = 0x02 (meta):  [type][json bytes]
+ *   payload[0] = 0x03 (control inbound): [type][json bytes]
+ */
+
+#include <arpa/inet.h>
+#include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <memory>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
+#include <signal.h>
+#include <string>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+#include <atomic>
+#include <cctype>
+#include <mutex>
+#include <unordered_map>
+
+#include <capnp/serialize.h>
+#include "cereal/gen/cpp/log.capnp.h"
+#include "cereal/messaging/messaging.h"
+#include "cereal/services.h"
+#include "commaview/net/framing.h"
+#include "commaview/net/socket.h"
+#include "commaview/control/policy.h"
+#include "commaview/video/router.h"
+#include "commaview/telemetry/json_builder.h"
+
+static constexpr uint8_t MSG_VIDEO = 0x01;
+static constexpr uint8_t MSG_META  = 0x02;
+static constexpr uint8_t MSG_CONTROL = 0x03;
+
+static constexpr int PORT_ROAD = 8200;
+static constexpr int PORT_WIDE = 8201;
+static constexpr int PORT_DRIVER = 8202;
+
+// Test profile: telemetry split testing to isolate engagement impact.
+static const char* TELEMETRY_SERVICES[] = {
+  "carState", "selfdriveState", "deviceState", "liveCalibration", "radarState", "modelV2"
+};
+static constexpr int NUM_TELEM = 6;
+static constexpr int TELEMETRY_EMIT_MS = 100;  // 10 Hz coalesced telemetry
+
+static constexpr uint32_t TELEMETRY_BIT_CARSTATE = 1u << 0;
+static constexpr uint32_t TELEMETRY_BIT_SELFDRIVE = 1u << 1;
+static constexpr uint32_t TELEMETRY_BIT_DEVICESTATE = 1u << 2;
+static constexpr uint32_t TELEMETRY_BIT_LIVECALIB = 1u << 3;
+static constexpr uint32_t TELEMETRY_BIT_RADAR = 1u << 4;
+static constexpr uint32_t TELEMETRY_BIT_MODELV2 = 1u << 5;
+static constexpr uint32_t TELEMETRY_MASK_ALL =
+    TELEMETRY_BIT_CARSTATE |
+    TELEMETRY_BIT_SELFDRIVE |
+    TELEMETRY_BIT_DEVICESTATE |
+    TELEMETRY_BIT_LIVECALIB |
+    TELEMETRY_BIT_RADAR |
+    TELEMETRY_BIT_MODELV2;
+static constexpr uint32_t TELEMETRY_MASK_SAFE_NO_CAR =
+    TELEMETRY_MASK_ALL & ~TELEMETRY_BIT_CARSTATE;
+
+static const char* VIDEO_SERVICES_PROD[] = {
+  "roadEncodeData", "wideRoadEncodeData", "driverEncodeData"
+};
+
+static const char* VIDEO_SERVICES_DEV[] = {
+  "livestreamRoadEncodeData", "livestreamWideRoadEncodeData", "livestreamDriverEncodeData"
+};
+
+static bool g_dev_mode = false;
+static bool g_video_only = false;
+static bool g_suppress_video = false;
+static bool g_telemetry_only = false;
+static bool g_telemetry_blackhole = false;
+static bool g_telemetry_drain_only = false;
+static bool g_telemetry_subscribe_only = false;
+static uint32_t g_telemetry_mask = TELEMETRY_MASK_ALL;
+static std::atomic<bool> g_running{true};
+
+
+static std::atomic<int> g_active_road{0};
+static std::atomic<int> g_active_wide{0};
+static std::atomic<int> g_active_driver{0};
+
+static std::atomic<int>& active_counter_for_port(int port) {
+  if (port == PORT_ROAD) return g_active_road;
+  if (port == PORT_WIDE) return g_active_wide;
+  return g_active_driver;
+}
+
+static cereal::Event::Which expected_video_which_for_port(int port) {
+  return commaview::video::expected_video_which_for_port(port, g_dev_mode);
+}
+
+static bool telemetry_enabled_index(int i) {
+  switch (i) {
+    case 0: return (g_telemetry_mask & TELEMETRY_BIT_CARSTATE) != 0;
+    case 1: return (g_telemetry_mask & TELEMETRY_BIT_SELFDRIVE) != 0;
+    case 2: return (g_telemetry_mask & TELEMETRY_BIT_DEVICESTATE) != 0;
+    case 3: return (g_telemetry_mask & TELEMETRY_BIT_LIVECALIB) != 0;
+    case 4: return (g_telemetry_mask & TELEMETRY_BIT_RADAR) != 0;
+    case 5: return (g_telemetry_mask & TELEMETRY_BIT_MODELV2) != 0;
+    default: return false;
+  }
+}
+
+static const char* telemetry_mask_label() {
+  if (g_telemetry_mask == TELEMETRY_MASK_ALL) return "all";
+  if (g_telemetry_mask == TELEMETRY_BIT_CARSTATE) return "carState";
+  if (g_telemetry_mask == TELEMETRY_BIT_SELFDRIVE) return "selfdriveState";
+  if (g_telemetry_mask == TELEMETRY_BIT_DEVICESTATE) return "deviceState";
+  if (g_telemetry_mask == TELEMETRY_BIT_LIVECALIB) return "liveCalibration";
+  if (g_telemetry_mask == TELEMETRY_BIT_RADAR) return "radarState";
+  if (g_telemetry_mask == TELEMETRY_BIT_MODELV2) return "modelV2";
+  if (g_telemetry_mask == TELEMETRY_MASK_SAFE_NO_CAR) return "safeNoCar";
+  return "custom";
+}
+
+static size_t queue_size_for_service(const char* service_name) {
+  auto it = services.find(std::string(service_name));
+  if (it == services.end()) return 0;
+  return it->second.queue_size;
+}
+
+static void put_be32(uint8_t* buf, uint32_t val) {
+  commaview::net::put_be32(buf, val);
+}
+
+static uint32_t read_be32(const uint8_t* buf) {
+  return commaview::net::read_be32(buf);
+}
+
+static void set_session_policy(const std::string& session_id, bool suppress_video) {
+  commaview::control::set_session_policy(session_id, suppress_video);
+}
+
+static bool get_session_policy(const std::string& session_id, bool* suppress_video) {
+  return commaview::control::get_session_policy(session_id, suppress_video);
+}
+
+using ClientControlState = commaview::control::ClientControlState;
+
+static void consume_client_control_frames(int client_fd,
+                                          ClientControlState* state,
+                                          const char* video_service) {
+  commaview::control::consume_client_control_frames(client_fd, state, video_service, MSG_CONTROL);
+}
+
+static bool send_all(int fd, const void* data, size_t len) {
+  return commaview::net::send_all(fd, data, len);
+}
+
+static bool send_frame(int fd, const uint8_t* payload, size_t payload_len) {
+  return commaview::net::send_frame(fd, payload, payload_len);
+}
+
+static bool send_meta_json(int fd, const std::string& json) {
+  return commaview::net::send_meta_json(fd, json, MSG_META);
+}
+
+static bool client_socket_alive(int fd) {
+  return commaview::net::client_socket_alive(fd);
+}
+
+static int create_server(int port) {
+  return commaview::net::create_server(port);
+}
+
+static cereal::EncodeData::Reader read_encode_data(cereal::Event::Reader event, int port) {
+  return commaview::video::read_encode_data(event, port, g_dev_mode);
+}
+
+static std::string build_telemetry_json(cereal::Event::Reader event) {
+  return commaview::telemetry::build_telemetry_json(event);
+}
+
+static void handle_client(int client_fd, const char* video_service, int port) {
+  char addr_str[64] = {};
+  struct sockaddr_in peer = {};
+  socklen_t peer_len = sizeof(peer);
+  if (getpeername(client_fd, reinterpret_cast<struct sockaddr*>(&peer), &peer_len) == 0) {
+    inet_ntop(AF_INET, &peer.sin_addr, addr_str, sizeof(addr_str));
+  }
+
+  printf("[%s] client connected: %s (fd=%d)\n", video_service, addr_str, client_fd);
+  fflush(stdout);
+
+  int opt = 1;
+  setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+  int sndbuf = 524288;
+  setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+
+  auto& active_counter = active_counter_for_port(port);
+  int previous = active_counter.fetch_add(1);
+  if (previous > 0) {
+    // Keep one active client per stream to avoid msgq reader churn/races.
+    active_counter.fetch_sub(1);
+    close(client_fd);
+    return;
+  }
+
+  Context* ctx = Context::create();
+
+  const bool enable_video = !g_telemetry_only;
+  SubSocket* video_sock = nullptr;
+  if (enable_video) {
+    const size_t video_segment_size = queue_size_for_service(video_service);
+    video_sock = SubSocket::create(ctx, video_service, "127.0.0.1", true, true, video_segment_size);
+  }
+
+  const bool include_telemetry = !g_video_only && (port == PORT_ROAD || port == PORT_WIDE);
+  SubSocket* telem_socks[NUM_TELEM] = {};
+
+  if (include_telemetry) {
+    for (int i = 0; i < NUM_TELEM; i++) {
+      if (!telemetry_enabled_index(i)) continue;
+      const size_t segment_size = queue_size_for_service(TELEMETRY_SERVICES[i]);
+      telem_socks[i] = SubSocket::create(ctx, TELEMETRY_SERVICES[i], "127.0.0.1", true, true, segment_size);
+    }
+  }
+
+  Poller* poller = Poller::create();
+  if (video_sock != nullptr) {
+    poller->registerSocket(video_sock);
+  }
+  if (include_telemetry && !g_telemetry_subscribe_only) {
+    for (int i = 0; i < NUM_TELEM; i++) {
+      if (telem_socks[i] != nullptr) poller->registerSocket(telem_socks[i]);
+    }
+  }
+
+  uint64_t frame_count = 0;
+  uint64_t parse_error_count = 0;
+  uint64_t wrong_union_count = 0;
+  uint64_t telem_count = 0;
+  uint64_t telem_drop_count = 0;
+  uint64_t telem_drain_count = 0;
+  uint64_t suppressed_video_count = 0;
+  auto t0 = std::chrono::steady_clock::now();
+  auto next_telem_emit = t0 + std::chrono::milliseconds(TELEMETRY_EMIT_MS);
+  std::string car_json_latest;
+  std::string controls_json_latest;
+  std::string device_json_latest;
+  std::string model_json_latest;
+  std::string radar_json_latest;
+  std::string calibration_json_latest;
+  bool have_car_json = false;
+  bool have_controls_json = false;
+  bool have_device_json = false;
+  bool have_model_json = false;
+  bool have_radar_json = false;
+  bool have_calibration_json = false;
+  AlignedBuffer aligned_buf;
+  ClientControlState control_state;
+
+  while (g_running) {
+    if (!client_socket_alive(client_fd)) break;
+
+    consume_client_control_frames(client_fd, &control_state, video_service);
+
+    auto ready = poller->poll(20);
+
+    for (auto* sock : ready) {
+      std::unique_ptr<Message> raw_msg(sock->receive(true));
+      if (!raw_msg) continue;
+
+      const size_t raw_size = raw_msg->getSize();
+
+      if (include_telemetry && g_telemetry_drain_only) {
+        bool is_telem_sock = false;
+        for (int i = 0; i < NUM_TELEM; i++) {
+          if (sock == telem_socks[i]) {
+            is_telem_sock = true;
+            break;
+          }
+        }
+        if (is_telem_sock) {
+          telem_drain_count++;
+          if (telem_drain_count <= 3 || (telem_drain_count % 200) == 0) {
+            printf("[%s] telem-drain=%llu raw=%zu [DRAIN_ONLY]\n",
+                   video_service,
+                   static_cast<unsigned long long>(telem_drain_count),
+                   raw_size);
+            fflush(stdout);
+          }
+          continue;
+        }
+      }
+
+      try {
+        capnp::ReaderOptions options;
+        options.traversalLimitInWords = kj::maxValue;
+
+        capnp::FlatArrayMessageReader reader(aligned_buf.align(raw_msg.get()), options);
+        auto event = reader.getRoot<cereal::Event>();
+
+        if (video_sock != nullptr && sock == video_sock) {
+          const auto which = event.which();
+          const auto expected = expected_video_which_for_port(port);
+          if (which != expected) {
+            wrong_union_count++;
+            if (wrong_union_count <= 20 || (wrong_union_count % 100) == 0) {
+              printf("[%s] union mismatch #%llu: got=%d expected=%d raw=%zu\n",
+                     video_service,
+                     static_cast<unsigned long long>(wrong_union_count),
+                     static_cast<int>(which),
+                     static_cast<int>(expected),
+                     raw_size);
+              fflush(stdout);
+            }
+            continue;
+          }
+
+          auto ed = read_encode_data(event, port);
+          auto header = ed.getHeader();
+          auto data = ed.getData();
+
+          const uint32_t header_len = header.size();
+          const size_t data_len = data.size();
+          if (data_len == 0) continue;
+
+          bool suppress_video = g_suppress_video;
+          bool session_policy = false;
+          if (!suppress_video && get_session_policy(control_state.bound_session_id, &session_policy)) {
+            suppress_video = session_policy;
+          }
+
+          if (suppress_video) {
+            suppressed_video_count++;
+            if (suppressed_video_count <= 3 || (suppressed_video_count % 500) == 0) {
+              printf("[%s] suppress-video drop=%llu session=%s header=%u data=%zu\n",
+                     video_service,
+                     static_cast<unsigned long long>(suppressed_video_count),
+                     control_state.bound_session_id.empty() ? "<legacy>" : control_state.bound_session_id.c_str(),
+                     header_len,
+                     data_len);
+              fflush(stdout);
+            }
+            continue;
+          }
+
+          const size_t payload_len = 1 + 4 + header_len + data_len;
+          std::vector<uint8_t> payload(payload_len);
+          payload[0] = MSG_VIDEO;
+          put_be32(&payload[1], header_len);
+          if (header_len > 0) memcpy(&payload[5], header.begin(), header_len);
+          memcpy(&payload[5 + header_len], data.begin(), data_len);
+
+          if (!send_frame(client_fd, payload.data(), payload.size())) {
+            goto disconnect;
+          }
+
+          frame_count++;
+          if (frame_count <= 5 || (frame_count % 200) == 0) {
+            auto now = std::chrono::steady_clock::now();
+            const double elapsed = std::chrono::duration<double>(now - t0).count();
+            const double fps = elapsed > 0 ? frame_count / elapsed : 0.0;
+            printf("[%s] frames=%llu fps=%.1f header=%u data=%zu\n",
+                   video_service,
+                   static_cast<unsigned long long>(frame_count),
+                   fps,
+                   header_len,
+                   data_len);
+            fflush(stdout);
+          }
+          continue;
+        }
+
+        if (include_telemetry) {
+          std::string json = build_telemetry_json(event);
+          if (!json.empty()) {
+            switch (event.which()) {
+              case cereal::Event::CAR_STATE:
+                car_json_latest = std::move(json);
+                have_car_json = true;
+                break;
+              case cereal::Event::SELFDRIVE_STATE:
+                controls_json_latest = std::move(json);
+                have_controls_json = true;
+                break;
+              case cereal::Event::DEVICE_STATE:
+                device_json_latest = std::move(json);
+                have_device_json = true;
+                break;
+              case cereal::Event::MODEL_V2:
+                model_json_latest = std::move(json);
+                have_model_json = true;
+                break;
+              case cereal::Event::RADAR_STATE:
+                radar_json_latest = std::move(json);
+                have_radar_json = true;
+                break;
+              case cereal::Event::LIVE_CALIBRATION:
+                calibration_json_latest = std::move(json);
+                have_calibration_json = true;
+                break;
+              default:
+                break;
+            }
+          }
+        }
+      } catch (const std::exception& e) {
+        parse_error_count++;
+        printf("[%s] parse exception #%llu: %s (raw=%zu)\n",
+               video_service,
+               static_cast<unsigned long long>(parse_error_count),
+               e.what(),
+               raw_size);
+        fflush(stdout);
+      } catch (...) {
+        parse_error_count++;
+        printf("[%s] parse unknown exception #%llu (raw=%zu)\n",
+               video_service,
+               static_cast<unsigned long long>(parse_error_count),
+               raw_size);
+        fflush(stdout);
+      }
+    }
+
+    if (include_telemetry) {
+      auto now = std::chrono::steady_clock::now();
+      if (now >= next_telem_emit) {
+        next_telem_emit = now + std::chrono::milliseconds(TELEMETRY_EMIT_MS);
+
+        if (have_car_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, car_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_controls_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, controls_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_device_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, device_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_model_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, model_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_radar_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, radar_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_calibration_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, calibration_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+
+        const uint64_t telem_log_counter = g_telemetry_blackhole ? telem_drop_count : telem_count;
+        if (telem_log_counter <= 3 || (telem_log_counter % 200) == 0) {
+          printf("[%s] telem=%llu drop=%llu (coalesced 10Hz)%s\n",
+                 video_service,
+                 static_cast<unsigned long long>(telem_count),
+                 static_cast<unsigned long long>(telem_drop_count),
+                 g_telemetry_blackhole ? " [BLACKHOLE]" : "");
+          fflush(stdout);
+        }
+      }
+    }
+  }
+
+disconnect:
+  printf("[%s] client disconnected: %s\n", video_service, addr_str);
+  fflush(stdout);
+
+  active_counter.fetch_sub(1);
+  close(client_fd);
+
+  delete poller;
+  if (video_sock != nullptr) delete video_sock;
+  for (int i = 0; i < NUM_TELEM; i++) {
+    if (telem_socks[i] != nullptr) delete telem_socks[i];
+  }
+  delete ctx;
+}
+
+static void accept_loop(int server_fd, const char* service_name, int port) {
+  printf("[%s] listening on :%d\n", service_name, port);
+  fflush(stdout);
+
+  while (g_running) {
+    struct sockaddr_in client_addr = {};
+    socklen_t addr_len = sizeof(client_addr);
+    int client_fd = accept(server_fd, reinterpret_cast<struct sockaddr*>(&client_addr), &addr_len);
+    if (client_fd < 0) {
+      if (g_running) perror("accept");
+      continue;
+    }
+    std::thread(handle_client, client_fd, service_name, port).detach();
+  }
+}
+
+static void sig_handler(int) { g_running = false; }
+
+int main(int argc, char* argv[]) {
+  signal(SIGINT, sig_handler);
+  signal(SIGTERM, sig_handler);
+  signal(SIGPIPE, SIG_IGN);
+
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--dev") == 0) g_dev_mode = true;
+    if (strcmp(argv[i], "--video-only") == 0) g_video_only = true;
+    if (strcmp(argv[i], "--suppress-video") == 0) g_suppress_video = true;
+    if (strcmp(argv[i], "--telemetry-only") == 0) g_telemetry_only = true;
+    if (strcmp(argv[i], "--telemetry-blackhole") == 0) g_telemetry_blackhole = true;
+    if (strcmp(argv[i], "--telemetry-drain-only") == 0) g_telemetry_drain_only = true;
+    if (strcmp(argv[i], "--telemetry-subscribe-only") == 0) g_telemetry_subscribe_only = true;
+    if (strcmp(argv[i], "--telem-car-only") == 0) g_telemetry_mask = TELEMETRY_BIT_CARSTATE;
+    if (strcmp(argv[i], "--telem-selfdrive-only") == 0) g_telemetry_mask = TELEMETRY_BIT_SELFDRIVE;
+    if (strcmp(argv[i], "--telem-device-only") == 0) g_telemetry_mask = TELEMETRY_BIT_DEVICESTATE;
+    if (strcmp(argv[i], "--telem-calib-only") == 0) g_telemetry_mask = TELEMETRY_BIT_LIVECALIB;
+    if (strcmp(argv[i], "--telem-radar-only") == 0) g_telemetry_mask = TELEMETRY_BIT_RADAR;
+    if (strcmp(argv[i], "--telem-modelv2-only") == 0) g_telemetry_mask = TELEMETRY_BIT_MODELV2;
+    if (strcmp(argv[i], "--telem-safe-no-car") == 0) g_telemetry_mask = TELEMETRY_MASK_SAFE_NO_CAR;
+  }
+
+  const char** video_services = g_dev_mode ? VIDEO_SERVICES_DEV : VIDEO_SERVICES_PROD;
+
+  printf("CommaView Bridge v3.3.8-safe-bundle (C++)%s%s%s%s%s%s%s [TELEM=%s]\n",
+         g_dev_mode ? " [DEV MODE: livestream]" : "",
+         g_video_only ? " [VIDEO ONLY]" : " [VIDEO+TELEMETRY]",
+         g_suppress_video ? " [SUPPRESS_VIDEO_TX]" : "",
+         g_telemetry_only ? " [TELEMETRY ONLY]" : "",
+         g_telemetry_blackhole ? " [TELEMETRY BLACKHOLE]" : "",
+         g_telemetry_drain_only ? " [TELEMETRY DRAIN_ONLY]" : "",
+         g_telemetry_subscribe_only ? " [TELEMETRY SUBSCRIBE_ONLY]" : "",
+         telemetry_mask_label());
+  fflush(stdout);
+
+  std::vector<std::pair<int, const char*>> streams;
+  if (g_telemetry_only) {
+    streams.push_back({PORT_ROAD, video_services[0]});
+  } else if (g_dev_mode) {
+    // Parked/dev mode: keep single road stream for stability.
+    streams.push_back({PORT_ROAD, video_services[0]});
+  } else {
+    streams.push_back({PORT_ROAD, video_services[0]});
+    streams.push_back({PORT_WIDE, video_services[1]});
+    streams.push_back({PORT_DRIVER, video_services[2]});
+  }
+
+  std::vector<std::thread> threads;
+  std::vector<int> server_fds;
+
+  for (auto& s : streams) {
+    int fd = create_server(s.first);
+    if (fd < 0) {
+      fprintf(stderr, "failed on port %d\n", s.first);
+      return 1;
+    }
+    server_fds.push_back(fd);
+    threads.emplace_back(accept_loop, fd, s.second, s.first);
+  }
+
+  printf("ready. waiting for connections...\n");
+  fflush(stdout);
+
+  for (auto& t : threads) t.join();
+  for (int fd : server_fds) close(fd);
+
+  printf("CommaView Bridge stopped.\n");
+  return 0;
+}

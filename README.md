@@ -166,8 +166,6 @@ Allowlisted paths:
 - `DISCLAIMER.md`
 - `LICENSE`
 - `comma-install/install.sh`
-- `comma-install/runtime/uninstall.sh`
-- `comma-install/runtime/upgrade.sh`
 - `comma-install/api/commaview-api.py`
 - `comma-install/tailscale/tailscalectl.sh`
 - `comma-install/tailscale/install_tailscale_runtime.sh`
@@ -175,6 +173,32 @@ Allowlisted paths:
 - `comma-install/runtime/start.sh`
 - `comma-install/runtime/stop.sh`
 - `comma-install/runtime/uninstall.sh`
+- `comma-install/runtime/upgrade.sh`
+- `bridge/cpp/build-ubuntu.sh`
+- `bridge/cpp/commaview-bridge.cc`
+- `bridge/cpp/reproducible-build.sh`
+- `bridge/cpp/run-unit-tests.sh`
+- `bridge/cpp/run-verification.sh`
+- `bridge/cpp/include/commaview/net/framing.h`
+- `bridge/cpp/include/commaview/net/socket.h`
+- `bridge/cpp/include/commaview/control/policy.h`
+- `bridge/cpp/include/commaview/video/router.h`
+- `bridge/cpp/include/commaview/telemetry/json_builder.h`
+- `bridge/cpp/src/net/framing.cpp`
+- `bridge/cpp/src/net/socket.cpp`
+- `bridge/cpp/src/control/policy.cpp`
+- `bridge/cpp/src/video/router.cpp`
+- `bridge/cpp/src/telemetry/json_builder.cpp`
+- `bridge/cpp/tests/reproducible_build_test.sh`
+- `bridge/cpp/tests/unit_tests_pipeline_test.sh`
+- `bridge/cpp/tests/test_net_framing.cpp`
+- `bridge/cpp/tests/test_control_policy.cpp`
+- `bridge/cpp/tests/test_telemetry_json.cpp`
+- `docs/plans/2026-03-06-bridge-modularization-two-phase-implementation.md`
+- `docs/reports/2026-03-06-bridge-modularization-baseline.md`
+- `docs/reports/2026-03-06-bridge-phase1-parity.md`
+- `docs/reports/2026-03-06-bridge-phase2-reproducible-build.md`
+- `docs/reports/2026-03-06-bridge-phase2-tests-pipeline.md`
 
 ---
 
