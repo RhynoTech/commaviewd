@@ -132,7 +132,7 @@ ensure_tailscaled_running() {
   fi
   mkdir -p "$(dirname "$TAILSCALE_SOCKET")"
   log "starting tailscaled"
-  start_bg tailscaled "$TAILSCALED_BIN" --state "$TAILSCALE_STATE_FILE" --socket "$TAILSCALE_SOCKET"
+  start_bg tailscaled nice -n 19 "$TAILSCALED_BIN" --state "$TAILSCALE_STATE_FILE" --socket "$TAILSCALE_SOCKET"
 }
 
 force_tailscale_down_and_stop() {

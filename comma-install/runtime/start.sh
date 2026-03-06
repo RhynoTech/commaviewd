@@ -8,12 +8,12 @@ mkdir -p "$LOG" "$RUN"
 bash /data/commaview/stop.sh >/dev/null 2>&1 || true
 
 # Launch supervisor
-nohup /data/commaview/commaview-supervisor.sh >> "$LOG/supervisor.log" 2>&1 &
+nohup nice -n 19 /data/commaview/commaview-supervisor.sh >> "$LOG/supervisor.log" 2>&1 &
 echo $! > "$RUN/supervisor.pid"
 
 # Launch local API for app/status/tailscale control
-if [ -f /data/commaview/commaview-api.py ]; then
-  nohup python3 /data/commaview/commaview-api.py >> "$LOG/commaview-api.log" 2>&1 &
+if [ -f /data/commaview/api/commaview-api.py ]; then
+  nohup nice -n 19 python3 /data/commaview/api/commaview-api.py >> "$LOG/commaview-api.log" 2>&1 &
   echo $! > "$RUN/commaview_api.pid"
 fi
 

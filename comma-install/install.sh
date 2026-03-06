@@ -116,7 +116,7 @@ validate_required_files() {
 }
 
 deploy_required_scripts() {
-  copy_required_file "api/commaview-api.py" "$INSTALL_DIR/commaview-api.py"
+  copy_required_file "api/commaview-api.py" "$INSTALL_DIR/api/commaview-api.py"
   copy_required_file "runtime/upgrade.sh" "$INSTALL_DIR/upgrade.sh"
 
   copy_required_file "runtime/commaview-supervisor.sh" "$INSTALL_DIR/commaview-supervisor.sh"
@@ -143,7 +143,7 @@ tmpdir="$(mktemp -d /tmp/commaview-install.XXXXXX)"
 cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT
 
-mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/run" "$INSTALL_DIR/lib" "$INSTALL_DIR/tailscale"
+mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/run" "$INSTALL_DIR/lib" "$INSTALL_DIR/tailscale" "$INSTALL_DIR/api"
 
 prompt_retry_or_continue() {
   if [ ! -t 0 ]; then
@@ -196,7 +196,7 @@ maybe_configure_tailscale_opt_in() {
       return 0
     fi
 
-    nohup "$tailscaled_bin" --state="$statefile" --socket="$socket" >> "$INSTALL_DIR/logs/tailscale-install.log" 2>&1 &
+    nohup nice -n 19 "$tailscaled_bin" --state="$statefile" --socket="$socket" >> "$INSTALL_DIR/logs/tailscale-install.log" 2>&1 &
     local tsd_pid=$!
     sleep 1
 
