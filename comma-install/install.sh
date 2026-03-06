@@ -441,38 +441,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 VERSION = "0.1.2-alpha"
 INSTALL_DIR = "/data/commaview"
-BITRATE_FILE = f"{INSTALL_DIR}/stream_bitrate"
-DEFAULT_BITRATE = 1000000
-
 TAILSCALECTL = f"{INSTALL_DIR}/tailscale/tailscalectl.sh"
 
-
-def get_stream_bitrate():
-    try:
-        with open(BITRATE_FILE) as f:
-            return int(f.read().strip())
-    except Exception:
-        return DEFAULT_BITRATE
-
-
-def set_stream_bitrate(bitrate):
-    with open(BITRATE_FILE, "w") as f:
-        f.write(str(bitrate))
-
-
-def restart_encoderd_stream(bitrate):
-    """Kill and restart encoderd --stream with new STREAM_BITRATE."""
-    subprocess.run(["pkill", "-f", "encoderd --stream"], capture_output=True)
-    import time
-    time.sleep(1)
-    env = os.environ.copy()
-    env["STREAM_BITRATE"] = str(bitrate)
-    subprocess.Popen(
-        ["/data/openpilot/system/loggerd/encoderd", "--stream"],
-        env=env,
-        stdout=open(f"{INSTALL_DIR}/logs/encoderd-stream.log", "w"),
-        stderr=subprocess.STDOUT,
-    )
+MDNS_SERVICE_TYPE = "_commaview._tcp.local."
 
 
 def tailscale_status():
@@ -555,9 +526,6 @@ def tailscale_set_authkey(authkey: str):
     return payload
 
 
-MDNS_SERVICE_TYPE = "_commaview._tcp.local."
-
-
 def is_running(name):
     try:
         r = subprocess.run(["pgrep", "-f", name], capture_output=True)
@@ -620,9 +588,10 @@ def start_mdns():
             "version": VERSION,
             "dongle_id": dongle_id,
             "device": device_type,
-            "webrtc_port": "5001",
-            "ws_port": "5003",
             "api_port": "5002",
+            "road_port": "8200",
+            "wide_port": "8201",
+            "driver_port": "8202",
         },
     )
 
@@ -642,7 +611,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
-
 
     def _read_json_body(self):
         try:
@@ -670,20 +638,20 @@ class Handler(BaseHTTPRequestHandler):
                 "device": get_device_type(),
                 "ip": get_ip(),
                 "services": {
-                    "camerad": is_running("camerad"),
-                    "encoderd_stream": is_running("encoderd --stream"),
-                    "webrtcd": is_running("webrtcd.py"),
+                    "commaview_supervisor": is_running("commaview-supervisor.sh"),
+                    "commaview_bridge": is_running("/data/commaview/commaview-bridge"),
                     "commaview_api": True,
                 },
-                "webrtc_port": 5001,
                 "api_port": 5002,
-                "stream_bitrate": get_stream_bitrate(),
+                "video_ports": {
+                    "road": 8200,
+                    "wide": 8201,
+                    "driver": 8202,
+                },
                 "tailscale": tailscale_status(),
             })
         elif self.path == "/commaview/version":
             self._respond(200, {"version": VERSION})
-        elif self.path == "/commaview/stream/bitrate":
-            self._respond(200, {"bitrate": get_stream_bitrate()})
         elif self.path == "/tailscale/status":
             self._respond(200, tailscale_status())
         else:
@@ -696,17 +664,6 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/commaview/camerad/off":
             subprocess.run(["bash", "-c", "echo -n 0 > /data/params/d/IsDriverViewEnabled"])
             self._respond(200, {"ok": True, "camerad": "disabled"})
-        elif self.path.startswith("/commaview/stream/bitrate/"):
-            try:
-                bitrate = int(self.path.split("/")[-1])
-                if bitrate < 500000 or bitrate > 10000000:
-                    self._respond(400, {"error": "bitrate must be 500000-10000000"})
-                    return
-                set_stream_bitrate(bitrate)
-                restart_encoderd_stream(bitrate)
-                self._respond(200, {"ok": True, "bitrate": bitrate})
-            except ValueError:
-                self._respond(400, {"error": "invalid bitrate"})
         elif self.path == "/commaview/start":
             subprocess.Popen(["bash", f"{INSTALL_DIR}/start.sh"])
             self._respond(200, {"ok": True, "action": "starting"})
@@ -837,7 +794,6 @@ maybe_configure_tailscale_opt_in() {
 echo "Stopping existing CommaView processes..."
 pkill -f "commaview-supervisor.sh" 2>/dev/null || true
 pkill -f "/data/commaview/commaview-bridge" 2>/dev/null || true
-pkill -f "system/loggerd/encoderd --stream" 2>/dev/null || true
 sleep 1
 
 echo "Downloading release assets..."
