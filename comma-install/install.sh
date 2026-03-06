@@ -196,190 +196,6 @@ main "$@"
 
 RUNTIMEEOF
       ;;
-    tailscale-guardian.sh)
-      cat > "$dst" <<'GUARDIANEOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-PARAMS_DIR="${COMMAVIEW_PARAMS_DIR:-/data/params/d}"
-RUN_DIR="${COMMAVIEW_RUN_DIR:-/data/commaview/run}"
-LOG_DIR="${COMMAVIEW_LOG_DIR:-/data/commaview/logs}"
-TAILSCALE_DIR="${COMMAVIEW_TAILSCALE_DIR:-/data/commaview/tailscale}"
-TAILSCALE_BIN="${COMMAVIEW_TAILSCALE_BIN:-$TAILSCALE_DIR/bin/tailscale}"
-TAILSCALED_BIN="${COMMAVIEW_TAILSCALED_BIN:-$TAILSCALE_DIR/bin/tailscaled}"
-SOCKET_PATH="${COMMAVIEW_TAILSCALE_SOCKET:-$TAILSCALE_DIR/state/tailscaled.sock}"
-STATE_FILE="${COMMAVIEW_TAILSCALE_STATE_FILE:-$TAILSCALE_DIR/state/tailscaled.state}"
-AUTHKEY_FILE="${COMMAVIEW_TAILSCALE_AUTHKEY_FILE:-$TAILSCALE_DIR/authkey}"
-INTERVAL_SEC="${COMMAVIEW_GUARDIAN_INTERVAL_SEC:-2}"
-ONESHOT="${COMMAVIEW_GUARDIAN_ONESHOT:-0}"
-
-DISABLE_SUDO="${COMMAVIEW_DISABLE_SUDO:-0}"
-USE_SUDO=0
-if [ "$DISABLE_SUDO" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-  USE_SUDO=1
-fi
-
-run_cmd() {
-  if [ "$USE_SUDO" = "1" ]; then
-    sudo -n "$@"
-  else
-    "$@"
-  fi
-}
-
-mkdir -p "$RUN_DIR" "$LOG_DIR" "$(dirname "$SOCKET_PATH")"
-PIDFILE="$RUN_DIR/tailscale_guardian.pid"
-LOGFILE="$LOG_DIR/tailscale-guardian.log"
-echo $$ > "$PIDFILE"
-
-log() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOGFILE"
-}
-
-read_param() {
-  local key="$1"
-  local path="$PARAMS_DIR/$key"
-  if [ -f "$path" ]; then
-    tr -d '\000\r\n' < "$path"
-  else
-    echo ""
-  fi
-}
-
-is_onroad() {
-  [ "$(read_param IsOnroad)" = "1" ]
-}
-
-is_enabled() {
-  [ "$(read_param CommaViewTailscaleEnabled)" = "1" ]
-}
-
-tailscaled_running() {
-  pgrep -f "$TAILSCALED_BIN" >/dev/null 2>&1
-}
-
-start_tailscaled() {
-  if tailscaled_running; then
-    return 0
-  fi
-
-  if [ ! -x "$TAILSCALED_BIN" ]; then
-    local runtime_installer="$TAILSCALE_DIR/install_tailscale_runtime.sh"
-    if [ -x "$runtime_installer" ]; then
-      if "$runtime_installer" >> "$LOGFILE" 2>&1; then
-        log "tailscale runtime installed by guardian"
-      else
-        log "tailscale runtime installer failed"
-      fi
-    fi
-  fi
-
-  if [ ! -x "$TAILSCALED_BIN" ]; then
-    log "tailscaled missing at $TAILSCALED_BIN"
-    return 1
-  fi
-
-  if [ "$USE_SUDO" = "1" ]; then
-    nohup sudo -n "$TAILSCALED_BIN" \
-      --state="$STATE_FILE" \
-      --socket="$SOCKET_PATH" \
-      >> "$LOGFILE" 2>&1 &
-  else
-    nohup "$TAILSCALED_BIN" \
-      --state="$STATE_FILE" \
-      --socket="$SOCKET_PATH" \
-      >> "$LOGFILE" 2>&1 &
-  fi
-
-  echo $! > "$RUN_DIR/tailscaled.pid"
-  sleep 0.5
-  log "started tailscaled"
-}
-
-tailscale_down() {
-  if [ -x "$TAILSCALE_BIN" ]; then
-    run_cmd "$TAILSCALE_BIN" --socket "$SOCKET_PATH" down >/dev/null 2>&1 || true
-  fi
-}
-
-stop_tailscaled() {
-  tailscale_down
-
-  if [ -f "$RUN_DIR/tailscaled.pid" ]; then
-    local pid
-    pid="$(cat "$RUN_DIR/tailscaled.pid" 2>/dev/null || true)"
-    if [ -n "$pid" ]; then
-      kill "$pid" 2>/dev/null || true
-    fi
-    rm -f "$RUN_DIR/tailscaled.pid"
-  fi
-
-  if [ "$USE_SUDO" = "1" ]; then
-    sudo -n pkill -f "$TAILSCALED_BIN" 2>/dev/null || true
-  else
-    pkill -f "$TAILSCALED_BIN" 2>/dev/null || true
-  fi
-  log "stopped tailscaled"
-}
-
-ensure_tailscale_up() {
-  if [ ! -x "$TAILSCALE_BIN" ]; then
-    log "tailscale missing at $TAILSCALE_BIN"
-    return 1
-  fi
-
-  local backend
-  backend="$(run_cmd "$TAILSCALE_BIN" --socket "$SOCKET_PATH" status --json 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState","unknown"))' 2>/dev/null || echo "unknown")"
-
-  if [ "$backend" = "Running" ]; then
-    return 0
-  fi
-
-  local authkey=""
-  if [ -f "$AUTHKEY_FILE" ]; then
-    authkey="$(tr -d '\r\n' < "$AUTHKEY_FILE")"
-  fi
-
-  if [ -n "$authkey" ]; then
-    if run_cmd "$TAILSCALE_BIN" --socket "$SOCKET_PATH" up --authkey "$authkey" --accept-routes --reset >> "$LOGFILE" 2>&1; then
-      rm -f "$AUTHKEY_FILE"
-      log "tailscale up succeeded (authkey consumed and removed)"
-      return 0
-    fi
-    log "tailscale up with authkey failed"
-    return 1
-  fi
-
-  if run_cmd "$TAILSCALE_BIN" --socket "$SOCKET_PATH" up --accept-routes >> "$LOGFILE" 2>&1; then
-    log "tailscale up succeeded"
-    return 0
-  fi
-
-  log "tailscale up failed"
-  return 1
-}
-
-log "guardian start"
-
-while true; do
-  if is_onroad; then
-    stop_tailscaled
-  elif is_enabled; then
-    start_tailscaled || true
-    ensure_tailscale_up || true
-  else
-    stop_tailscaled
-  fi
-
-  if [ "$ONESHOT" = "1" ]; then
-    break
-  fi
-  sleep "$INTERVAL_SEC"
-done
-
-GUARDIANEOF
-      ;;
     tailscalectl.sh)
       cat > "$dst" <<'CTLLEOF'
 #!/usr/bin/env bash
@@ -576,7 +392,6 @@ CTLLEOF
 
 deploy_tailscale_assets() {
   copy_or_embed_tailscale_script install_tailscale_runtime.sh
-  copy_or_embed_tailscale_script tailscale-guardian.sh
   copy_or_embed_tailscale_script tailscalectl.sh
 }
 
@@ -1019,7 +834,6 @@ echo "Stopping existing CommaView processes..."
 pkill -f "commaview-supervisor.sh" 2>/dev/null || true
 pkill -f "/data/commaview/commaview-bridge" 2>/dev/null || true
 pkill -f "system/loggerd/encoderd --stream" 2>/dev/null || true
-pkill -f "tailscale-guardian.sh" 2>/dev/null || true
 sleep 1
 
 echo "Downloading release assets..."
@@ -1065,6 +879,22 @@ set -euo pipefail
 
 LOG_DIR=/data/commaview/logs
 RUN_DIR=/data/commaview/run
+TAILSCALE_BIN=/data/commaview/tailscale/bin/tailscale
+TAILSCALED_BIN=/data/commaview/tailscale/bin/tailscaled
+TAILSCALE_SOCKET=/data/commaview/tailscale/state/tailscaled.sock
+TAILSCALE_STATE_FILE=/data/commaview/tailscale/state/tailscaled.state
+TAILSCALE_CHECK_OFFROAD_SEC=15
+TAILSCALE_CHECK_ONROAD_SEC=60
+
+BRIDGE_BACKOFF_SEQUENCE=(1 2 4 8)
+BRIDGE_BACKOFF_MAX_SEC=8
+BRIDGE_HEALTHY_RESET_SEC=30
+bridge_backoff_index=0
+bridge_backoff_sec=0
+bridge_last_start_epoch=0
+
+tailscale_next_check_epoch=0
+
 mkdir -p "$LOG_DIR" "$RUN_DIR"
 
 log() {
@@ -1083,6 +913,10 @@ read_param() {
 
 is_onroad() {
   [ "$(read_param IsOnroad)" = "1" ]
+}
+
+is_tailscale_enabled() {
+  [ "$(read_param CommaViewTailscaleEnabled)" = "1" ]
 }
 
 is_running_pidfile() {
@@ -1119,90 +953,111 @@ start_bg() {
   echo $! > "$RUN_DIR/${name}.pid"
 }
 
-ensure_bridge_prod() {
+reset_bridge_backoff() {
+  bridge_backoff_index=0
+  bridge_backoff_sec=0
+}
+
+set_next_bridge_backoff() {
+  bridge_backoff_sec="${BRIDGE_BACKOFF_SEQUENCE[$bridge_backoff_index]}"
+  if [ "$bridge_backoff_sec" -gt "$BRIDGE_BACKOFF_MAX_SEC" ]; then
+    bridge_backoff_sec="$BRIDGE_BACKOFF_MAX_SEC"
+  fi
+  if [ "$bridge_backoff_index" -lt "$(( ${#BRIDGE_BACKOFF_SEQUENCE[@]} - 1 ))" ]; then
+    bridge_backoff_index=$((bridge_backoff_index + 1))
+  fi
+}
+
+ensure_bridge_running_prod() {
   if is_running_pidfile bridge; then
-    local pid cmd
-    pid="$(cat "$RUN_DIR/bridge.pid")"
+    local pid cmd now arg_count
+    pid="$(cat "$RUN_DIR/bridge.pid" 2>/dev/null || true)"
     cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-    if echo "$cmd" | grep -q -- '--dev'; then
-      log "bridge running in dev while onroad; restarting prod"
+    arg_count="$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' ')"
+    if ! echo "$cmd" | grep -Fq -- '/data/commaview/commaview-bridge'; then
+      log "bridge pidfile command mismatch; restarting"
       stop_pidfile bridge
-    fi
-  fi
-  if ! is_running_pidfile bridge; then
-    cd /data/openpilot
-    log "starting bridge (prod)"
-    start_bg bridge nice -n 19 /data/commaview/commaview-bridge
-  fi
-}
-
-ensure_bridge_dev() {
-  if is_running_pidfile bridge; then
-    local pid cmd
-    pid="$(cat "$RUN_DIR/bridge.pid")"
-    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-    if ! echo "$cmd" | grep -q -- '--dev'; then
-      log "bridge running in prod while offroad; restarting dev"
+    elif [ "${arg_count:-0}" -gt 1 ]; then
+      log "bridge has unexpected extra arguments; restarting prod-only"
       stop_pidfile bridge
-    fi
-  fi
-  if ! is_running_pidfile bridge; then
-    cd /data/openpilot
-    log "starting bridge (dev)"
-    start_bg bridge nice -n 19 /data/commaview/commaview-bridge --dev
-  fi
-}
-
-ensure_camerad_offroad() {
-  if pgrep -f './camerad' >/dev/null 2>&1; then
-    return 0
-  fi
-  if ! is_running_pidfile camerad_offroad; then
-    cd /data/openpilot
-    log "starting offroad camerad"
-    start_bg camerad_offroad ./system/camerad/camerad
-  fi
-}
-
-wait_for_camerad_socket() {
-  for _ in $(seq 1 30); do
-    if pgrep -f './camerad' >/dev/null 2>&1 && [ -S /tmp/visionipc_camerad ]; then
+    else
+      now="$(date +%s)"
+      if [ "$bridge_last_start_epoch" -gt 0 ] && [ $((now - bridge_last_start_epoch)) -ge "$BRIDGE_HEALTHY_RESET_SEC" ] && { [ "$bridge_backoff_sec" -ne 0 ] || [ "$bridge_backoff_index" -ne 0 ]; }; then
+        log "bridge healthy for ${BRIDGE_HEALTHY_RESET_SEC}s; resetting restart backoff"
+        reset_bridge_backoff
+      fi
       return 0
     fi
-    sleep 1
-  done
-  return 1
-}
-
-ensure_stream_encoderd() {
-  if ! is_running_pidfile encoderd_stream; then
-    cd /data/openpilot
-    log "starting encoderd --stream"
-    start_bg encoderd_stream ./system/loggerd/encoderd --stream
   fi
+
+  if [ "$bridge_backoff_sec" -gt 0 ]; then
+    log "bridge restart backoff: sleeping ${bridge_backoff_sec}s"
+    sleep "$bridge_backoff_sec"
+  fi
+
+  cd /data/openpilot
+  log "starting bridge (prod-only watchdog)"
+  start_bg bridge nice -n 19 /data/commaview/commaview-bridge
+  bridge_last_start_epoch="$(date +%s)"
+  set_next_bridge_backoff
 }
 
-stop_stream_encoderd() {
-  stop_pidfile encoderd_stream
-  pkill -f 'system/loggerd/encoderd --stream' 2>/dev/null || true
-pkill -f 'commaview-api.py' 2>/dev/null || true
-}
-
-ensure_offroad_stack() {
-  ensure_camerad_offroad
-  if ! wait_for_camerad_socket; then
-    log "offroad stack waiting: camerad socket not ready"
+ensure_tailscaled_running() {
+  [ -x "$TAILSCALED_BIN" ] || return 0
+  if is_running_pidfile tailscaled; then
     return 0
   fi
-  ensure_stream_encoderd
-  ensure_bridge_dev
+  mkdir -p "$(dirname "$TAILSCALE_SOCKET")"
+  log "starting tailscaled"
+  start_bg tailscaled "$TAILSCALED_BIN" --state "$TAILSCALE_STATE_FILE" --socket "$TAILSCALE_SOCKET"
 }
 
-ensure_onroad_stack() {
-  # Let openpilot manager own camerad/encoderd onroad.
-  stop_stream_encoderd
-  stop_pidfile camerad_offroad
-  ensure_bridge_prod
+force_tailscale_down_and_stop() {
+  if command -v tailscale >/dev/null 2>&1; then
+    tailscale --socket /data/commaview/tailscale/state/tailscaled.sock down >/dev/null 2>&1 || true
+  fi
+  if [ -x "$TAILSCALE_BIN" ]; then
+    "$TAILSCALE_BIN" --socket "$TAILSCALE_SOCKET" down >/dev/null 2>&1 || true
+  fi
+  stop_pidfile tailscaled
+  pkill -f '/data/commaview/tailscale/bin/tailscaled' 2>/dev/null || true
+}
+
+ensure_tailscale_up() {
+  [ -x "$TAILSCALE_BIN" ] || return 0
+  if ! "$TAILSCALE_BIN" --socket "$TAILSCALE_SOCKET" status --json 2>/dev/null | grep -q '"BackendState":"Running"'; then
+    "$TAILSCALE_BIN" --socket "$TAILSCALE_SOCKET" up >/dev/null 2>&1 || true
+  fi
+}
+
+ensure_tailscale_policy() {
+  local now cadence
+  now="$(date +%s)"
+  if is_onroad; then
+    cadence="$TAILSCALE_CHECK_ONROAD_SEC"
+  else
+    cadence="$TAILSCALE_CHECK_OFFROAD_SEC"
+  fi
+
+  if [ "$now" -lt "$tailscale_next_check_epoch" ]; then
+    return 0
+  fi
+  tailscale_next_check_epoch=$((now + cadence))
+
+  if is_onroad; then
+    log "tailscale policy: onroad -> force down"
+    force_tailscale_down_and_stop
+    return 0
+  fi
+
+  if is_tailscale_enabled; then
+    log "tailscale policy: offroad+enabled -> ensure running"
+    ensure_tailscaled_running
+    ensure_tailscale_up
+  else
+    log "tailscale policy: offroad+disabled -> force down"
+    force_tailscale_down_and_stop
+  fi
 }
 
 log "supervisor start"
@@ -1217,15 +1072,12 @@ while true; do
   if [ "$mode" != "$prev_mode" ]; then
     log "mode switch: ${prev_mode:-none} -> $mode"
     prev_mode="$mode"
+    tailscale_next_check_epoch=0
   fi
 
-  if [ "$mode" = "onroad" ]; then
-    ensure_onroad_stack
-  else
-    ensure_offroad_stack
-  fi
-
-  sleep 2
+  ensure_bridge_running_prod
+  ensure_tailscale_policy
+  sleep 1
 done
 SUPERVISOREOF
 
@@ -1251,11 +1103,6 @@ if [ -f /data/commaview/commaview-api.py ]; then
 fi
 
 # Launch tailscale guardian (policy daemon)
-if [ -x /data/commaview/tailscale/tailscale-guardian.sh ]; then
-  nohup /data/commaview/tailscale/tailscale-guardian.sh >> "$LOG/tailscale-guardian.log" 2>&1 &
-  echo $! > "$RUN/tailscale_guardian.pid"
-fi
-
 echo "CommaView supervisor started"
 STARTEOF
 
@@ -1278,7 +1125,7 @@ if [ -f "$RUN/supervisor.pid" ]; then
 fi
 
 # stop children tracked by pidfiles
-for f in bridge.pid encoderd_stream.pid camerad_offroad.pid commaview_api.pid tailscale_guardian.pid tailscaled.pid; do
+for f in bridge.pid commaview_api.pid tailscaled.pid; do
   if [ -f "$RUN/$f" ]; then
     pid=$(cat "$RUN/$f" 2>/dev/null)
     kill "$pid" 2>/dev/null || true
@@ -1291,9 +1138,7 @@ done
 # clean old strays
 pkill -f 'commaview-supervisor.sh' 2>/dev/null || true
 pkill -f '/data/commaview/commaview-bridge' 2>/dev/null || true
-pkill -f 'system/loggerd/encoderd --stream' 2>/dev/null || true
 pkill -f 'commaview-api.py' 2>/dev/null || true
-pkill -f 'tailscale-guardian.sh' 2>/dev/null || true
 pkill -f '/data/commaview/tailscale/bin/tailscaled' 2>/dev/null || true
 
 if [ -x /data/commaview/tailscale/bin/tailscale ]; then
@@ -1328,7 +1173,6 @@ chmod +x \
   "$INSTALL_DIR/uninstall.sh" \
   "$INSTALL_DIR/upgrade.sh" \
   "$INSTALL_DIR/tailscale/install_tailscale_runtime.sh" \
-  "$INSTALL_DIR/tailscale/tailscale-guardian.sh" \
   "$INSTALL_DIR/tailscale/tailscalectl.sh"
 
 # Hook into continue.sh
@@ -1347,9 +1191,9 @@ echo ""
 echo "=== CommaView ${VERSION} installed ==="
 echo "  Source:      ${BASE_URL}/${ASSET_NAME}"
 echo "  Binary:      $INSTALL_DIR/commaview-bridge ($BINARY_SIZE)"
-echo "  Supervisor:  mode-aware onroad/offroad startup"
-echo "  Onroad:      manager encoderd + bridge(prod)"
-echo "  Offroad:     camerad + encoderd --stream + bridge(--dev)"
+echo "  Supervisor:  single-process bridge watchdog + tailscale policy"
+echo "  Bridge:      prod-only"
+echo "  Runtime:     openpilot manager owns camerad/encoderd"
 if [ "$ENABLE_TAILSCALE" = "1" ]; then
   echo "  Tailscale:   opt-in flow complete (see /data/params/d/CommaViewTailscaleEnabled)"
 fi
