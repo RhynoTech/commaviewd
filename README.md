@@ -168,7 +168,7 @@ Allowlisted paths:
 - `comma-install/install.sh`
 - `comma-install/runtime/uninstall.sh`
 - `comma-install/runtime/upgrade.sh`
-- `comma-install/commaview-api.py`
+- `comma-install/api/commaview-api.py`
 - `comma-install/tailscale/tailscalectl.sh`
 - `comma-install/tailscale/install_tailscale_runtime.sh`
 - `comma-install/runtime/commaview-supervisor.sh`

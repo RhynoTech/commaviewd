@@ -87,7 +87,7 @@ copy_required_file() {
 }
 
 required_files=(
-  "commaview-api.py"
+  "api/commaview-api.py"
   "runtime/upgrade.sh"
   "runtime/commaview-supervisor.sh"
   "runtime/start.sh"
@@ -116,7 +116,7 @@ validate_required_files() {
 }
 
 deploy_required_scripts() {
-  copy_required_file "commaview-api.py" "$INSTALL_DIR/commaview-api.py"
+  copy_required_file "api/commaview-api.py" "$INSTALL_DIR/commaview-api.py"
   copy_required_file "runtime/upgrade.sh" "$INSTALL_DIR/upgrade.sh"
 
   copy_required_file "runtime/commaview-supervisor.sh" "$INSTALL_DIR/commaview-supervisor.sh"
