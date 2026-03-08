@@ -89,6 +89,12 @@ std::string build_model_v2_json(cereal::ModelDataV2::Reader m, uint64_t log_mono
   std::string s = "{\"ts\":" + std::to_string(static_cast<double>(time(nullptr))) +
                   ",\"type\":\"modelV2\",\"data\":{";
 
+  s += "\"frameId\":" + std::to_string(static_cast<unsigned long long>(m.getFrameId())) + ",";
+  s += "\"frameIdExtra\":" + std::to_string(static_cast<unsigned long long>(m.getFrameIdExtra())) + ",";
+  s += "\"frameAge\":" + std::to_string(static_cast<unsigned long long>(m.getFrameAge())) + ",";
+  s += "\"frameDropPerc\":" + std::to_string(static_cast<double>(m.getFrameDropPerc())) + ",";
+  s += "\"timestampEof\":" + std::to_string(static_cast<unsigned long long>(m.getTimestampEof())) + ",";
+
   s += "\"laneLines\":[";
   auto lanes = m.getLaneLines();
   auto lane_probs = m.getLaneLineProbs();

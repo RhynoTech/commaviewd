@@ -4,7 +4,7 @@
 set -euo pipefail
 
 VERSION="0.1.2-alpha"
-RELEASE_TAG="v0.1.2-alpha"
+RELEASE_TAG="v0.1.3-alpha"
 GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/CommaView}"
 ASSET_NAME="${COMMAVIEW_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
 ASSET_SHA_NAME="${ASSET_NAME}.sha256"
