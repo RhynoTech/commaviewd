@@ -312,6 +312,10 @@ fi
 
 maybe_configure_tailscale_opt_in
 
+echo "Starting CommaView runtime..."
+bash "$INSTALL_DIR/start.sh"
+sleep 1
+
 echo ""
 echo "=== CommaView ${VERSION} installed ==="
 echo "  Source:      ${BASE_URL}/${ASSET_NAME}"
