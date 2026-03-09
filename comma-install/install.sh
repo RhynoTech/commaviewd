@@ -9,6 +9,8 @@ GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/CommaView}"
 ASSET_NAME="${COMMAVIEW_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
 ASSET_SHA_NAME="${ASSET_NAME}.sha256"
 BASE_URL="${COMMAVIEW_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
+INSTALLER_REF="${COMMAVIEW_INSTALLER_REF:-master}"
+INSTALLER_RAW_BASE="${COMMAVIEW_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma-install}"
 
 INSTALL_DIR="/data/commaview"
 CONTINUE_SH="/data/continue.sh"
@@ -97,6 +99,39 @@ required_files=(
   "tailscale/tailscalectl.sh"
 )
 
+fetch_missing_required_files() {
+  local rel dst url dir
+  local failed=()
+
+  for rel in "${required_files[@]}"; do
+    dst="$SCRIPT_DIR/$rel"
+    [ -f "$dst" ] && continue
+
+    url="${INSTALLER_RAW_BASE}/$rel"
+    dir="$(dirname "$dst")"
+
+    if ! mkdir -p "$dir"; then
+      echo "ERROR: unable to create directory for installer companion files: $dir" >&2
+      failed+=("$rel")
+      continue
+    fi
+
+    echo "Fetching missing installer companion: $rel"
+    if ! curl -fsSL --retry 3 --retry-delay 1 -o "$dst" "$url"; then
+      rm -f "$dst"
+      failed+=("$rel")
+    fi
+  done
+
+  if [ "${#failed[@]}" -gt 0 ]; then
+    echo "ERROR: failed to fetch required installer files from ${INSTALLER_RAW_BASE}:" >&2
+    for rel in "${failed[@]}"; do
+      echo "  - $rel" >&2
+    done
+    exit 1
+  fi
+}
+
 validate_required_files() {
   local missing=()
   local rel
@@ -131,6 +166,9 @@ deploy_required_scripts() {
 need_cmd curl
 need_cmd tar
 need_cmd sha256sum
+
+fetch_missing_required_files
+validate_required_files
 
 echo "=== CommaView ${VERSION} Installer ==="
 echo "Release: ${RELEASE_TAG}"
@@ -222,8 +260,6 @@ maybe_configure_tailscale_opt_in() {
     return 0
   done
 }
-
-validate_required_files
 
 echo "Stopping existing CommaView processes..."
 pkill -f "commaview-supervisor.sh" 2>/dev/null || true
