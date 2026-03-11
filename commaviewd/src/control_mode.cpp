@@ -33,8 +33,6 @@ constexpr const char* kTailscaleAuthKeyFile = "/data/commaview/tailscale/authkey
 constexpr const char* kControlLogFile = "/data/commaview/logs/commaviewd-control.log";
 constexpr int kDefaultApiPort = 5002;
 
-volatile std::sig_atomic_t g_stop = 0;
-
 struct TailscaleSnapshot {
   bool enabled = false;
   bool onroad = false;
@@ -42,10 +40,6 @@ struct TailscaleSnapshot {
   bool auth_key_pending = false;
   std::string backend_state = "unknown";
 };
-
-void signal_handler(int) {
-  g_stop = 1;
-}
 
 std::string trim_copy(const std::string& in) {
   size_t s = 0;
@@ -442,9 +436,6 @@ int run_control_mode(int argc, char* argv[]) {
   }
 
   const std::string api_token = load_api_token();
-
-  std::signal(SIGINT, signal_handler);
-  std::signal(SIGTERM, signal_handler);
 
   commaview::api::HttpServer server(port, [api_token](const commaview::api::HttpRequest& req) {
     if (req.method == "OPTIONS") {

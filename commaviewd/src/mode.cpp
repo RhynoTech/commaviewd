@@ -5,13 +5,6 @@
 namespace commaview::runtime {
 namespace {
 
-bool is_bridge_program_name(const char* argv0) {
-  if (argv0 == nullptr) return false;
-  const char* base = std::strrchr(argv0, '/');
-  base = base ? (base + 1) : argv0;
-  return std::strstr(base, "commaview-bridge") != nullptr;
-}
-
 bool is_help_flag(const char* arg) {
   return arg != nullptr && (
       std::strcmp(arg, "-h") == 0 ||
@@ -30,8 +23,6 @@ std::string mode_usage(const char* argv0) {
   usage += "\nModes:\n";
   usage += "  bridge   Run streaming bridge runtime\n";
   usage += "  control  Run control/API runtime\n";
-  usage += "\nCompatibility:\n";
-  usage += "  If launched as commaview-bridge with no mode argument, bridge mode is implied.\n";
   return usage;
 }
 
@@ -44,12 +35,6 @@ ParsedMode parse_mode(int argc, char* argv[]) {
   }
 
   if (argc < 2) {
-    if (is_bridge_program_name(argv[0])) {
-      parsed.ok = true;
-      parsed.mode = RuntimeMode::kBridge;
-      parsed.mode_arg_index = -1;
-      return parsed;
-    }
     parsed.error = "missing mode argument";
     return parsed;
   }

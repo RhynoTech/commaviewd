@@ -28,14 +28,13 @@ static void test_explicit_control_mode() {
   assert(parsed.mode_arg_index == 1);
 }
 
-static void test_legacy_bridge_implicit_mode() {
+static void test_missing_mode_fails_even_with_legacy_name() {
   char arg0[] = "commaview-bridge";
   char* argv[] = {arg0};
 
   ParsedMode parsed = commaview::runtime::parse_mode(1, argv);
-  assert(parsed.ok);
-  assert(parsed.mode == RuntimeMode::kBridge);
-  assert(parsed.mode_arg_index == -1);
+  assert(!parsed.ok);
+  assert(parsed.error == "missing mode argument");
 }
 
 static void test_unknown_mode_fails() {
@@ -51,7 +50,7 @@ static void test_unknown_mode_fails() {
 int main() {
   test_explicit_bridge_mode();
   test_explicit_control_mode();
-  test_legacy_bridge_implicit_mode();
+  test_missing_mode_fails_even_with_legacy_name();
   test_unknown_mode_fails();
   return 0;
 }

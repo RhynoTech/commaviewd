@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CommaView installer for comma 4 (AGNOS/sunnypilot)
-# Installs prebuilt C++ bridge bundle from pinned GitHub release.
+# Installs prebuilt C++ commaviewd bundle from pinned GitHub release.
 set -euo pipefail
 
 VERSION="0.1.4-alpha"

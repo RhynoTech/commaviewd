@@ -3,7 +3,7 @@ set +e
 RUN=/data/commaview/run
 
 # stop runtime tracked by pidfiles
-for f in bridge.pid control.pid tailscaled.pid; do
+for f in bridge.pid control.pid; do
   if [ -f "$RUN/$f" ]; then
     pid=$(cat "$RUN/$f" 2>/dev/null)
     kill "$pid" 2>/dev/null || true
