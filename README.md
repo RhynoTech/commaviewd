@@ -39,7 +39,7 @@ Security policy for migration target: tailscale is forced down onroad, and offro
 Install/update CommaView on comma from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma-install/install.sh | ssh comma@<comma-ip> bash
+curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma4/install.sh | ssh comma@<comma-ip> bash
 ```
 
 Optional Tailscale access (opt-in):
@@ -47,7 +47,7 @@ Optional Tailscale access (opt-in):
 ```bash
 # auth key via env
 COMMAVIEW_TAILSCALE_AUTHKEY="tskey-auth-..." \
-  curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma-install/install.sh \
+  curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma4/install.sh \
   | ssh comma@<comma-ip> 'bash -s -- --enable-tailscale'
 ```
 
@@ -66,7 +66,7 @@ APK distribution remains private (not published in GitHub releases).
 ### Upgrade existing install (offroad only)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma-install/runtime/upgrade.sh | ssh comma@<comma-ip> bash
+curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma4/upgrade.sh | ssh comma@<comma-ip> bash
 ```
 
 The upgrader hard-blocks when `IsOnroad=1`. Park first, then run upgrade.
@@ -145,14 +145,14 @@ Setup progress is persisted, so if the app is restarted during setup it should r
 Build release bundle + checksums:
 
 ```bash
-comma-install/build-release-bundle.sh v0.1.4-alpha
+tools/release/comma4-build-bundle.sh v0.1.4-alpha
 ```
 
 Outputs:
 - `release/v0.1.4-alpha/commaview-comma4-v0.1.4-alpha.tar.gz`
 - `release/v0.1.4-alpha/commaview-comma4-v0.1.4-alpha.tar.gz.sha256`
 
-Then upload both files to GitHub Release `v0.1.4-alpha` (or next tag), and update `comma-install/install.sh` pinned tag as needed.
+Then upload both files to GitHub Release `v0.1.4-alpha` (or next tag), and update `comma4/install.sh` pinned tag as needed.
 
 ---
 
