@@ -19,7 +19,6 @@ required_stage_files=(
   "stop.sh"
   "uninstall.sh"
   "tailscale/install_tailscale_runtime.sh"
-  "tailscale/tailscalectl.sh"
 )
 
 validate_stage_contents() {
@@ -50,7 +49,6 @@ install -m 755 "${ROOT}/comma4/start.sh" "${STAGE_DIR}/start.sh"
 install -m 755 "${ROOT}/comma4/stop.sh" "${STAGE_DIR}/stop.sh"
 install -m 755 "${ROOT}/comma4/uninstall.sh" "${STAGE_DIR}/uninstall.sh"
 install -m 755 "${ROOT}/comma4/install_tailscale_runtime.sh" "${STAGE_DIR}/tailscale/install_tailscale_runtime.sh"
-install -m 755 "${ROOT}/comma4/tailscalectl.sh" "${STAGE_DIR}/tailscale/tailscalectl.sh"
 
 cat > "${STAGE_DIR}/VERSION" <<VER
 ${TAG}

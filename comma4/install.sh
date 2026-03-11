@@ -94,7 +94,6 @@ required_files=(
   "stop.sh"
   "uninstall.sh"
   "install_tailscale_runtime.sh"
-  "tailscalectl.sh"
 )
 
 fetch_missing_required_files() {
@@ -154,7 +153,6 @@ deploy_required_scripts() {
   copy_required_file "stop.sh" "$INSTALL_DIR/stop.sh"
   copy_required_file "uninstall.sh" "$INSTALL_DIR/uninstall.sh"
   copy_required_file "install_tailscale_runtime.sh" "$INSTALL_DIR/tailscale/install_tailscale_runtime.sh"
-  copy_required_file "tailscalectl.sh" "$INSTALL_DIR/tailscale/tailscalectl.sh"
 }
 
 

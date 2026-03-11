@@ -9,9 +9,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
@@ -20,10 +23,25 @@ namespace commaview::runtime {
 namespace {
 
 constexpr const char* kInstallDir = "/data/commaview";
-constexpr const char* kTailscaleCtl = "/data/commaview/tailscale/tailscalectl.sh";
+constexpr const char* kParamsDir = "/data/params/d";
+constexpr const char* kTailscaleDir = "/data/commaview/tailscale";
+constexpr const char* kTailscaleBin = "/data/commaview/tailscale/bin/tailscale";
+constexpr const char* kTailscaledBin = "/data/commaview/tailscale/bin/tailscaled";
+constexpr const char* kTailscaleSocket = "/data/commaview/tailscale/state/tailscaled.sock";
+constexpr const char* kTailscaleStateFile = "/data/commaview/tailscale/state/tailscaled.state";
+constexpr const char* kTailscaleAuthKeyFile = "/data/commaview/tailscale/authkey";
+constexpr const char* kControlLogFile = "/data/commaview/logs/commaviewd-control.log";
 constexpr int kDefaultApiPort = 5002;
 
 volatile std::sig_atomic_t g_stop = 0;
+
+struct TailscaleSnapshot {
+  bool enabled = false;
+  bool onroad = false;
+  bool daemon_running = false;
+  bool auth_key_pending = false;
+  std::string backend_state = "unknown";
+};
 
 void signal_handler(int) {
   g_stop = 1;
@@ -53,6 +71,10 @@ std::string json_escape(const std::string& in) {
   return out;
 }
 
+bool file_executable(const char* path) {
+  return path != nullptr && access(path, X_OK) == 0;
+}
+
 std::string read_file_trimmed(const std::string& path) {
   std::ifstream f(path);
   if (!f) return "";
@@ -61,8 +83,23 @@ std::string read_file_trimmed(const std::string& path) {
   return trim_copy(ss.str());
 }
 
+bool write_file(const std::string& path, const std::string& value, mode_t mode = 0644) {
+  int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, mode);
+  if (fd < 0) return false;
+  const ssize_t want = static_cast<ssize_t>(value.size());
+  const ssize_t wrote = write(fd, value.data(), static_cast<size_t>(want));
+  close(fd);
+  return wrote == want;
+}
+
 std::string read_param(const char* key) {
-  return read_file_trimmed(std::string("/data/params/d/") + key);
+  return read_file_trimmed(std::string(kParamsDir) + "/" + key);
+}
+
+bool write_param(const char* key, const char* value) {
+  mkdir(kParamsDir, 0755);
+  const std::string path = std::string(kParamsDir) + "/" + key;
+  return write_file(path, value, 0644);
 }
 
 bool is_onroad() {
@@ -152,66 +189,195 @@ bool run_command(const std::vector<std::string>& args,
   return true;
 }
 
-std::string tailscale_status() {
-  if (access(kTailscaleCtl, X_OK) != 0) {
-    return "{\"enabled\":false,\"onroad\":false,\"daemonRunning\":false,\"backendState\":\"missing\",\"available\":false}";
-  }
-
+bool tailscaled_running() {
   int rc = 0;
   std::string out;
   std::string err;
-  if (!run_command({kTailscaleCtl, "status", "--json"}, &rc, &out, &err)) {
-    return "{\"enabled\":false,\"onroad\":false,\"daemonRunning\":false,\"backendState\":\"error\",\"available\":true,\"error\":\"spawn failed\"}";
+  if (!run_command({"pgrep", "-f", kTailscaledBin}, &rc, &out, &err)) return false;
+  return rc == 0;
+}
+
+bool start_tailscaled() {
+  if (!file_executable(kTailscaledBin)) return false;
+  if (tailscaled_running()) return true;
+
+  mkdir("/data/commaview/logs", 0755);
+  mkdir("/data/commaview/tailscale", 0755);
+  mkdir("/data/commaview/tailscale/state", 0755);
+
+  pid_t pid = fork();
+  if (pid < 0) return false;
+
+  if (pid == 0) {
+    setsid();
+
+    int logfd = open(kControlLogFile, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (logfd >= 0) {
+      dup2(logfd, STDOUT_FILENO);
+      dup2(logfd, STDERR_FILENO);
+      close(logfd);
+    }
+
+    std::string state_arg = std::string("--state=") + kTailscaleStateFile;
+    std::string socket_arg = std::string("--socket=") + kTailscaleSocket;
+    execl(kTailscaledBin, kTailscaledBin, state_arg.c_str(), socket_arg.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
   }
 
-  out = trim_copy(out);
-  if (rc != 0) {
-    std::string msg = trim_copy(err.empty() ? out : err);
-    if (msg.empty()) msg = "tailscalectl status failed";
-    return "{\"enabled\":false,\"onroad\":false,\"daemonRunning\":false,\"backendState\":\"error\",\"available\":true,\"error\":\"" + json_escape(msg) + "\"}";
-  }
+  sleep(1);
+  return tailscaled_running();
+}
 
-  if (out.empty()) {
-    return "{\"enabled\":false,\"onroad\":false,\"daemonRunning\":false,\"backendState\":\"unknown\",\"available\":true}";
+void force_tailscale_down_and_stop() {
+  if (file_executable(kTailscaleBin)) {
+    int rc = 0;
+    std::string out;
+    std::string err;
+    (void)run_command({kTailscaleBin, "--socket", kTailscaleSocket, "down"}, &rc, &out, &err);
   }
+  int rc = 0;
+  std::string out;
+  std::string err;
+  (void)run_command({"pkill", "-f", kTailscaledBin}, &rc, &out, &err);
+}
 
-  return out;
+std::string parse_backend_state(const std::string& status_json) {
+  const std::string key = "\"BackendState\"";
+  size_t pos = status_json.find(key);
+  if (pos == std::string::npos) return "unknown";
+  pos = status_json.find(':', pos + key.size());
+  if (pos == std::string::npos) return "unknown";
+  pos = status_json.find('"', pos + 1);
+  if (pos == std::string::npos) return "unknown";
+  size_t end = status_json.find('"', pos + 1);
+  if (end == std::string::npos) return "unknown";
+  return status_json.substr(pos + 1, end - (pos + 1));
+}
+
+std::string tailscale_backend_state() {
+  if (!file_executable(kTailscaleBin)) return "missing";
+  int rc = 0;
+  std::string out;
+  std::string err;
+  if (!run_command({kTailscaleBin, "--socket", kTailscaleSocket, "status", "--json"}, &rc, &out, &err)) {
+    return "error";
+  }
+  if (rc != 0) return "error";
+  const std::string parsed = parse_backend_state(out);
+  return parsed.empty() ? "unknown" : parsed;
+}
+
+bool authkey_pending() {
+  struct stat st{};
+  return stat(kTailscaleAuthKeyFile, &st) == 0 && st.st_size > 0;
+}
+
+std::string read_authkey() {
+  return read_file_trimmed(kTailscaleAuthKeyFile);
+}
+
+bool write_authkey(const std::string& key) {
+  mkdir(kTailscaleDir, 0755);
+  return write_file(kTailscaleAuthKeyFile, key, 0600);
+}
+
+TailscaleSnapshot capture_tailscale_snapshot() {
+  TailscaleSnapshot s;
+  s.enabled = read_param("CommaViewTailscaleEnabled") == "1";
+  s.onroad = is_onroad();
+  s.daemon_running = tailscaled_running();
+  s.backend_state = tailscale_backend_state();
+  s.auth_key_pending = authkey_pending();
+  return s;
+}
+
+std::string snapshot_json(const TailscaleSnapshot& s) {
+  std::ostringstream out;
+  out << "{"
+      << "\"enabled\":" << (s.enabled ? "true" : "false") << ","
+      << "\"onroad\":" << (s.onroad ? "true" : "false") << ","
+      << "\"daemonRunning\":" << (s.daemon_running ? "true" : "false") << ","
+      << "\"backendState\":\"" << json_escape(s.backend_state) << "\","
+      << "\"authKeyPending\":" << (s.auth_key_pending ? "true" : "false")
+      << "}";
+  return out.str();
+}
+
+std::string command_result_json(bool ok, bool available, const TailscaleSnapshot& snap, const std::string& error = "") {
+  std::ostringstream out;
+  out << "{"
+      << "\"ok\":" << (ok ? "true" : "false") << ","
+      << "\"available\":" << (available ? "true" : "false") << ","
+      << "\"enabled\":" << (snap.enabled ? "true" : "false") << ","
+      << "\"onroad\":" << (snap.onroad ? "true" : "false") << ","
+      << "\"daemonRunning\":" << (snap.daemon_running ? "true" : "false") << ","
+      << "\"backendState\":\"" << json_escape(snap.backend_state) << "\","
+      << "\"authKeyPending\":" << (snap.auth_key_pending ? "true" : "false");
+  if (!error.empty()) {
+    out << ",\"error\":\"" << json_escape(error) << "\"";
+  }
+  out << "}";
+  return out.str();
+}
+
+std::string tailscale_status() {
+  if (!file_executable(kTailscaleBin) || !file_executable(kTailscaledBin)) {
+    return "{\"enabled\":false,\"onroad\":false,\"daemonRunning\":false,\"backendState\":\"missing\",\"authKeyPending\":false,\"available\":false}";
+  }
+  return snapshot_json(capture_tailscale_snapshot());
 }
 
 std::string tailscale_set_enabled(bool enable) {
-  if (access(kTailscaleCtl, X_OK) != 0) {
-    return "{\"ok\":false,\"error\":\"tailscalectl missing\",\"available\":false}";
+  const bool available = file_executable(kTailscaleBin) && file_executable(kTailscaledBin);
+  if (!available) {
+    return command_result_json(false, false, capture_tailscale_snapshot(), "tailscale runtime missing");
   }
 
   const auto action = commaview::control::decide_tailscale_action(is_onroad(), enable);
   if (action == commaview::control::TailscalePolicyAction::kForceDown) {
-    // Hard policy gate: never allow enabling while onroad.
-    (void)run_command({kTailscaleCtl, "disable", "--json"}, nullptr, nullptr, nullptr);
-    return "{\"ok\":false,\"available\":true,\"error\":\"onroad: tailscale forced down\"}";
+    write_param("CommaViewTailscaleEnabled", "0");
+    force_tailscale_down_and_stop();
+    return command_result_json(false, true, capture_tailscale_snapshot(), "onroad: tailscale forced down");
+  }
+
+  if (!enable) {
+    write_param("CommaViewTailscaleEnabled", "0");
+    force_tailscale_down_and_stop();
+    return command_result_json(true, true, capture_tailscale_snapshot());
+  }
+
+  write_param("CommaViewTailscaleEnabled", "1");
+  if (!start_tailscaled()) {
+    return command_result_json(false, true, capture_tailscale_snapshot(), "failed to start tailscaled");
+  }
+
+  std::vector<std::string> args = {kTailscaleBin, "--socket", kTailscaleSocket, "up"};
+  std::string authkey = read_authkey();
+  if (!authkey.empty()) {
+    args.push_back("--authkey");
+    args.push_back(authkey);
+    args.push_back("--accept-routes");
+    args.push_back("--reset");
+  } else {
+    args.push_back("--accept-routes");
   }
 
   int rc = 0;
   std::string out;
   std::string err;
-  const char* cmd = enable ? "enable" : "disable";
-  if (!run_command({kTailscaleCtl, cmd, "--json"}, &rc, &out, &err)) {
-    return "{\"ok\":false,\"available\":true,\"error\":\"spawn failed\"}";
+  if (!run_command(args, &rc, &out, &err)) {
+    return command_result_json(false, true, capture_tailscale_snapshot(), "tailscale up spawn failed");
   }
-
-  out = trim_copy(out);
   if (rc != 0) {
     std::string msg = trim_copy(err.empty() ? out : err);
-    if (msg.empty()) msg = std::string("tailscalectl ") + cmd + " failed";
-    return "{\"ok\":false,\"available\":true,\"error\":\"" + json_escape(msg) + "\"}";
+    if (msg.empty()) msg = "tailscale up failed";
+    return command_result_json(false, true, capture_tailscale_snapshot(), msg);
   }
 
-  if (out.empty()) out = "{}";
-  // Ensure app sees ok/available fields.
-  if (out.back() == '}') {
-    if (out.size() > 2) out.pop_back(), out += ",\"ok\":true,\"available\":true}";
-    else out = "{\"ok\":true,\"available\":true}";
+  if (!authkey.empty()) {
+    unlink(kTailscaleAuthKeyFile);
   }
-  return out;
+  return command_result_json(true, true, capture_tailscale_snapshot());
 }
 
 bool extract_auth_key(const std::string& body, std::string* authkey_out) {
@@ -237,33 +403,17 @@ bool extract_auth_key(const std::string& body, std::string* authkey_out) {
 }
 
 std::string tailscale_set_authkey(const std::string& authkey) {
-  if (access(kTailscaleCtl, X_OK) != 0) {
-    return "{\"ok\":false,\"error\":\"tailscalectl missing\",\"available\":false}";
+  const bool available = file_executable(kTailscaleBin) && file_executable(kTailscaledBin);
+  if (!available) {
+    return command_result_json(false, false, capture_tailscale_snapshot(), "tailscale runtime missing");
   }
   if (authkey.empty()) {
-    return "{\"ok\":false,\"error\":\"auth key required\",\"available\":true}";
+    return command_result_json(false, true, capture_tailscale_snapshot(), "auth key required");
   }
-
-  int rc = 0;
-  std::string out;
-  std::string err;
-  if (!run_command({kTailscaleCtl, "set-auth-key", authkey, "--json"}, &rc, &out, &err)) {
-    return "{\"ok\":false,\"available\":true,\"error\":\"spawn failed\"}";
+  if (!write_authkey(authkey)) {
+    return command_result_json(false, true, capture_tailscale_snapshot(), "failed to write auth key");
   }
-
-  out = trim_copy(out);
-  if (rc != 0) {
-    std::string msg = trim_copy(err.empty() ? out : err);
-    if (msg.empty()) msg = "tailscalectl set-auth-key failed";
-    return "{\"ok\":false,\"available\":true,\"error\":\"" + json_escape(msg) + "\"}";
-  }
-
-  if (out.empty()) out = "{}";
-  if (out.back() == '}') {
-    if (out.size() > 2) out.pop_back(), out += ",\"ok\":true,\"available\":true}";
-    else out = "{\"ok\":true,\"available\":true}";
-  }
-  return out;
+  return command_result_json(true, true, capture_tailscale_snapshot());
 }
 
 bool is_authorized(const commaview::api::HttpRequest& req, const std::string& token) {
@@ -309,10 +459,10 @@ int run_control_mode(int argc, char* argv[]) {
         return make_json(200, tailscale_status());
       }
       if (req.path == "/commaview/version") {
-        return make_json(200, "{\"version\":\"0.1.3-alpha\"}");
+        return make_json(200, "{\"version\":\"0.1.4-alpha\"}");
       }
       if (req.path == "/commaview/status") {
-        std::string body = "{\"version\":\"0.1.3-alpha\",\"api_port\":5002,\"tailscale\":" + tailscale_status() + "}";
+        std::string body = "{\"version\":\"0.1.4-alpha\",\"api_port\":5002,\"tailscale\":" + tailscale_status() + "}";
         return make_json(200, body);
       }
       return make_json(404, "{\"error\":\"not found\"}");

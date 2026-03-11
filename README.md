@@ -84,9 +84,9 @@ ssh comma@<comma-ip> 'bash /data/commaview/uninstall.sh'
 On comma device:
 
 ```bash
-bash /data/commaview/tailscale/tailscalectl.sh status --json
-bash /data/commaview/tailscale/tailscalectl.sh enable
-bash /data/commaview/tailscale/tailscalectl.sh disable
+curl -sS http://127.0.0.1:5002/tailscale/status
+curl -sS -X POST -H "X-CommaView-Token: <token>" http://127.0.0.1:5002/tailscale/enable
+curl -sS -X POST -H "X-CommaView-Token: <token>" http://127.0.0.1:5002/tailscale/disable
 ```
 
 Logs:
@@ -95,7 +95,7 @@ Logs:
 - `/data/commaview/logs/tailscale-install.log`
 
 Rollback:
-- disable remote access: `bash /data/commaview/tailscale/tailscalectl.sh disable`
+- disable remote access: `curl -sS -X POST -H "X-CommaView-Token: <token>" http://127.0.0.1:5002/tailscale/disable`
 - full removal: `bash /data/commaview/uninstall.sh`
 
 ---
