@@ -15,7 +15,7 @@ CommaView provides a live camera view + telemetry HUD from a comma device to And
 ## Current architecture
 
 - **Android app** (`app/`) — HEVC receiver + HUD rendering
-- **C++ bridge** on comma (`/data/commaview/commaview-bridge`)
+- **C++ runtime** on comma (`/data/commaview/commaviewd`)
   - Video frames over TCP framing (`MSG_VIDEO`)
   - Telemetry JSON over same stream (`MSG_META`)
   - In-band control (`MSG_CONTROL`) for per-client suppression policy
@@ -55,10 +55,10 @@ Safety policy:
 - Offroad + enabled flag: supervisor policy ensures Tailscale is up
 - Installer consumes auth key once and does not persist raw key
 
-Current pinned release in installer: **`v0.1.3-alpha`**
+Current pinned release in installer: **`v0.1.4-alpha`**
 
 Release assets:
-- https://github.com/RhynoTech/CommaView/releases/tag/v0.1.3-alpha
+- https://github.com/RhynoTech/CommaView/releases/tag/v0.1.4-alpha
 
 APK distribution remains private (not published in GitHub releases).
 
@@ -112,7 +112,7 @@ Rollback:
 adb -s <device-id> install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Current app version target: **`0.1.3-alpha`**
+Current app version target: **`0.1.4-alpha`**
 
 ### First-run onboarding (install-first redesign)
 
@@ -143,14 +143,14 @@ Setup progress is persisted, so if the app is restarted during setup it should r
 Build release bundle + checksums:
 
 ```bash
-comma-install/build-release-bundle.sh v0.1.3-alpha
+comma-install/build-release-bundle.sh v0.1.4-alpha
 ```
 
 Outputs:
-- `release/v0.1.3-alpha/commaview-comma4-v0.1.3-alpha.tar.gz`
-- `release/v0.1.3-alpha/commaview-comma4-v0.1.3-alpha.tar.gz.sha256`
+- `release/v0.1.4-alpha/commaview-comma4-v0.1.4-alpha.tar.gz`
+- `release/v0.1.4-alpha/commaview-comma4-v0.1.4-alpha.tar.gz.sha256`
 
-Then upload both files to GitHub Release `v0.1.3-alpha` (or next tag), and update `comma-install/install.sh` pinned tag as needed.
+Then upload both files to GitHub Release `v0.1.4-alpha` (or next tag), and update `comma-install/install.sh` pinned tag as needed.
 
 ---
 

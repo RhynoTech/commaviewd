@@ -9,7 +9,7 @@ import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-VERSION = "0.1.2-alpha"
+VERSION = "0.1.4-alpha"
 INSTALL_DIR = "/data/commaview"
 TAILSCALECTL = f"{INSTALL_DIR}/tailscale/tailscalectl.sh"
 
@@ -307,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
                 "authRequired": bool(API_TOKEN),
                 "services": {
                     "commaview_supervisor": is_running("commaview-supervisor.sh"),
-                    "commaview_bridge": is_running("/data/commaview/commaview-bridge"),
+                    "commaview_bridge": is_running("/data/commaview/commaviewd"),
                     "commaview_api": True,
                 },
                 "api_port": 5002,

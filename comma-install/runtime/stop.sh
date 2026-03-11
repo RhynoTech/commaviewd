@@ -17,9 +17,9 @@ for f in bridge.pid control.pid supervisor.pid commaview_api.pid tailscaled.pid;
 done
 
 # clean old strays
-pkill -f '/data/commaview/commaview-bridge bridge' 2>/dev/null || true
-pkill -f '/data/commaview/commaview-bridge control' 2>/dev/null || true
-pkill -f '/data/commaview/commaview-bridge' 2>/dev/null || true
+pkill -f '/data/commaview/commaviewd bridge' 2>/dev/null || true
+pkill -f '/data/commaview/commaviewd control' 2>/dev/null || true
+pkill -f '/data/commaview/commaviewd' 2>/dev/null || true
 pkill -f 'commaview-supervisor.sh' 2>/dev/null || true
 pkill -f 'commaview-api.py' 2>/dev/null || true
 pkill -f '/data/commaview/tailscale/bin/tailscaled' 2>/dev/null || true

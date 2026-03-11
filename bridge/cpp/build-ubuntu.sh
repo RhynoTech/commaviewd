@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build CommaView bridge/runtime binaries on Ubuntu Node.
+# Build CommaView runtime binaries on Ubuntu Node.
 # Outputs:
-#   ./commaview-bridge-host      (x86_64 sanity binary, commaviewd entry with bridge compatibility)
-#   ./commaview-bridge-aarch64   (comma4 deployable target)
+#   ./commaviewd-host      (x86_64 sanity binary, commaviewd entry with bridge compatibility)
+#   ./commaviewd-aarch64   (comma4 deployable target)
 #   ./lib/libcapnp-0.8.0.so      (deploy-side runtime dep)
 #   ./lib/libkj-0.8.0.so         (deploy-side runtime dep)
 #
@@ -25,8 +25,8 @@ RUNTIME_BRIDGE_MODE_SRC="$OUT_DIR/src/runtime/bridge_mode.cpp"
 RUNTIME_CONTROL_MODE_SRC="$OUT_DIR/src/runtime/control_mode.cpp"
 API_HTTP_SERVER_SRC="$OUT_DIR/src/api/http_server.cpp"
 
-HOST_OUT="$OUT_DIR/commaview-bridge-host"
-ARM_OUT="$OUT_DIR/commaview-bridge-aarch64"
+HOST_OUT="$OUT_DIR/commaviewd-host"
+ARM_OUT="$OUT_DIR/commaviewd-aarch64"
 BUNDLE_LIB_DIR="$OUT_DIR/lib"
 PATCHED_MSGQ_LOCAL="${PATCHED_MSGQ_LOCAL:-$OUT_DIR/msgq_patched.cc}"
 

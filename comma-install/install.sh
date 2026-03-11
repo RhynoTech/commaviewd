@@ -3,8 +3,8 @@
 # Installs prebuilt C++ bridge bundle from pinned GitHub release.
 set -euo pipefail
 
-VERSION="0.1.2-alpha"
-RELEASE_TAG="v0.1.3-alpha"
+VERSION="0.1.4-alpha"
+RELEASE_TAG="v0.1.4-alpha"
 GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/CommaView}"
 ASSET_NAME="${COMMAVIEW_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
 ASSET_SHA_NAME="${ASSET_NAME}.sha256"
@@ -280,7 +280,7 @@ maybe_configure_tailscale_opt_in() {
 
 echo "Stopping existing CommaView processes..."
 pkill -f "commaview-supervisor.sh" 2>/dev/null || true
-pkill -f "/data/commaview/commaview-bridge" 2>/dev/null || true
+pkill -f "/data/commaview/commaviewd" 2>/dev/null || true
 sleep 1
 
 echo "Downloading release assets..."
@@ -306,8 +306,8 @@ tar -xzf "$tmpdir/$ASSET_NAME" -C "$INSTALL_DIR" --strip-components=1
 deploy_required_scripts
 ensure_api_auth_token
 
-if [ ! -f "$INSTALL_DIR/commaview-bridge" ]; then
-  echo "ERROR: bundle missing $INSTALL_DIR/commaview-bridge" >&2
+if [ ! -f "$INSTALL_DIR/commaviewd" ]; then
+  echo "ERROR: bundle missing $INSTALL_DIR/commaviewd" >&2
   exit 1
 fi
 if [ ! -f "$INSTALL_DIR/lib/libcapnp-0.8.0.so" ] || [ ! -f "$INSTALL_DIR/lib/libkj-0.8.0.so" ]; then
@@ -315,8 +315,8 @@ if [ ! -f "$INSTALL_DIR/lib/libcapnp-0.8.0.so" ] || [ ! -f "$INSTALL_DIR/lib/lib
   exit 1
 fi
 
-chmod +x "$INSTALL_DIR/commaview-bridge"
-BINARY_SIZE=$(ls -lh "$INSTALL_DIR/commaview-bridge" | awk '{print $5}')
+chmod +x "$INSTALL_DIR/commaviewd"
+BINARY_SIZE=$(ls -lh "$INSTALL_DIR/commaviewd" | awk '{print $5}')
 
 # Hook into continue.sh
 if [ -f "$CONTINUE_SH" ] && ! grep -q "$MARKER" "$CONTINUE_SH"; then
@@ -337,7 +337,7 @@ sleep 1
 echo ""
 echo "=== CommaView ${VERSION} installed ==="
 echo "  Source:      ${BASE_URL}/${ASSET_NAME}"
-echo "  Binary:      $INSTALL_DIR/commaview-bridge ($BINARY_SIZE)"
+echo "  Binary:      $INSTALL_DIR/commaviewd ($BINARY_SIZE)"
 echo "  Supervisor:  single-process bridge watchdog + tailscale policy"
 echo "  Bridge:      prod-only"
 echo "  Runtime:     openpilot manager owns camerad/encoderd"

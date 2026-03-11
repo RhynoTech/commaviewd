@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_TAG="v0.1.2-alpha"
+DEFAULT_TAG="v0.1.4-alpha"
 TAG="$DEFAULT_TAG"
 GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/CommaView}"
 INSTALL_SCRIPT_URL="${COMMAVIEW_INSTALL_SCRIPT_URL:-https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma-install/install.sh}"

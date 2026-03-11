@@ -29,8 +29,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 BUILD_SCRIPT="$ROOT/build-ubuntu.sh"
-HOST_BIN="$ROOT/commaview-bridge-host"
-ARM_BIN="$ROOT/commaview-bridge-aarch64"
+HOST_BIN="$ROOT/commaviewd-host"
+ARM_BIN="$ROOT/commaviewd-aarch64"
 
 run_build() {
   SOURCE_DATE_EPOCH=1704067200 OP_ROOT="$OP_ROOT" "$BUILD_SCRIPT" >/dev/null
@@ -65,8 +65,8 @@ cat > "$MANIFEST" <<JSON
     "capnpc": "${capnpc_ver}"
   },
   "artifacts": {
-    "commaview-bridge-host": "${sha_host_1}",
-    "commaview-bridge-aarch64": "${sha_arm_1}",
+    "commaviewd-host": "${sha_host_1}",
+    "commaviewd-aarch64": "${sha_arm_1}",
     "runtimeEntrypoint": "commaviewd_main"
   }
 }

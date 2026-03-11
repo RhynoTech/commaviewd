@@ -96,7 +96,7 @@ adopt_existing_bridge_pidfile() {
   local pid cmd arg_count adopted_pid=""
   local -a bridge_pids=()
 
-  mapfile -t bridge_pids < <(pgrep -f '/data/commaview/commaview-bridge' 2>/dev/null || true)
+  mapfile -t bridge_pids < <(pgrep -f '/data/commaview/commaviewd' 2>/dev/null || true)
   [ "${#bridge_pids[@]}" -gt 0 ] || return 1
 
   for pid in "${bridge_pids[@]}"; do
@@ -105,7 +105,7 @@ adopt_existing_bridge_pidfile() {
     cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
     arg_count="$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' ')"
 
-    if ! echo "$cmd" | grep -Fq -- '/data/commaview/commaview-bridge'; then
+    if ! echo "$cmd" | grep -Fq -- '/data/commaview/commaviewd'; then
       continue
     fi
 
@@ -134,7 +134,7 @@ ensure_bridge_running_prod() {
     pid="$(cat "$RUN_DIR/bridge.pid" 2>/dev/null || true)"
     cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
     arg_count="$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' ')"
-    if ! echo "$cmd" | grep -Fq -- '/data/commaview/commaview-bridge'; then
+    if ! echo "$cmd" | grep -Fq -- '/data/commaview/commaviewd'; then
       log "bridge pidfile command mismatch; restarting"
       stop_pidfile bridge
     elif [ "${arg_count:-0}" -gt 1 ]; then
@@ -163,7 +163,7 @@ ensure_bridge_running_prod() {
 
   cd /data/openpilot
   log "starting bridge (prod-only watchdog)"
-  start_bg bridge nice -n 19 /data/commaview/commaview-bridge
+  start_bg bridge nice -n 19 /data/commaview/commaviewd
   bridge_last_start_epoch="$(date +%s)"
   set_next_bridge_backoff
 }
