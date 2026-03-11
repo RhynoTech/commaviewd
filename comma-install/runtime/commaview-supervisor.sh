@@ -7,6 +7,7 @@ TAILSCALE_BIN=/data/commaview/tailscale/bin/tailscale
 TAILSCALED_BIN=/data/commaview/tailscale/bin/tailscaled
 TAILSCALE_SOCKET=/data/commaview/tailscale/state/tailscaled.sock
 TAILSCALE_STATE_FILE=/data/commaview/tailscale/state/tailscaled.state
+AUTHKEY_FILE=/data/commaview/tailscale/authkey
 TAILSCALE_CHECK_OFFROAD_SEC=15
 
 BRIDGE_BACKOFF_SEQUENCE=(1 2 4 8)
@@ -91,6 +92,42 @@ set_next_bridge_backoff() {
   fi
 }
 
+adopt_existing_bridge_pidfile() {
+  local pid cmd arg_count adopted_pid=""
+  local -a bridge_pids=()
+
+  mapfile -t bridge_pids < <(pgrep -f '/data/commaview/commaview-bridge' 2>/dev/null || true)
+  [ "${#bridge_pids[@]}" -gt 0 ] || return 1
+
+  for pid in "${bridge_pids[@]}"; do
+    [ -d "/proc/$pid" ] || continue
+
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    arg_count="$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' ')"
+
+    if ! echo "$cmd" | grep -Fq -- '/data/commaview/commaview-bridge'; then
+      continue
+    fi
+
+    if [ "${arg_count:-0}" -gt 1 ]; then
+      log "existing bridge pid=${pid} has unexpected extra arguments; terminating"
+      kill "$pid" 2>/dev/null || true
+      continue
+    fi
+
+    if [ -z "$adopted_pid" ]; then
+      adopted_pid="$pid"
+      echo "$pid" > "$RUN_DIR/bridge.pid"
+      log "adopted existing bridge pid=${pid}"
+    else
+      log "duplicate bridge pid=${pid} detected; terminating duplicate"
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+
+  [ -n "$adopted_pid" ]
+}
+
 ensure_bridge_running_prod() {
   if is_running_pidfile bridge; then
     local pid cmd now arg_count
@@ -111,6 +148,12 @@ ensure_bridge_running_prod() {
       fi
       return 0
     fi
+  fi
+
+  if adopt_existing_bridge_pidfile; then
+    bridge_last_start_epoch="$(date +%s)"
+    reset_bridge_backoff
+    return 0
   fi
 
   if [ "$bridge_backoff_sec" -gt 0 ]; then
@@ -148,9 +191,26 @@ force_tailscale_down_and_stop() {
 
 ensure_tailscale_up() {
   [ -x "$TAILSCALE_BIN" ] || return 0
-  if ! "$TAILSCALE_BIN" --socket "$TAILSCALE_SOCKET" status --json 2>/dev/null | grep -q '"BackendState":"Running"'; then
-    "$TAILSCALE_BIN" --socket "$TAILSCALE_SOCKET" up >/dev/null 2>&1 || true
+  if "$TAILSCALE_BIN" --socket "$TAILSCALE_SOCKET" status --json 2>/dev/null | grep -q '"BackendState":"Running"'; then
+    return 0
   fi
+
+  local authkey=""
+  if [ -f "$AUTHKEY_FILE" ]; then
+    authkey="$(tr -d '\r\n' < "$AUTHKEY_FILE")"
+  fi
+
+  if [ -n "$authkey" ]; then
+    if "$TAILSCALE_BIN" --socket "$TAILSCALE_SOCKET" up --authkey "$authkey" --accept-routes --reset >/dev/null 2>&1; then
+      rm -f "$AUTHKEY_FILE"
+      log "tailscale up succeeded (authkey consumed and removed)"
+      return 0
+    fi
+    log "tailscale up with authkey failed"
+    return 1
+  fi
+
+  "$TAILSCALE_BIN" --socket "$TAILSCALE_SOCKET" up --accept-routes >/dev/null 2>&1 || true
 }
 
 ensure_tailscale_policy_offroad() {
@@ -165,7 +225,7 @@ ensure_tailscale_policy_offroad() {
   if is_tailscale_enabled; then
     log "tailscale policy: offroad+enabled -> ensure running"
     ensure_tailscaled_running
-    ensure_tailscale_up
+    ensure_tailscale_up || true
   else
     log "tailscale policy: offroad+disabled -> force down"
     force_tailscale_down_and_stop

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """CommaView Management API - runs on comma device port 5002"""
+import hmac
 import json
 import os
 import socket
 import subprocess
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 VERSION = "0.1.2-alpha"
@@ -11,6 +14,24 @@ INSTALL_DIR = "/data/commaview"
 TAILSCALECTL = f"{INSTALL_DIR}/tailscale/tailscalectl.sh"
 
 MDNS_SERVICE_TYPE = "_commaview._tcp.local."
+MDNS_REFRESH_SEC = 15
+API_TOKEN_FILE = os.getenv("COMMAVIEW_API_TOKEN_FILE", f"{INSTALL_DIR}/api/auth.token")
+
+
+def load_api_token():
+    direct = (os.getenv("COMMAVIEW_API_TOKEN") or "").strip()
+    if direct:
+        return direct
+
+    try:
+        with open(API_TOKEN_FILE, "r") as f:
+            token = f.read().strip()
+            return token or None
+    except Exception:
+        return None
+
+
+API_TOKEN = load_api_token()
 
 
 def tailscale_status():
@@ -128,33 +149,21 @@ def get_device_type():
         return "unknown"
 
 
-def start_mdns():
-    """Advertise CommaView via mDNS/Zeroconf so Android app can auto-discover."""
-    try:
-        from zeroconf import Zeroconf, ServiceInfo
-    except ImportError:
-        print("[mDNS] zeroconf not installed, skipping mDNS advertisement")
-        print("[mDNS] Install with: pip install zeroconf")
-        return None, None
-
-    ip = get_ip()
-    if ip == "unknown":
-        print("[mDNS] No IP address, skipping mDNS")
-        return None, None
-
+def _instance_name():
     dongle_id = get_dongle_id()
-    device_type = get_device_type()
-    instance_name = f"comma-{dongle_id[-6:] if len(dongle_id) > 6 else dongle_id}"
+    suffix = dongle_id[-6:] if dongle_id and dongle_id != "unknown" else socket.gethostname()[-6:]
+    return f"comma-{suffix}"
 
-    info = ServiceInfo(
+
+def _build_mdns_info(ServiceInfo, ip):
+    instance_name = _instance_name()
+    return ServiceInfo(
         MDNS_SERVICE_TYPE,
         f"{instance_name}.{MDNS_SERVICE_TYPE}",
         addresses=[socket.inet_aton(ip)],
         port=5002,
         properties={
             "version": VERSION,
-            "dongle_id": dongle_id,
-            "device": device_type,
             "api_port": "5002",
             "road_port": "8200",
             "wide_port": "8201",
@@ -162,10 +171,89 @@ def start_mdns():
         },
     )
 
+
+def start_mdns():
+    """Advertise CommaView via mDNS/Zeroconf so Android app can auto-discover."""
+    try:
+        from zeroconf import Zeroconf, ServiceInfo
+    except ImportError:
+        print("[mDNS] zeroconf not installed, skipping mDNS advertisement")
+        print("[mDNS] Install with: pip install zeroconf")
+        return None
+
+    ip = get_ip()
+    if ip == "unknown":
+        print("[mDNS] No IP address, skipping mDNS")
+        return None
+
     zc = Zeroconf()
+    info = _build_mdns_info(ServiceInfo, ip)
     zc.register_service(info)
-    print(f"[mDNS] Advertising as '{instance_name}' at {ip}")
-    return zc, info
+    print(f"[mDNS] Advertising on {ip}")
+    return {
+        "zc": zc,
+        "info": info,
+        "ip": ip,
+        "ServiceInfo": ServiceInfo,
+        "lock": threading.Lock(),
+    }
+
+
+def refresh_mdns_if_ip_changed(state):
+    if not state:
+        return
+
+    ip = get_ip()
+    if ip == "unknown" or ip == state.get("ip"):
+        return
+
+    with state["lock"]:
+        old_info = state.get("info")
+        zc = state.get("zc")
+        ServiceInfo = state.get("ServiceInfo")
+        if not zc or not ServiceInfo:
+            return
+
+        try:
+            if old_info:
+                zc.unregister_service(old_info)
+        except Exception:
+            pass
+
+        try:
+            new_info = _build_mdns_info(ServiceInfo, ip)
+            zc.register_service(new_info)
+            state["info"] = new_info
+            state["ip"] = ip
+            print(f"[mDNS] Re-advertised on IP change: {ip}")
+        except Exception as e:
+            print(f"[mDNS] Failed to refresh registration: {e}")
+
+
+def mdns_refresh_loop(state, stop_event):
+    while not stop_event.wait(MDNS_REFRESH_SEC):
+        refresh_mdns_if_ip_changed(state)
+
+
+def stop_mdns(state):
+    if not state:
+        return
+
+    zc = state.get("zc")
+    info = state.get("info")
+    if not zc:
+        return
+
+    try:
+        if info:
+            zc.unregister_service(info)
+    except Exception:
+        pass
+
+    try:
+        zc.close()
+    except Exception:
+        pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -176,8 +264,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-CommaView-Token")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
+
+    def _authorize_post(self):
+        if not API_TOKEN:
+            return True
+
+        token = (self.headers.get("X-CommaView-Token") or "").strip()
+        if token and hmac.compare_digest(token, API_TOKEN):
+            return True
+
+        self._respond(401, {"ok": False, "error": "unauthorized"})
+        return False
 
     def _read_json_body(self):
         try:
@@ -204,6 +304,7 @@ class Handler(BaseHTTPRequestHandler):
                 "dongle_id": get_dongle_id(),
                 "device": get_device_type(),
                 "ip": get_ip(),
+                "authRequired": bool(API_TOKEN),
                 "services": {
                     "commaview_supervisor": is_running("commaview-supervisor.sh"),
                     "commaview_bridge": is_running("/data/commaview/commaview-bridge"),
@@ -225,6 +326,9 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(404, {"error": "not found"})
 
     def do_POST(self):
+        if not self._authorize_post():
+            return
+
         if self.path == "/tailscale/enable":
             payload = tailscale_set_enabled(True)
             self._respond(200 if payload.get("ok") else 500, payload)
@@ -246,17 +350,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-CommaView-Token")
         self.end_headers()
 
 
 if __name__ == "__main__":
-    zc, zc_info = start_mdns()
+    mdns_state = start_mdns()
+    mdns_stop = threading.Event()
+    mdns_thread = None
+    if mdns_state:
+        mdns_thread = threading.Thread(target=mdns_refresh_loop, args=(mdns_state, mdns_stop), daemon=True)
+        mdns_thread.start()
+
     server = HTTPServer(("0.0.0.0", 5002), Handler)
     print(f"CommaView API v{VERSION} listening on :5002")
     try:
         server.serve_forever()
     finally:
-        if zc and zc_info:
-            zc.unregister_service(zc_info)
-            zc.close()
+        mdns_stop.set()
+        if mdns_thread:
+            mdns_thread.join(timeout=1.0)
+        stop_mdns(mdns_state)

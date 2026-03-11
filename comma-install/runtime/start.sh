@@ -13,7 +13,7 @@ echo $! > "$RUN/supervisor.pid"
 
 # Launch local API for app/status/tailscale control
 if [ -f /data/commaview/api/commaview-api.py ]; then
-  nohup nice -n 19 python3 /data/commaview/api/commaview-api.py >> "$LOG/commaview-api.log" 2>&1 &
+  COMMAVIEW_API_TOKEN_FILE=/data/commaview/api/auth.token     nohup nice -n 19 python3 /data/commaview/api/commaview-api.py >> "$LOG/commaview-api.log" 2>&1 &
   echo $! > "$RUN/commaview_api.pid"
 fi
 

@@ -163,6 +163,23 @@ deploy_required_scripts() {
   copy_required_file "tailscale/tailscalectl.sh" "$INSTALL_DIR/tailscale/tailscalectl.sh"
 }
 
+
+ensure_api_auth_token() {
+  local token_path="/data/commaview/api/auth.token"
+  if [ -s "$token_path" ]; then
+    chmod 600 "$token_path" 2>/dev/null || true
+    return 0
+  fi
+
+  echo "Generating CommaView API auth token..."
+  umask 077
+  python3 - <<'PYTOKEN' > "$token_path"
+import secrets
+print(secrets.token_urlsafe(32))
+PYTOKEN
+  chmod 600 "$token_path" 2>/dev/null || true
+}
+
 need_cmd curl
 need_cmd tar
 need_cmd sha256sum
@@ -287,6 +304,7 @@ echo "Extracting bundle..."
 tar -xzf "$tmpdir/$ASSET_NAME" -C "$INSTALL_DIR" --strip-components=1
 
 deploy_required_scripts
+ensure_api_auth_token
 
 if [ ! -f "$INSTALL_DIR/commaview-bridge" ]; then
   echo "ERROR: bundle missing $INSTALL_DIR/commaview-bridge" >&2
