@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build CommaView bridge on Ubuntu Node.
+# Build CommaView bridge/runtime binaries on Ubuntu Node.
 # Outputs:
-#   ./commaview-bridge-host      (x86_64 sanity binary)
+#   ./commaview-bridge-host      (x86_64 sanity binary, commaviewd entry with bridge compatibility)
 #   ./commaview-bridge-aarch64   (comma4 deployable target)
 #   ./lib/libcapnp-0.8.0.so      (deploy-side runtime dep)
 #   ./lib/libkj-0.8.0.so         (deploy-side runtime dep)
@@ -12,13 +12,18 @@ set -euo pipefail
 #   OP_ROOT=/home/pear/openpilot-src ./build-ubuntu.sh
 
 OP_ROOT="${OP_ROOT:-/home/pear/openpilot-src}"
-SRC="${SRC:-/home/pear/CommaView/bridge/cpp/commaview-bridge.cc}"
 OUT_DIR="${OUT_DIR:-/home/pear/CommaView/bridge/cpp}"
+MAIN_SRC="${MAIN_SRC:-$OUT_DIR/commaviewd_main.cc}"
+BRIDGE_SRC="${BRIDGE_SRC:-$OUT_DIR/commaview-bridge.cc}"
 NET_FRAMING_SRC="$OUT_DIR/src/net/framing.cpp"
 NET_SOCKET_SRC="$OUT_DIR/src/net/socket.cpp"
 CONTROL_POLICY_SRC="$OUT_DIR/src/control/policy.cpp"
 VIDEO_ROUTER_SRC="$OUT_DIR/src/video/router.cpp"
 TELEMETRY_JSON_SRC="$OUT_DIR/src/telemetry/json_builder.cpp"
+RUNTIME_MODE_SRC="$OUT_DIR/src/runtime/mode.cpp"
+RUNTIME_BRIDGE_MODE_SRC="$OUT_DIR/src/runtime/bridge_mode.cpp"
+RUNTIME_CONTROL_MODE_SRC="$OUT_DIR/src/runtime/control_mode.cpp"
+API_HTTP_SERVER_SRC="$OUT_DIR/src/api/http_server.cpp"
 
 HOST_OUT="$OUT_DIR/commaview-bridge-host"
 ARM_OUT="$OUT_DIR/commaview-bridge-aarch64"
@@ -42,12 +47,17 @@ require_file() {
   fi
 }
 
-require_file "$SRC"
+require_file "$MAIN_SRC"
+require_file "$BRIDGE_SRC"
 require_file "$NET_FRAMING_SRC"
 require_file "$NET_SOCKET_SRC"
 require_file "$TELEMETRY_JSON_SRC"
 require_file "$VIDEO_ROUTER_SRC"
 require_file "$CONTROL_POLICY_SRC"
+require_file "$RUNTIME_MODE_SRC"
+require_file "$RUNTIME_BRIDGE_MODE_SRC"
+require_file "$RUNTIME_CONTROL_MODE_SRC"
+require_file "$API_HTTP_SERVER_SRC"
 require_file "$OP_ROOT/cereal/log.capnp"
 require_file "$OP_ROOT/cereal/services.py"
 require_file "$OP_ROOT/cereal/messaging/socketmaster.cc"
@@ -71,50 +81,44 @@ capnpc --src-prefix="$OP_ROOT/cereal" \
   -o c++:"$OP_ROOT/cereal/gen/cpp/"
 python3 "$OP_ROOT/cereal/services.py" > "$OP_ROOT/cereal/services.h"
 
+COMMON_SRCS=(
+  "$MAIN_SRC"
+  "$BRIDGE_SRC"
+  "$RUNTIME_MODE_SRC"
+  "$RUNTIME_BRIDGE_MODE_SRC"
+  "$RUNTIME_CONTROL_MODE_SRC"
+  "$API_HTTP_SERVER_SRC"
+  "$NET_FRAMING_SRC"
+  "$NET_SOCKET_SRC"
+  "$CONTROL_POLICY_SRC"
+  "$VIDEO_ROUTER_SRC"
+  "$TELEMETRY_JSON_SRC"
+  "$OP_ROOT/cereal/messaging/socketmaster.cc"
+  "$MSGQ_SOURCE"
+  "$OP_ROOT/msgq_repo/msgq/event.cc"
+  "$OP_ROOT/msgq_repo/msgq/impl_fake.cc"
+  "$OP_ROOT/msgq_repo/msgq/impl_msgq.cc"
+  "$OP_ROOT/msgq_repo/msgq/ipc.cc"
+  "$OP_ROOT/cereal/gen/cpp/log.capnp.c++"
+  "$OP_ROOT/cereal/gen/cpp/car.capnp.c++"
+  "$OP_ROOT/cereal/gen/cpp/legacy.capnp.c++"
+  "$OP_ROOT/cereal/gen/cpp/custom.capnp.c++"
+)
+
 echo "[2/5] Building host sanity binary (x86_64)..."
-clang++ -O2 -std=c++17 \
+clang++ -O2 -std=c++17 -DCOMMAVIEW_BRIDGE_NO_MAIN \
   -I"$OUT_DIR/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/msgq_repo" \
   -o "$HOST_OUT" \
-  "$SRC" \
-  "$NET_FRAMING_SRC" \
-  "$NET_SOCKET_SRC" \
-  "$CONTROL_POLICY_SRC" \
-  "$VIDEO_ROUTER_SRC" \
-  "$TELEMETRY_JSON_SRC" \
-  "$OP_ROOT/cereal/messaging/socketmaster.cc" \
-  "$MSGQ_SOURCE" \
-  "$OP_ROOT/msgq_repo/msgq/event.cc" \
-  "$OP_ROOT/msgq_repo/msgq/impl_fake.cc" \
-  "$OP_ROOT/msgq_repo/msgq/impl_msgq.cc" \
-  "$OP_ROOT/msgq_repo/msgq/ipc.cc" \
-  "$OP_ROOT/cereal/gen/cpp/log.capnp.c++" \
-  "$OP_ROOT/cereal/gen/cpp/car.capnp.c++" \
-  "$OP_ROOT/cereal/gen/cpp/legacy.capnp.c++" \
-  "$OP_ROOT/cereal/gen/cpp/custom.capnp.c++" \
+  "${COMMON_SRCS[@]}" \
   -lzmq -lcapnp -lkj -lpthread
 
 echo "[3/5] Building deploy binary (aarch64)..."
-aarch64-linux-gnu-g++ -O2 -std=c++17 \
+aarch64-linux-gnu-g++ -O2 -std=c++17 -DCOMMAVIEW_BRIDGE_NO_MAIN \
   -I"$OUT_DIR/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/msgq_repo" \
   -L/usr/lib/aarch64-linux-gnu \
   -Wl,-rpath,'$ORIGIN/lib' \
   -o "$ARM_OUT" \
-  "$SRC" \
-  "$NET_FRAMING_SRC" \
-  "$NET_SOCKET_SRC" \
-  "$CONTROL_POLICY_SRC" \
-  "$VIDEO_ROUTER_SRC" \
-  "$TELEMETRY_JSON_SRC" \
-  "$OP_ROOT/cereal/messaging/socketmaster.cc" \
-  "$MSGQ_SOURCE" \
-  "$OP_ROOT/msgq_repo/msgq/event.cc" \
-  "$OP_ROOT/msgq_repo/msgq/impl_fake.cc" \
-  "$OP_ROOT/msgq_repo/msgq/impl_msgq.cc" \
-  "$OP_ROOT/msgq_repo/msgq/ipc.cc" \
-  "$OP_ROOT/cereal/gen/cpp/log.capnp.c++" \
-  "$OP_ROOT/cereal/gen/cpp/car.capnp.c++" \
-  "$OP_ROOT/cereal/gen/cpp/legacy.capnp.c++" \
-  "$OP_ROOT/cereal/gen/cpp/custom.capnp.c++" \
+  "${COMMON_SRCS[@]}" \
   -lzmq -lcapnp -lkj -lpthread
 
 echo "[4/5] Bundling comma runtime libs (0.8 ABI)..."

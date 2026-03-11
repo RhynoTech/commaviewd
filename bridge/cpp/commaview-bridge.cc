@@ -533,7 +533,7 @@ static void accept_loop(int server_fd, const char* service_name, int port) {
 
 static void sig_handler(int) { g_running = false; }
 
-int main(int argc, char* argv[]) {
+int commaview_bridge_main(int argc, char* argv[]) {
   signal(SIGINT, sig_handler);
   signal(SIGTERM, sig_handler);
   signal(SIGPIPE, SIG_IGN);
@@ -602,3 +602,8 @@ int main(int argc, char* argv[]) {
   printf("CommaView Bridge stopped.\n");
   return 0;
 }
+#ifndef COMMAVIEW_BRIDGE_NO_MAIN
+int main(int argc, char* argv[]) {
+  return commaview_bridge_main(argc, argv);
+}
+#endif

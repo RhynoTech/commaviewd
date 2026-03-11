@@ -23,6 +23,14 @@ CommaView provides a live camera view + telemetry HUD from a comma device to And
   - Single supervisor process for bridge watchdog + tailscale policy
   - openpilot manager owns camerad/encoderd lifecycle
 
+### Runtime migration target (single binary, dual mode)
+
+Planned runtime packaging is a single C++ artifact with explicit mode entrypoints:
+- `commaviewd bridge` for streaming lifecycle
+- `commaviewd control` for offroad control/API and remote access policy
+
+Security policy for migration target: tailscale is forced down onroad, and offroad enable state is applied only when parked.
+
 ---
 
 ## Quick start (comma install)

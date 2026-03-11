@@ -4,18 +4,16 @@ LOG=/data/commaview/logs
 RUN=/data/commaview/run
 mkdir -p "$LOG" "$RUN"
 
-# Stop stale supervisor and owned children
+# Stop stale runtime processes first
 bash /data/commaview/stop.sh >/dev/null 2>&1 || true
 
-# Launch supervisor
-nohup nice -n 19 /data/commaview/commaview-supervisor.sh >> "$LOG/supervisor.log" 2>&1 &
-echo $! > "$RUN/supervisor.pid"
+# Launch bridge mode (video/telemetry stream)
+nohup nice -n 19 /data/commaview/commaview-bridge bridge >> "$LOG/commaviewd-bridge.log" 2>&1 &
+echo $! > "$RUN/bridge.pid"
 
-# Launch local API for app/status/tailscale control
-if [ -f /data/commaview/api/commaview-api.py ]; then
-  COMMAVIEW_API_TOKEN_FILE=/data/commaview/api/auth.token     nohup nice -n 19 python3 /data/commaview/api/commaview-api.py >> "$LOG/commaview-api.log" 2>&1 &
-  echo $! > "$RUN/commaview_api.pid"
-fi
+# Launch control mode (API + tailscale policy)
+COMMAVIEW_API_TOKEN_FILE=/data/commaview/api/auth.token \
+  nohup nice -n 19 /data/commaview/commaview-bridge control >> "$LOG/commaviewd-control.log" 2>&1 &
+echo $! > "$RUN/control.pid"
 
-# Launch tailscale guardian (policy daemon)
-echo "CommaView supervisor started"
+echo "CommaView runtime started (bridge+control)"

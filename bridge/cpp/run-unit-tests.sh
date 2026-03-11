@@ -25,6 +25,9 @@ $CXX -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/src/net/framing.cpp" \
   -o "$TMP/test_net_framing"
 
+
+$CXX -O2 -std=c++17 "${INC[@]}"   "$ROOT/tests/test_runtime_mode.cpp"   "$ROOT/src/runtime/mode.cpp"   -o "$TMP/test_runtime_mode"
+
 $CXX -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_control_policy.cpp" \
   "$ROOT/src/control/policy.cpp" \
@@ -42,6 +45,7 @@ $CXX -O2 -std=c++17 "${INC[@]}" \
   -o "$TMP/test_telemetry_json"
 
 "$TMP/test_net_framing"
+"$TMP/test_runtime_mode"
 "$TMP/test_control_policy"
 "$TMP/test_telemetry_json"
 

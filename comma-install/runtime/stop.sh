@@ -2,32 +2,25 @@
 set +e
 RUN=/data/commaview/run
 
-# stop supervisor first
-if [ -f "$RUN/supervisor.pid" ]; then
-  pid=$(cat "$RUN/supervisor.pid" 2>/dev/null)
-  kill "$pid" 2>/dev/null || true
-  for _ in $(seq 1 20); do
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.2
-  done
-  kill -9 "$pid" 2>/dev/null || true
-  rm -f "$RUN/supervisor.pid"
-fi
-
-# stop children tracked by pidfiles
-for f in bridge.pid commaview_api.pid tailscaled.pid; do
+# stop runtime tracked by pidfiles
+for f in bridge.pid control.pid supervisor.pid commaview_api.pid tailscaled.pid; do
   if [ -f "$RUN/$f" ]; then
     pid=$(cat "$RUN/$f" 2>/dev/null)
     kill "$pid" 2>/dev/null || true
-    sleep 0.2
+    for _ in $(seq 1 20); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.2
+    done
     kill -9 "$pid" 2>/dev/null || true
     rm -f "$RUN/$f"
   fi
 done
 
 # clean old strays
-pkill -f 'commaview-supervisor.sh' 2>/dev/null || true
+pkill -f '/data/commaview/commaview-bridge bridge' 2>/dev/null || true
+pkill -f '/data/commaview/commaview-bridge control' 2>/dev/null || true
 pkill -f '/data/commaview/commaview-bridge' 2>/dev/null || true
+pkill -f 'commaview-supervisor.sh' 2>/dev/null || true
 pkill -f 'commaview-api.py' 2>/dev/null || true
 pkill -f '/data/commaview/tailscale/bin/tailscaled' 2>/dev/null || true
 

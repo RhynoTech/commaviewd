@@ -5,7 +5,7 @@ if [[ "${1:-}" == "--help" ]]; then
   cat <<USAGE
 Usage: OP_ROOT=/home/pear/openpilot-src bridge/cpp/reproducible-build.sh [--manifest <path>]
 
-Builds the bridge twice and verifies host + aarch64 artifact SHA256 digests are identical.
+Builds the commaviewd dual-mode binary twice and verifies host + aarch64 artifact SHA256 digests are identical.
 Writes a JSON manifest with toolchain versions and checksums.
 USAGE
   exit 0
@@ -66,7 +66,8 @@ cat > "$MANIFEST" <<JSON
   },
   "artifacts": {
     "commaview-bridge-host": "${sha_host_1}",
-    "commaview-bridge-aarch64": "${sha_arm_1}"
+    "commaview-bridge-aarch64": "${sha_arm_1}",
+    "runtimeEntrypoint": "commaviewd_main"
   }
 }
 JSON
