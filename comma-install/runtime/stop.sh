@@ -3,7 +3,7 @@ set +e
 RUN=/data/commaview/run
 
 # stop runtime tracked by pidfiles
-for f in bridge.pid control.pid supervisor.pid commaview_api.pid tailscaled.pid; do
+for f in bridge.pid control.pid tailscaled.pid; do
   if [ -f "$RUN/$f" ]; then
     pid=$(cat "$RUN/$f" 2>/dev/null)
     kill "$pid" 2>/dev/null || true
@@ -20,8 +20,6 @@ done
 pkill -f '/data/commaview/commaviewd bridge' 2>/dev/null || true
 pkill -f '/data/commaview/commaviewd control' 2>/dev/null || true
 pkill -f '/data/commaview/commaviewd' 2>/dev/null || true
-pkill -f 'commaview-supervisor.sh' 2>/dev/null || true
-pkill -f 'commaview-api.py' 2>/dev/null || true
 pkill -f '/data/commaview/tailscale/bin/tailscaled' 2>/dev/null || true
 
 if [ -x /data/commaview/tailscale/bin/tailscale ]; then

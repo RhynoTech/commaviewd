@@ -19,9 +19,10 @@ CommaView provides a live camera view + telemetry HUD from a comma device to And
   - Video frames over TCP framing (`MSG_VIDEO`)
   - Telemetry JSON over same stream (`MSG_META`)
   - In-band control (`MSG_CONTROL`) for per-client suppression policy
-- **Runtime supervisor**
-  - Single supervisor process for bridge watchdog + tailscale policy
-  - openpilot manager owns camerad/encoderd lifecycle
+- **Dual-mode runtime**
+  - `commaviewd bridge` streams video + telemetry
+  - `commaviewd control` serves local API + tailscale policy
+  - No Python API daemon and no shell supervisor in runtime path
 
 ### Runtime migration target (single binary, dual mode)
 
@@ -51,8 +52,8 @@ COMMAVIEW_TAILSCALE_AUTHKEY="tskey-auth-..." \
 ```
 
 Safety policy:
-- Onroad (`IsOnroad=1`): supervisor policy forces Tailscale down
-- Offroad + enabled flag: supervisor policy ensures Tailscale is up
+- Onroad (`IsOnroad=1`): control policy forces Tailscale down
+- Offroad + enabled flag: control policy ensures Tailscale is up
 - Installer consumes auth key once and does not persist raw key
 
 Current pinned release in installer: **`v0.1.4-alpha`**
@@ -89,7 +90,8 @@ bash /data/commaview/tailscale/tailscalectl.sh disable
 ```
 
 Logs:
-- `/data/commaview/logs/supervisor.log`
+- `/data/commaview/logs/commaviewd-bridge.log`
+- `/data/commaview/logs/commaviewd-control.log`
 - `/data/commaview/logs/tailscale-install.log`
 
 Rollback:

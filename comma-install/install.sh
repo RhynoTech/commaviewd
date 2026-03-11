@@ -89,9 +89,7 @@ copy_required_file() {
 }
 
 required_files=(
-  "api/commaview-api.py"
   "runtime/upgrade.sh"
-  "runtime/commaview-supervisor.sh"
   "runtime/start.sh"
   "runtime/stop.sh"
   "runtime/uninstall.sh"
@@ -151,10 +149,8 @@ validate_required_files() {
 }
 
 deploy_required_scripts() {
-  copy_required_file "api/commaview-api.py" "$INSTALL_DIR/api/commaview-api.py"
   copy_required_file "runtime/upgrade.sh" "$INSTALL_DIR/upgrade.sh"
 
-  copy_required_file "runtime/commaview-supervisor.sh" "$INSTALL_DIR/commaview-supervisor.sh"
   copy_required_file "runtime/start.sh" "$INSTALL_DIR/start.sh"
   copy_required_file "runtime/stop.sh" "$INSTALL_DIR/stop.sh"
   copy_required_file "runtime/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
@@ -279,7 +275,6 @@ maybe_configure_tailscale_opt_in() {
 }
 
 echo "Stopping existing CommaView processes..."
-pkill -f "commaview-supervisor.sh" 2>/dev/null || true
 pkill -f "/data/commaview/commaviewd" 2>/dev/null || true
 sleep 1
 
