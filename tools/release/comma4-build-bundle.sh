@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "--help" ]]; then
+  cat <<USAGE
+Usage: tools/release/comma4-build-bundle.sh [--skip-build] [<tag>]
+Builds/stages CommaView comma4 bundle and outputs:
+  release/<tag>/commaview-comma4-<tag>.tar.gz
+  release/<tag>/commaview-comma4-<tag>.tar.gz.sha256
+USAGE
+  exit 0
+fi
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VERSION_ENV="${ROOT}/comma4/version.env"
 if [[ ! -f "$VERSION_ENV" ]]; then
@@ -13,13 +23,34 @@ if [[ -z "${RELEASE_TAG:-}" ]]; then
   echo "ERROR: version.env must define RELEASE_TAG" >&2
   exit 1
 fi
-TAG="${1:-$RELEASE_TAG}"
+
+SKIP_BUILD=0
+TAG_OVERRIDE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-build) SKIP_BUILD=1; shift ;;
+    --help|-h)
+      "$0" --help
+      exit 0
+      ;;
+    *)
+      if [[ -n "$TAG_OVERRIDE" ]]; then
+        echo "ERROR: multiple tag arguments provided" >&2
+        exit 2
+      fi
+      TAG_OVERRIDE="$1"
+      shift
+      ;;
+  esac
+done
+
+TAG="${TAG_OVERRIDE:-$RELEASE_TAG}"
 NAME="commaview-comma4-${TAG}"
 OUT_DIR="${ROOT}/release/${TAG}"
 STAGE_DIR="${OUT_DIR}/${NAME}"
 ASSET_TGZ="${OUT_DIR}/${NAME}.tar.gz"
 ASSET_SHA="${ASSET_TGZ}.sha256"
-DIST_DIR="${ROOT}/dist"
+DIST_DIR="${DIST_DIR:-${ROOT}/dist}"
 
 required_stage_files=(
   "commaviewd"
@@ -47,8 +78,12 @@ mkdir -p "$OUT_DIR"
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR/lib" "$STAGE_DIR/tailscale"
 
-echo "[1/3] Building commaviewd artifacts..."
-DIST_DIR="$DIST_DIR" "${ROOT}/commaviewd/scripts/build-ubuntu.sh"
+if [[ "$SKIP_BUILD" -eq 1 ]]; then
+  echo "[1/3] Skipping build (using existing dist artifacts)..."
+else
+  echo "[1/3] Building commaviewd artifacts..."
+  DIST_DIR="$DIST_DIR" "${ROOT}/commaviewd/scripts/build-ubuntu.sh"
+fi
 
 echo "[2/3] Staging bundle files..."
 install -m 755 "${DIST_DIR}/commaviewd-aarch64" "${STAGE_DIR}/commaviewd"

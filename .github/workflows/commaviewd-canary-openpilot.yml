@@ -127,9 +127,28 @@ jobs:
           OP_ROOT: ${{ github.workspace }}/openpilot-src
           ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
           ARM_KJ_SO: ${{ steps.armcapnp.outputs.arm_kj_so }}
+          RELEASE_SMOKE_TAG: canary-openpilot-${{ matrix.upstream_ref }}-${{ github.run_id }}
         run: |
           set -euxo pipefail
           commaviewd/scripts/run-verification.sh
+
+      - name: Verification summary
+        if: always()
+        run: |
+          {
+            echo "### canary verification (openpilot/${{ matrix.upstream_ref }})"
+            echo "- Upstream SHA: \`${{ steps.upstream.outputs.sha }}\`"
+            echo "- Upstream source cache hit: \`${{ steps.upstream-cache.outputs.cache-hit || 'false' }}\`"
+            if [[ -f dist/upstream-interface-manifest.json ]]; then
+              echo "- Interface manifest: dist/upstream-interface-manifest.json"
+            fi
+            if [[ -f dist/binary-contract.json ]]; then
+              echo "- Binary contract: dist/binary-contract.json"
+            fi
+            if [[ -f dist/release-smoke-manifest.json ]]; then
+              echo "- Release smoke: dist/release-smoke-manifest.json"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload dist artifacts (debug)
         if: always()
@@ -140,4 +159,9 @@ jobs:
             dist/commaviewd-host
             dist/commaviewd-aarch64
             dist/reproducible-build-manifest.json
+            dist/upstream-interface-manifest.json
+            dist/binary-contract.json
+            dist/release-smoke-manifest.json
+            release/*/commaview-comma4-*.tar.gz
+            release/*/commaview-comma4-*.tar.gz.sha256
           if-no-files-found: warn
