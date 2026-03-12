@@ -1,4 +1,4 @@
-name: commaviewd-ci
+name: CommaViewD CI
 
 on:
   push:
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Build + unit tests + reproducibility (${{ matrix.target.name }})
+    name: verify (${{ matrix.target.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
