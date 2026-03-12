@@ -147,13 +147,13 @@ std::string setup_complete_write_json(bool ok, bool value, const std::string& er
 }
 
 std::string load_api_token() {
-  const char* direct = std::getenv("COMMAVIEW_API_TOKEN");
+  const char* direct = std::getenv("COMMAVIEWD_API_TOKEN");
   if (direct != nullptr) {
     std::string token = trim_copy(direct);
     if (!token.empty()) return token;
   }
 
-  const char* token_file_env = std::getenv("COMMAVIEW_API_TOKEN_FILE");
+  const char* token_file_env = std::getenv("COMMAVIEWD_API_TOKEN_FILE");
   std::string token_file = token_file_env ? token_file_env : std::string(kInstallDir) + "/api/auth.token";
   return read_file_trimmed(token_file);
 }

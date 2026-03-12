@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/
 Optional tailscale onboarding:
 
 ```bash
-COMMAVIEW_TAILSCALE_AUTHKEY="tskey-auth-..." \
+COMMAVIEWD_TAILSCALE_AUTHKEY="tskey-auth-..." \
   curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/install.sh \
   | ssh comma@<comma-ip> 'bash -s -- --enable-tailscale'
 ```

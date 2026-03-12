@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TAILSCALE_ROOT="${COMMAVIEW_TAILSCALE_INSTALL_ROOT:-/data/commaview/tailscale}"
+TAILSCALE_ROOT="${COMMAVIEWD_TAILSCALE_INSTALL_ROOT:-/data/commaview/tailscale}"
 BIN_DIR="$TAILSCALE_ROOT/bin"
-TMP_DIR="${COMMAVIEW_TAILSCALE_TMP_DIR:-/tmp/commaview-tailscale-runtime}"
-TAILSCALE_VERSION="${COMMAVIEW_TAILSCALE_VERSION:-1.80.3}"
+TMP_DIR="${COMMAVIEWD_TAILSCALE_TMP_DIR:-/tmp/commaview-tailscale-runtime}"
+TAILSCALE_VERSION="${COMMAVIEWD_TAILSCALE_VERSION:-1.80.3}"
 
 log() {
   echo "[tailscale-runtime] $*"

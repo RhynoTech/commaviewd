@@ -12,7 +12,7 @@ nohup nice -n 19 /data/commaview/commaviewd bridge >> "$LOG/commaviewd-bridge.lo
 echo $! > "$RUN/bridge.pid"
 
 # Launch control mode (API + tailscale policy)
-COMMAVIEW_API_TOKEN_FILE=/data/commaview/api/auth.token \
+COMMAVIEWD_API_TOKEN_FILE=/data/commaview/api/auth.token \
   nohup nice -n 19 /data/commaview/commaviewd control >> "$LOG/commaviewd-control.log" 2>&1 &
 echo $! > "$RUN/control.pid"
 

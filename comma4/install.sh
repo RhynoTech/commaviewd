@@ -18,19 +18,19 @@ if [ -z "${VERSION:-}" ] || [ -z "${RELEASE_TAG:-}" ]; then
   exit 1
 fi
 
-GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/commaviewd}"
-ASSET_NAME="${COMMAVIEW_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
+GITHUB_REPO="${COMMAVIEWD_RELEASE_REPO:-RhynoTech/commaviewd}"
+ASSET_NAME="${COMMAVIEWD_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
 ASSET_SHA_NAME="${ASSET_NAME}.sha256"
-BASE_URL="${COMMAVIEW_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
-INSTALLER_REF="${COMMAVIEW_INSTALLER_REF:-${RELEASE_TAG}}"
-INSTALLER_RAW_BASE="${COMMAVIEW_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma4}"
+BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
+INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-${RELEASE_TAG}}"
+INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma4}"
 
 INSTALL_DIR="/data/commaview"
 CONTINUE_SH="/data/continue.sh"
 MARKER="# commaview-hook"
 
 ENABLE_TAILSCALE=0
-TAILSCALE_AUTHKEY="${COMMAVIEW_TAILSCALE_AUTHKEY:-}"
+TAILSCALE_AUTHKEY="${COMMAVIEWD_TAILSCALE_AUTHKEY:-}"
 
 usage() {
   cat <<USAGE
@@ -42,7 +42,7 @@ Usage:
 Options:
   --enable-tailscale             Enable optional Tailscale setup.
   --tailscale-auth-key <key>     One-time auth key used during initial join.
-                                 You can also set COMMAVIEW_TAILSCALE_AUTHKEY.
+                                 You can also set COMMAVIEWD_TAILSCALE_AUTHKEY.
   -h, --help                     Show this help and exit.
 
 Default behavior:

@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 VERSION_ENV="${SCRIPT_DIR}/version.env"
 
-DEFAULT_TAG="${COMMAVIEW_DEFAULT_TAG:-v0.0.1-alpha}"
+DEFAULT_TAG="${COMMAVIEWD_DEFAULT_TAG:-v0.0.1-alpha}"
 if [ -f "$VERSION_ENV" ]; then
   # shellcheck disable=SC1090
   . "$VERSION_ENV"
@@ -14,7 +14,7 @@ if [ -f "$VERSION_ENV" ]; then
 fi
 
 TAG="$DEFAULT_TAG"
-GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/commaviewd}"
+GITHUB_REPO="${COMMAVIEWD_RELEASE_REPO:-RhynoTech/commaviewd}"
 
 usage() {
   cat <<USAGE
@@ -49,7 +49,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 INSTALL_SCRIPT_URL_DEFAULT="https://raw.githubusercontent.com/${GITHUB_REPO}/${TAG}/comma4/install.sh"
-INSTALL_SCRIPT_URL="${COMMAVIEW_INSTALL_SCRIPT_URL:-$INSTALL_SCRIPT_URL_DEFAULT}"
+INSTALL_SCRIPT_URL="${COMMAVIEWD_INSTALL_SCRIPT_URL:-$INSTALL_SCRIPT_URL_DEFAULT}"
 
 is_onroad="$(tr -d '\000\r\n' < /data/params/d/IsOnroad 2>/dev/null || echo 0)"
 if [ "$is_onroad" = "1" ]; then
@@ -96,10 +96,10 @@ fi
 chmod +x "$install_script"
 
 echo "Running installer for ${TAG}"
-COMMAVIEW_RELEASE_REPO="$GITHUB_REPO" \
-COMMAVIEW_ASSET_NAME="$ASSET_NAME" \
-COMMAVIEW_BASE_URL="$BASE_URL" \
-COMMAVIEW_INSTALLER_REF="$TAG" \
+COMMAVIEWD_RELEASE_REPO="$GITHUB_REPO" \
+COMMAVIEWD_ASSET_NAME="$ASSET_NAME" \
+COMMAVIEWD_BASE_URL="$BASE_URL" \
+COMMAVIEWD_INSTALLER_REF="$TAG" \
 bash "$install_script"
 
 if [ -x /data/commaview/start.sh ]; then
