@@ -2,86 +2,58 @@
 
 > ⚠️ **Unofficial project:** CommaView is community-maintained and is **not** affiliated with, endorsed by, or supported by comma.ai.
 
-CommaView provides a live camera view + telemetry HUD from a comma device to Android devices over LAN.
-
----
+CommaView streams camera video + telemetry from a comma device to Android clients on your network.
 
 ## What it does
 
-- Streams camera video to Android (road/wide + optional driver PiP)
-- Shows telemetry HUD (speed, engagement, alerts, device state)
-- Supports per-client suppression of video transmission (telemetry-only mode)
+- Streams HEVC video (road / wide, optional driver PiP)
+- Overlays telemetry HUD (speed, engagement, alerts, device state)
+- Supports per-client telemetry-only mode (video suppression)
+- Provides offroad control APIs with Tailscale policy enforcement
 
-## Current architecture
+## Repository layout
 
-- **Android app** (`app/`) — HEVC receiver + HUD rendering
-- **C++ runtime** on comma (`/data/commaview/commaviewd`)
-  - Video frames over TCP framing (`MSG_VIDEO`)
-  - Telemetry JSON over same stream (`MSG_META`)
-  - In-band control (`MSG_CONTROL`) for per-client suppression policy
-- **Dual-mode runtime**
-  - `commaviewd bridge` streams video + telemetry
-  - `commaviewd control` serves local API + tailscale policy
-  - No Python API daemon and no shell supervisor in runtime path
+- `app/` — Android client (receiver + HUD)
+- `commaviewd/` — C++ runtime (`bridge` + `control` modes)
+- `comma4/` — installer, upgrade, start/stop, uninstall scripts + version pin
+- `tools/release/` — release bundle tooling
+- `docs/` — project and implementation notes
 
-### Runtime migration target (single binary, dual mode)
+## Install on comma 4
 
-Planned runtime packaging is a single C++ artifact with explicit mode entrypoints:
-- `commaviewd bridge` for streaming lifecycle
-- `commaviewd control` for offroad control/API and remote access policy
-
-Security policy for migration target: tailscale is forced down onroad, and offroad enable state is applied only when parked.
-
----
-
-## Quick start (comma install)
-
-Install/update CommaView on comma from GitHub:
+Basic install/update:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma4/install.sh | ssh comma@<comma-ip> bash
 ```
 
-Optional Tailscale access (opt-in):
+Install with optional Tailscale setup:
 
 ```bash
-# auth key via env
 COMMAVIEW_TAILSCALE_AUTHKEY="tskey-auth-..." \
   curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma4/install.sh \
   | ssh comma@<comma-ip> 'bash -s -- --enable-tailscale'
 ```
 
-Safety policy:
-- Onroad (`IsOnroad=1`): control policy forces Tailscale down
-- Offroad + enabled flag: control policy ensures Tailscale is up
-- Installer consumes auth key once and does not persist raw key
+Current pinned release is read from `comma4/version.env`.
 
-Current pinned release in installer: **`v0.1.5-alpha`**
+## Upgrade / uninstall
 
-Release assets:
-- https://github.com/RhynoTech/CommaView/releases/tag/v0.1.5-alpha
-
-APK distribution remains private (not published in GitHub releases).
-
-### Upgrade existing install (offroad only)
+Upgrade (offroad only):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma4/upgrade.sh | ssh comma@<comma-ip> bash
 ```
 
-The upgrader hard-blocks when `IsOnroad=1`. Park first, then run upgrade.
-
-### Uninstall
+Uninstall:
 
 ```bash
 ssh comma@<comma-ip> 'bash /data/commaview/uninstall.sh'
 ```
 
----
+## Tailscale control API
 
-### Tailscale controls and troubleshooting
-
-On comma device:
+Local status + toggles:
 
 ```bash
 curl -sS http://127.0.0.1:5002/tailscale/status
@@ -89,73 +61,68 @@ curl -sS -X POST -H "X-CommaView-Token: <token>" http://127.0.0.1:5002/tailscale
 curl -sS -X POST -H "X-CommaView-Token: <token>" http://127.0.0.1:5002/tailscale/disable
 ```
 
-Logs:
+Policy:
+
+- Onroad (`IsOnroad=1`): Tailscale forced down
+- Offroad + enabled flag: Tailscale brought up
+
+Useful logs:
+
 - `/data/commaview/logs/commaviewd-bridge.log`
 - `/data/commaview/logs/commaviewd-control.log`
 - `/data/commaview/logs/tailscale-install.log`
 
-Rollback:
-- disable remote access: `curl -sS -X POST -H "X-CommaView-Token: <token>" http://127.0.0.1:5002/tailscale/disable`
-- full removal: `bash /data/commaview/uninstall.sh`
-
----
-
 ## Android app
 
-### Build
+Build debug APK:
 
 ```bash
 ./gradlew :app:assembleDebug
 ```
 
-### Install (example)
+Install:
 
 ```bash
 adb -s <device-id> install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Current app version target: **`0.1.5-alpha`**
+## Maintainer release flow
 
-### First-run onboarding (install-first redesign)
-
-Remote access settings now include:
-- Enable/disable tailscale toggle
-- Submit one-time auth key (for joining your tailnet)
-- One-tap upgrade action + manual upgrade command fallback
-
-
-On fresh install, CommaView now uses an install-first setup flow:
-
-1. Welcome + safety acknowledgment
-2. Install method choice:
-   - **Guided** (default, recommended)
-   - **Manual / Advanced** (one-command path)
-3. Service verification
-4. Discovery + connect
-   - Auto-discovery when available
-   - **Add by IP** fallback always available
-5. Live handoff
-
-Setup progress is persisted, so if the app is restarted during setup it should resume at the nearest valid step instead of resetting to the beginning.
-
----
-
-## Maintainers: cutting a new bridge release bundle
-
-Build release bundle + checksums:
+1. Update `comma4/version.env` (tag/version)
+2. Build bundle + checksum:
 
 ```bash
-tools/release/comma4-build-bundle.sh v0.1.5-alpha
+tools/release/comma4-build-bundle.sh <tag>
 ```
 
 Outputs:
-- `release/v0.1.5-alpha/commaview-comma4-v0.1.5-alpha.tar.gz`
-- `release/v0.1.5-alpha/commaview-comma4-v0.1.5-alpha.tar.gz.sha256`
 
-Then upload both files to GitHub Release `v0.1.5-alpha` (or next tag), and update `comma4/version.env` as needed.
+- `release/<tag>/commaview-comma4-<tag>.tar.gz`
+- `release/<tag>/commaview-comma4-<tag>.tar.gz.sha256`
 
----
+3. Upload both assets to the matching GitHub Release tag.
 
-## License
+## CI / canary coverage
 
-See `LICENSE` (All Rights Reserved).
+Main CI (`commaviewd-ci`) runs against:
+
+- `commaai/openpilot@release-mici-staging`
+- `sunnypilot/sunnypilot@staging`
+
+Canaries run daily and on demand:
+
+- `commaviewd-canary-openpilot` (`release-mici-staging`, `nightly`)
+- `commaviewd-canary-sunnypilot` (`staging`, `dev`)
+
+Verification includes:
+
+- upstream interface guard
+- reproducible build check
+- binary contract check
+- unit tests
+- release-bundle smoke packaging
+
+## Safety and license
+
+- Read `DISCLAIMER.md` before use.
+- License: `LICENSE` (All Rights Reserved).
