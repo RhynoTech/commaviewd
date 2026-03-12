@@ -1,4 +1,4 @@
-name: CommaViewD CI
+name: commaviewd-ci
 
 on:
   push:
