@@ -156,10 +156,16 @@ jobs:
           tools/release/comma4-build-bundle.sh "$RELEASE_TAG"
 
       - name: Upload release assets to GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.vars.outputs.tag }}
-          files: |
-            release/${{ steps.vars.outputs.tag }}/commaview-comma4-${{ steps.vars.outputs.tag }}.tar.gz
-            release/${{ steps.vars.outputs.tag }}/commaview-comma4-${{ steps.vars.outputs.tag }}.tar.gz.sha256
-          fail_on_unmatched_files: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          TAG='${{ steps.vars.outputs.tag }}'
+          ASSET_TGZ="release/${TAG}/commaview-comma4-${TAG}.tar.gz"
+          ASSET_SHA="${ASSET_TGZ}.sha256"
+
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG"               --repo "$GITHUB_REPOSITORY"               --title "$TAG"               --notes "Automated release for $TAG"               --prerelease
+          fi
+
+          gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA"             --repo "$GITHUB_REPOSITORY"             --clobber
