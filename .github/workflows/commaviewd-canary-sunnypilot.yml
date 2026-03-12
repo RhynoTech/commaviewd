@@ -28,10 +28,10 @@ jobs:
 
     steps:
       - name: Checkout CommaView
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Restore apt package cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/commaview-apt/archives
           key: apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-v1
@@ -126,14 +126,14 @@ jobs:
 
       - name: Restore upstream source cache
         id: upstream-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: openpilot-src
           key: upstream-src-${{ runner.os }}-sunnypilot-sunnypilot-${{ steps.upstream.outputs.sha }}
 
       - name: Checkout sunnypilot source
         if: steps.upstream-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: sunnypilot/sunnypilot
           ref: ${{ matrix.upstream_ref }}
@@ -170,7 +170,7 @@ jobs:
 
       - name: Upload dist artifacts (debug)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: commaviewd-canary-sunnypilot-${{ matrix.upstream_ref }}-${{ github.run_id }}
           path: |
