@@ -24,7 +24,7 @@ env:
 jobs:
   bundle-and-publish:
     name: Build comma4 release bundle + publish assets
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     steps:
