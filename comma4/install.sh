@@ -6,8 +6,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 VERSION_ENV="${SCRIPT_DIR}/version.env"
 
-VERSION="0.1.4-alpha"
-RELEASE_TAG="v0.1.4-alpha"
+VERSION="0.1.5-alpha"
+RELEASE_TAG="v0.1.5-alpha"
 if [ -f "$VERSION_ENV" ]; then
   # shellcheck disable=SC1090
   . "$VERSION_ENV"

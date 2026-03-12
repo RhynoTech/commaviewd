@@ -56,10 +56,10 @@ Safety policy:
 - Offroad + enabled flag: control policy ensures Tailscale is up
 - Installer consumes auth key once and does not persist raw key
 
-Current pinned release in installer: **`v0.1.4-alpha`**
+Current pinned release in installer: **`v0.1.5-alpha`**
 
 Release assets:
-- https://github.com/RhynoTech/CommaView/releases/tag/v0.1.4-alpha
+- https://github.com/RhynoTech/CommaView/releases/tag/v0.1.5-alpha
 
 APK distribution remains private (not published in GitHub releases).
 
@@ -114,7 +114,7 @@ Rollback:
 adb -s <device-id> install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Current app version target: **`0.1.4-alpha`**
+Current app version target: **`0.1.5-alpha`**
 
 ### First-run onboarding (install-first redesign)
 
@@ -145,14 +145,14 @@ Setup progress is persisted, so if the app is restarted during setup it should r
 Build release bundle + checksums:
 
 ```bash
-tools/release/comma4-build-bundle.sh v0.1.4-alpha
+tools/release/comma4-build-bundle.sh v0.1.5-alpha
 ```
 
 Outputs:
-- `release/v0.1.4-alpha/commaview-comma4-v0.1.4-alpha.tar.gz`
-- `release/v0.1.4-alpha/commaview-comma4-v0.1.4-alpha.tar.gz.sha256`
+- `release/v0.1.5-alpha/commaview-comma4-v0.1.5-alpha.tar.gz`
+- `release/v0.1.5-alpha/commaview-comma4-v0.1.5-alpha.tar.gz.sha256`
 
-Then upload both files to GitHub Release `v0.1.4-alpha` (or next tag), and update `comma4/install.sh` pinned tag as needed.
+Then upload both files to GitHub Release `v0.1.5-alpha` (or next tag), and update `comma4/install.sh` pinned tag as needed.
 
 ---
 

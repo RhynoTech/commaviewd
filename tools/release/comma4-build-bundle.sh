@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VERSION_ENV="${ROOT}/comma4/version.env"
-DEFAULT_TAG="v0.1.4-alpha"
+DEFAULT_TAG="v0.1.5-alpha"
 if [[ -f "$VERSION_ENV" ]]; then
   # shellcheck disable=SC1090
   . "$VERSION_ENV"
