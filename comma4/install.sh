@@ -3,8 +3,16 @@
 # Installs prebuilt C++ commaviewd bundle from pinned GitHub release.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+VERSION_ENV="${SCRIPT_DIR}/version.env"
+
 VERSION="0.1.4-alpha"
 RELEASE_TAG="v0.1.4-alpha"
+if [ -f "$VERSION_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$VERSION_ENV"
+fi
+
 GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/CommaView}"
 ASSET_NAME="${COMMAVIEW_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
 ASSET_SHA_NAME="${ASSET_NAME}.sha256"
@@ -18,8 +26,6 @@ MARKER="# commaview-hook"
 
 ENABLE_TAILSCALE=0
 TAILSCALE_AUTHKEY="${COMMAVIEW_TAILSCALE_AUTHKEY:-}"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 
 usage() {
   cat <<USAGE
@@ -209,6 +215,23 @@ prompt_retry_or_continue() {
   done
 }
 
+ensure_tailscale_runtime_best_effort() {
+  local runtime="$INSTALL_DIR/tailscale/install_tailscale_runtime.sh"
+  local runtime_log="$INSTALL_DIR/logs/tailscale-install.log"
+
+  if [ ! -x "$runtime" ]; then
+    echo "WARN: tailscale runtime helper missing at $runtime" >&2
+    return 0
+  fi
+
+  if ! "$runtime" >> "$runtime_log" 2>&1; then
+    echo "WARN: tailscale runtime install failed (continuing without remote access setup)" >&2
+    return 0
+  fi
+
+  return 0
+}
+
 maybe_configure_tailscale_opt_in() {
   [ "$ENABLE_TAILSCALE" = "1" ] || return 0
 
@@ -296,6 +319,7 @@ tar -xzf "$tmpdir/$ASSET_NAME" -C "$INSTALL_DIR" --strip-components=1
 
 deploy_required_scripts
 ensure_api_auth_token
+ensure_tailscale_runtime_best_effort
 
 if [ ! -f "$INSTALL_DIR/commaviewd" ]; then
   echo "ERROR: bundle missing $INSTALL_DIR/commaviewd" >&2

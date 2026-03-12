@@ -30,7 +30,9 @@ constexpr const char* kTailscaledBin = "/data/commaview/tailscale/bin/tailscaled
 constexpr const char* kTailscaleSocket = "/data/commaview/tailscale/state/tailscaled.sock";
 constexpr const char* kTailscaleStateFile = "/data/commaview/tailscale/state/tailscaled.state";
 constexpr const char* kTailscaleAuthKeyFile = "/data/commaview/tailscale/authkey";
+constexpr const char* kTailscaleRuntimeInstaller = "/data/commaview/tailscale/install_tailscale_runtime.sh";
 constexpr const char* kControlLogFile = "/data/commaview/logs/commaviewd-control.log";
+constexpr const char* kSetupCompleteParam = "CommaViewTailscaleSetupComplete";
 constexpr int kDefaultApiPort = 5002;
 
 struct TailscaleSnapshot {
@@ -98,6 +100,50 @@ bool write_param(const char* key, const char* value) {
 
 bool is_onroad() {
   return read_param("IsOnroad") == "1";
+}
+
+bool read_setup_complete() {
+  return read_param(kSetupCompleteParam) == "1";
+}
+
+bool write_setup_complete(bool value) {
+  return write_param(kSetupCompleteParam, value ? "1" : "0");
+}
+
+bool extract_setup_complete_flag(const std::string& body, bool* value_out) {
+  if (value_out == nullptr) return false;
+  size_t pos = body.find("\"setupComplete\"");
+  if (pos == std::string::npos) return false;
+  pos = body.find(':', pos);
+  if (pos == std::string::npos) return false;
+  pos++;
+  while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) pos++;
+  if (pos >= body.size()) return false;
+
+  if (body.compare(pos, 4, "true") == 0) {
+    *value_out = true;
+    return true;
+  }
+  if (body.compare(pos, 5, "false") == 0) {
+    *value_out = false;
+    return true;
+  }
+  return false;
+}
+
+std::string setup_complete_json(bool value) {
+  return std::string("{\"setupComplete\":") + (value ? "true" : "false") + "}";
+}
+
+std::string setup_complete_write_json(bool ok, bool value, const std::string& error = "") {
+  std::ostringstream out;
+  out << "{\"ok\":" << (ok ? "true" : "false")
+      << ",\"setupComplete\":" << (value ? "true" : "false");
+  if (!error.empty()) {
+    out << ",\"error\":\"" << json_escape(error) << "\"";
+  }
+  out << "}";
+  return out.str();
 }
 
 std::string load_api_token() {
@@ -183,6 +229,55 @@ bool run_command(const std::vector<std::string>& args,
   return true;
 }
 
+bool run_command_with_optional_sudo(const std::vector<std::string>& args,
+                                    int* exit_code,
+                                    std::string* stdout_text,
+                                    std::string* stderr_text) {
+  int local_rc = 0;
+  int* rc = exit_code ? exit_code : &local_rc;
+
+  if (run_command(args, rc, stdout_text, stderr_text) && *rc == 0) {
+    return true;
+  }
+  if (geteuid() == 0) {
+    return false;
+  }
+
+  std::vector<std::string> sudo_args = {"sudo", "-n"};
+  sudo_args.insert(sudo_args.end(), args.begin(), args.end());
+  if (!run_command(sudo_args, rc, stdout_text, stderr_text)) {
+    return false;
+  }
+  return *rc == 0;
+}
+
+bool ensure_tailscale_runtime_available(std::string* error_out) {
+  if (file_executable(kTailscaleBin) && file_executable(kTailscaledBin)) {
+    return true;
+  }
+  if (!file_executable(kTailscaleRuntimeInstaller)) {
+    if (error_out) *error_out = "tailscale runtime helper missing";
+    return false;
+  }
+
+  int rc = 0;
+  std::string out;
+  std::string err;
+  if (!run_command_with_optional_sudo({kTailscaleRuntimeInstaller}, &rc, &out, &err)) {
+    std::string msg = trim_copy(err.empty() ? out : err);
+    if (msg.empty()) msg = "tailscale runtime install failed";
+    if (error_out) *error_out = msg;
+    return false;
+  }
+
+  if (!file_executable(kTailscaleBin) || !file_executable(kTailscaledBin)) {
+    if (error_out) *error_out = "tailscale runtime still missing after install";
+    return false;
+  }
+
+  return true;
+}
+
 bool tailscaled_running() {
   int rc = 0;
   std::string out;
@@ -191,8 +286,11 @@ bool tailscaled_running() {
   return rc == 0;
 }
 
-bool start_tailscaled() {
-  if (!file_executable(kTailscaledBin)) return false;
+bool start_tailscaled(std::string* error_out = nullptr) {
+  if (!file_executable(kTailscaledBin)) {
+    if (error_out) *error_out = "tailscaled binary missing";
+    return false;
+  }
   if (tailscaled_running()) return true;
 
   mkdir("/data/commaview/logs", 0755);
@@ -200,7 +298,10 @@ bool start_tailscaled() {
   mkdir("/data/commaview/tailscale/state", 0755);
 
   pid_t pid = fork();
-  if (pid < 0) return false;
+  if (pid < 0) {
+    if (error_out) *error_out = "fork failed";
+    return false;
+  }
 
   if (pid == 0) {
     setsid();
@@ -214,12 +315,18 @@ bool start_tailscaled() {
 
     std::string state_arg = std::string("--state=") + kTailscaleStateFile;
     std::string socket_arg = std::string("--socket=") + kTailscaleSocket;
-    execl(kTailscaledBin, kTailscaledBin, state_arg.c_str(), socket_arg.c_str(), static_cast<char*>(nullptr));
+    if (geteuid() == 0) {
+      execl(kTailscaledBin, kTailscaledBin, state_arg.c_str(), socket_arg.c_str(), static_cast<char*>(nullptr));
+    } else {
+      execlp("sudo", "sudo", "-n", kTailscaledBin, state_arg.c_str(), socket_arg.c_str(), static_cast<char*>(nullptr));
+    }
     _exit(127);
   }
 
   sleep(1);
-  return tailscaled_running();
+  if (tailscaled_running()) return true;
+  if (error_out) *error_out = "failed to start tailscaled (permission denied or sudo unavailable)";
+  return false;
 }
 
 void force_tailscale_down_and_stop() {
@@ -322,6 +429,14 @@ std::string tailscale_status() {
 }
 
 std::string tailscale_set_enabled(bool enable) {
+  if (enable) {
+    std::string runtime_error;
+    if (!ensure_tailscale_runtime_available(&runtime_error)) {
+      if (runtime_error.empty()) runtime_error = "tailscale runtime missing";
+      return command_result_json(false, false, capture_tailscale_snapshot(), runtime_error);
+    }
+  }
+
   const bool available = file_executable(kTailscaleBin) && file_executable(kTailscaledBin);
   if (!available) {
     return command_result_json(false, false, capture_tailscale_snapshot(), "tailscale runtime missing");
@@ -341,8 +456,10 @@ std::string tailscale_set_enabled(bool enable) {
   }
 
   write_param("CommaViewTailscaleEnabled", "1");
-  if (!start_tailscaled()) {
-    return command_result_json(false, true, capture_tailscale_snapshot(), "failed to start tailscaled");
+  std::string start_error;
+  if (!start_tailscaled(&start_error)) {
+    if (start_error.empty()) start_error = "failed to start tailscaled";
+    return command_result_json(false, true, capture_tailscale_snapshot(), start_error);
   }
 
   std::vector<std::string> args = {kTailscaleBin, "--socket", kTailscaleSocket, "up"};
@@ -397,6 +514,12 @@ bool extract_auth_key(const std::string& body, std::string* authkey_out) {
 }
 
 std::string tailscale_set_authkey(const std::string& authkey) {
+  std::string runtime_error;
+  if (!ensure_tailscale_runtime_available(&runtime_error)) {
+    if (runtime_error.empty()) runtime_error = "tailscale runtime missing";
+    return command_result_json(false, false, capture_tailscale_snapshot(), runtime_error);
+  }
+
   const bool available = file_executable(kTailscaleBin) && file_executable(kTailscaledBin);
   if (!available) {
     return command_result_json(false, false, capture_tailscale_snapshot(), "tailscale runtime missing");
@@ -449,6 +572,9 @@ int run_control_mode(int argc, char* argv[]) {
       if (req.path == "/tailscale/status") {
         return make_json(200, tailscale_status());
       }
+      if (req.path == "/tailscale/setup-complete") {
+        return make_json(200, setup_complete_json(read_setup_complete()));
+      }
       if (req.path == "/commaview/version") {
         return make_json(200, "{\"version\":\"0.1.4-alpha\"}");
       }
@@ -482,6 +608,16 @@ int run_control_mode(int argc, char* argv[]) {
         std::string body = tailscale_set_authkey(authkey);
         int code = body.find("\"ok\":false") != std::string::npos ? 500 : 200;
         return make_json(code, body);
+      }
+      if (req.path == "/tailscale/setup-complete") {
+        bool setup_complete = false;
+        if (!extract_setup_complete_flag(req.body, &setup_complete)) {
+          return make_json(400, "{\"ok\":false,\"error\":\"setupComplete required\"}");
+        }
+        if (!write_setup_complete(setup_complete)) {
+          return make_json(500, setup_complete_write_json(false, read_setup_complete(), "failed to write setupComplete"));
+        }
+        return make_json(200, setup_complete_write_json(true, read_setup_complete()));
       }
 
       return make_json(404, "{\"error\":\"not found\"}");

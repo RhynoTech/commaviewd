@@ -2,7 +2,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-TAG="${1:-v0.1.4-alpha}"
+VERSION_ENV="${ROOT}/comma4/version.env"
+DEFAULT_TAG="v0.1.4-alpha"
+if [[ -f "$VERSION_ENV" ]]; then
+  # shellcheck disable=SC1090
+  . "$VERSION_ENV"
+  DEFAULT_TAG="${RELEASE_TAG:-$DEFAULT_TAG}"
+fi
+TAG="${1:-$DEFAULT_TAG}"
 NAME="commaview-comma4-${TAG}"
 OUT_DIR="${ROOT}/release/${TAG}"
 STAGE_DIR="${OUT_DIR}/${NAME}"
