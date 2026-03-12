@@ -1,24 +1,27 @@
-# commaviewd
+# commaviewd (Comma Runtime)
 
-> ⚠️ **Unofficial project:** community-maintained, not affiliated with or endorsed by comma.ai.
+> ⚠️ Unofficial project. Community-maintained and not affiliated with or endorsed by comma.ai.
 
-`commaviewd` is the C++ comma-side runtime for CommaView, plus comma4 installer/release tooling.
+`commaviewd` is the comma-side C++ runtime for CommaView, plus comma4 install/release tooling.
 
-## Repository scope
+## At a glance
 
-- `commaviewd/` — bridge/control runtime sources, tests, verification scripts
-- `comma4/` — install / start / stop / upgrade / uninstall scripts
-- `tools/release/` — release bundle build helper
-- `.github/workflows/` — CI, release, and canary workflows
+- Runtime binary with explicit modes:
+  - `commaviewd bridge` (video + telemetry streaming)
+  - `commaviewd control` (local control API + tailscale policy)
+- Installer lifecycle scripts for comma4 (`comma4/`)
+- CI + canary coverage against upstream openpilot/sunnypilot branches
 
-## Runtime model
+## Repository layout
 
-Single binary with explicit modes:
+- `commaviewd/` — runtime source, tests, verification scripts
+- `comma4/` — install/start/stop/upgrade/uninstall scripts + version pin
+- `tools/release/` — release bundle builder
+- `.github/workflows/` — CI/release/canary workflows
 
-- `commaviewd bridge` — stream lifecycle (video + telemetry)
-- `commaviewd control` — local control API and tailscale policy handling
+## Install on comma4
 
-## Install on comma 4
+Install/update:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/install.sh | ssh comma@<comma-ip> bash
@@ -32,26 +35,34 @@ COMMAVIEW_TAILSCALE_AUTHKEY="tskey-auth-..." \
   | ssh comma@<comma-ip> 'bash -s -- --enable-tailscale'
 ```
 
-## Upgrade / uninstall
+Upgrade / uninstall:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/upgrade.sh | ssh comma@<comma-ip> bash
 ssh comma@<comma-ip> 'bash /data/commaview/uninstall.sh'
 ```
 
-## Build / verify (maintainers)
+## Verification + release
+
+Run full runtime verification pipeline:
 
 ```bash
 commaviewd/scripts/run-verification.sh
 ```
 
-This pipeline covers:
+Coverage includes:
 
 - upstream interface guard
 - reproducible build check
 - binary contract check
 - unit tests
 - release-bundle smoke packaging
+
+Build release bundle assets:
+
+```bash
+tools/release/comma4-build-bundle.sh <tag>
+```
 
 ## CI targets
 
@@ -65,13 +76,11 @@ Daily canaries:
 - openpilot: `release-mici-staging`, `nightly`
 - sunnypilot: `staging`, `dev`
 
-## Related Android app repo
+## Related app repository
 
-The Android client now lives in a separate private repository:
+- **Android app (private):** `RhynoTech/CommaView`
 
-- `RhynoTech/CommaView` (private)
+## Safety / legal
 
-## Safety / license
-
-- Read `DISCLAIMER.md`.
+- Read `DISCLAIMER.md` before use.
 - License: `LICENSE` (All Rights Reserved).
