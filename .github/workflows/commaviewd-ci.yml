@@ -97,6 +97,12 @@ jobs:
           path: openpilot-src
           submodules: recursive
 
+
+      - name: Normalize script permissions (public mirror)
+        run: |
+          set -euxo pipefail
+          chmod +x commaviewd/scripts/*.sh
+
       - name: Run commaviewd verification pipeline
         env:
           OP_ROOT: ${{ github.workspace }}/openpilot-src
