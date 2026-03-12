@@ -24,7 +24,7 @@ env:
 jobs:
   bundle-and-publish:
     name: Build comma4 release bundle + publish assets
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04
     timeout-minutes: 90
 
     steps:
@@ -58,8 +58,7 @@ jobs:
             python3 \
             libzmq3-dev \
             libcapnp-dev \
-            libcapnp-0.8.0:arm64 \
-            libkj-0.8.0:arm64
+            libcapnp-0.8.0:arm64
 
       - name: Checkout openpilot source
         uses: actions/checkout@v4
