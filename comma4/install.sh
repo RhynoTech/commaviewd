@@ -18,11 +18,11 @@ if [ -z "${VERSION:-}" ] || [ -z "${RELEASE_TAG:-}" ]; then
   exit 1
 fi
 
-GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/CommaView}"
+GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/commaviewd}"
 ASSET_NAME="${COMMAVIEW_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
 ASSET_SHA_NAME="${ASSET_NAME}.sha256"
 BASE_URL="${COMMAVIEW_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
-INSTALLER_REF="${COMMAVIEW_INSTALLER_REF:-master}"
+INSTALLER_REF="${COMMAVIEW_INSTALLER_REF:-${RELEASE_TAG}}"
 INSTALLER_RAW_BASE="${COMMAVIEW_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma4}"
 
 INSTALL_DIR="/data/commaview"

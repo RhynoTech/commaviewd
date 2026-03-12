@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_TAG="v0.1.4-alpha"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+VERSION_ENV="${SCRIPT_DIR}/version.env"
+
+DEFAULT_TAG="${COMMAVIEW_DEFAULT_TAG:-v0.0.1-alpha}"
+if [ -f "$VERSION_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$VERSION_ENV"
+  if [ -n "${RELEASE_TAG:-}" ]; then
+    DEFAULT_TAG="$RELEASE_TAG"
+  fi
+fi
+
 TAG="$DEFAULT_TAG"
-GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/CommaView}"
-INSTALL_SCRIPT_URL="${COMMAVIEW_INSTALL_SCRIPT_URL:-https://raw.githubusercontent.com/RhynoTech/CommaView/master/comma4/install.sh}"
+GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/commaviewd}"
 
 usage() {
   cat <<USAGE
@@ -37,6 +47,9 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+INSTALL_SCRIPT_URL_DEFAULT="https://raw.githubusercontent.com/${GITHUB_REPO}/${TAG}/comma4/install.sh"
+INSTALL_SCRIPT_URL="${COMMAVIEW_INSTALL_SCRIPT_URL:-$INSTALL_SCRIPT_URL_DEFAULT}"
 
 is_onroad="$(tr -d '\000\r\n' < /data/params/d/IsOnroad 2>/dev/null || echo 0)"
 if [ "$is_onroad" = "1" ]; then
@@ -75,13 +88,18 @@ if [ -x /data/commaview/stop.sh ]; then
 fi
 
 install_script="$tmpdir/install.sh"
-curl -fL --retry 3 --retry-delay 1 -o "$install_script" "$INSTALL_SCRIPT_URL"
+if ! curl -fL --retry 3 --retry-delay 1 -o "$install_script" "$INSTALL_SCRIPT_URL"; then
+  fallback_url="https://raw.githubusercontent.com/${GITHUB_REPO}/master/comma4/install.sh"
+  echo "WARN: failed to fetch install script at ${INSTALL_SCRIPT_URL}; falling back to ${fallback_url}" >&2
+  curl -fL --retry 3 --retry-delay 1 -o "$install_script" "$fallback_url"
+fi
 chmod +x "$install_script"
 
 echo "Running installer for ${TAG}"
 COMMAVIEW_RELEASE_REPO="$GITHUB_REPO" \
 COMMAVIEW_ASSET_NAME="$ASSET_NAME" \
 COMMAVIEW_BASE_URL="$BASE_URL" \
+COMMAVIEW_INSTALLER_REF="$TAG" \
 bash "$install_script"
 
 if [ -x /data/commaview/start.sh ]; then
