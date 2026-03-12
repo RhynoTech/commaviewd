@@ -1,0 +1,87 @@
+name: commaviewd-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to package (defaults to current ref/tag)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: commaviewd-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  OPENPILOT_REF: a27efe5796e31f77e97efb33762522f2ddc3b0d0
+
+jobs:
+  bundle-and-publish:
+    name: Build comma4 release bundle + publish assets
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout CommaView
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: vars
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          if [[ -z "$TAG" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ -z "$TAG" ]]; then
+            echo "No tag resolved" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install toolchain + deps
+        run: |
+          set -euxo pipefail
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            capnproto \
+            python3 \
+            libzmq3-dev \
+            libcapnp-dev \
+            libcapnp-0.8.0:arm64 \
+            libkj-0.8.0:arm64
+
+      - name: Checkout openpilot source
+        uses: actions/checkout@v4
+        with:
+          repository: commaai/openpilot
+          ref: ${{ env.OPENPILOT_REF }}
+          path: openpilot-src
+          submodules: recursive
+
+      - name: Build release bundle
+        env:
+          OP_ROOT: ${{ github.workspace }}/openpilot-src
+          RELEASE_TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          set -euxo pipefail
+          tools/release/comma4-build-bundle.sh "$RELEASE_TAG"
+
+      - name: Upload release assets to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          files: |
+            release/${{ steps.vars.outputs.tag }}/commaview-comma4-${{ steps.vars.outputs.tag }}.tar.gz
+            release/${{ steps.vars.outputs.tag }}/commaview-comma4-${{ steps.vars.outputs.tag }}.tar.gz.sha256
+          fail_on_unmatched_files: true

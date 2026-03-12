@@ -1,0 +1,72 @@
+name: commaviewd-ci
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'commaviewd/**'
+      - '.github/workflows/commaviewd-ci.yml'
+  pull_request:
+    paths:
+      - 'commaviewd/**'
+      - '.github/workflows/commaviewd-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: commaviewd-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENPILOT_REF: a27efe5796e31f77e97efb33762522f2ddc3b0d0
+
+jobs:
+  verify:
+    name: Build + unit tests + reproducibility
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout CommaView
+        uses: actions/checkout@v4
+
+      - name: Install toolchain + deps
+        run: |
+          set -euxo pipefail
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            capnproto \
+            python3 \
+            libzmq3-dev \
+            libcapnp-dev \
+            libcapnp-0.8.0:arm64 \
+            libkj-0.8.0:arm64
+
+      - name: Checkout openpilot source
+        uses: actions/checkout@v4
+        with:
+          repository: commaai/openpilot
+          ref: ${{ env.OPENPILOT_REF }}
+          path: openpilot-src
+          submodules: recursive
+
+      - name: Run commaviewd verification pipeline
+        env:
+          OP_ROOT: ${{ github.workspace }}/openpilot-src
+        run: |
+          set -euxo pipefail
+          commaviewd/scripts/run-verification.sh
+
+      - name: Upload dist artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: commaviewd-dist-${{ github.sha }}
+          path: |
+            dist/commaviewd-host
+            dist/commaviewd-aarch64
+            dist/reproducible-build-manifest.json
+          if-no-files-found: warn
