@@ -1,36 +1,25 @@
-name: commaviewd-ci
+name: commaviewd-canary-sunnypilot
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - 'commaviewd/**'
-      - '.github/workflows/commaviewd-ci.yml'
-  pull_request:
-    paths:
-      - 'commaviewd/**'
-      - '.github/workflows/commaviewd-ci.yml'
+  schedule:
+    - cron: '53 7 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: commaviewd-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: commaviewd-canary-sunnypilot
+  cancel-in-progress: false
 
 jobs:
   verify:
-    name: Build + unit tests + reproducibility (${{ matrix.target.name }})
+    name: Canary verify (${{ matrix.upstream_ref }})
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - name: openpilot-release-mici-staging
-            upstream_repo: commaai/openpilot
-            upstream_ref: release-mici-staging
-          - name: sunnypilot-staging
-            upstream_repo: sunnypilot/sunnypilot
-            upstream_ref: staging
+        upstream_ref:
+          - staging
+          - dev
 
     steps:
       - name: Checkout CommaView
@@ -96,11 +85,11 @@ jobs:
           echo "arm_capnp_so=$ARM_CAPNP_SO" >> "$GITHUB_OUTPUT"
           echo "arm_kj_so=$ARM_KJ_SO" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout upstream source
+      - name: Checkout sunnypilot source
         uses: actions/checkout@v4
         with:
-          repository: ${{ matrix.target.upstream_repo }}
-          ref: ${{ matrix.target.upstream_ref }}
+          repository: sunnypilot/sunnypilot
+          ref: ${{ matrix.upstream_ref }}
           path: openpilot-src
           submodules: recursive
 
@@ -122,7 +111,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: commaviewd-dist-${{ matrix.target.name }}-${{ github.sha }}
+          name: commaviewd-canary-sunnypilot-${{ matrix.upstream_ref }}-${{ github.run_id }}
           path: |
             dist/commaviewd-host
             dist/commaviewd-aarch64
