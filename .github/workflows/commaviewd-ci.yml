@@ -36,6 +36,14 @@ jobs:
       - name: Checkout CommaView
         uses: actions/checkout@v4
 
+      - name: Restore apt package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/commaview-apt/archives
+          key: apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-v1
+          restore-keys: |
+            apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-
+
       - name: Install toolchain + deps
         id: armcapnp
         run: |
@@ -55,8 +63,11 @@ jobs:
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME}-backports main restricted universe multiverse
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME}-security main restricted universe multiverse
           EOF
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          APT_CACHE_DIR="$HOME/.cache/commaview-apt/archives"
+          mkdir -p "$APT_CACHE_DIR/partial"
+
+          sudo apt-get -o Dir::Cache::archives="$APT_CACHE_DIR" update
+          sudo apt-get -o Dir::Cache::archives="$APT_CACHE_DIR" install -y --no-install-recommends \
             clang \
             g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
@@ -82,7 +93,7 @@ jobs:
             exit 1
           fi
 
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get -o Dir::Cache::archives="$APT_CACHE_DIR" install -y --no-install-recommends \
             "${capnp_pkg}:arm64" \
             libzmq5:arm64
 
