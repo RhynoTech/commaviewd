@@ -31,6 +31,15 @@ jobs:
       - name: Checkout CommaView
         uses: actions/checkout@v4
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-commaviewd-release-${{ env.OPENPILOT_REF }}-${{ hashFiles('commaviewd/**', 'comma4/**', 'tools/release/comma4-build-bundle.sh') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-commaviewd-release-${{ env.OPENPILOT_REF }}-
+            ccache-${{ runner.os }}-commaviewd-release-
+
       - name: Resolve release tag
         id: vars
         run: |
@@ -70,6 +79,7 @@ jobs:
             g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             capnproto \
+            ccache \
             python3 \
             libzmq3-dev \
             libcapnp-dev
@@ -91,16 +101,23 @@ jobs:
             exit 1
           fi
 
-          sudo apt-get install -y --no-install-recommends "${capnp_pkg}:arm64"
+          sudo apt-get install -y --no-install-recommends \
+            "${capnp_pkg}:arm64" \
+            libzmq5:arm64
 
           ARM_CAPNP_SO="$(ls -1 /usr/lib/aarch64-linux-gnu/libcapnp-*.so | head -n1 || true)"
           ARM_KJ_SO="$(ls -1 /usr/lib/aarch64-linux-gnu/libkj-*.so | head -n1 || true)"
+          ARM_ZMQ_SO="$(ls -1 /usr/lib/aarch64-linux-gnu/libzmq.so.* | head -n1 || true)"
 
-          if [[ -z "$ARM_CAPNP_SO" || -z "$ARM_KJ_SO" ]]; then
-            echo "::error::Failed to detect arm64 capnp/kj shared libraries"
+          if [[ -z "$ARM_CAPNP_SO" || -z "$ARM_KJ_SO" || -z "$ARM_ZMQ_SO" ]]; then
+            echo "::error::Failed to detect arm64 capnp/kj/zmq shared libraries"
             ls -la /usr/lib/aarch64-linux-gnu | head -n 200
             exit 1
           fi
+
+          sudo ln -sf "$(basename "$ARM_CAPNP_SO")" /usr/lib/aarch64-linux-gnu/libcapnp.so
+          sudo ln -sf "$(basename "$ARM_KJ_SO")" /usr/lib/aarch64-linux-gnu/libkj.so
+          sudo ln -sf "$(basename "$ARM_ZMQ_SO")" /usr/lib/aarch64-linux-gnu/libzmq.so
 
           echo "arm_capnp_so=$ARM_CAPNP_SO" >> "$GITHUB_OUTPUT"
           echo "arm_kj_so=$ARM_KJ_SO" >> "$GITHUB_OUTPUT"
@@ -114,12 +131,13 @@ jobs:
           submodules: recursive
 
 
-      - name: Normalize script permissions (public mirror)
+      - name: Configure ccache
         run: |
           set -euxo pipefail
-          chmod +x commaviewd/scripts/*.sh
-          chmod +x tools/release/comma4-build-bundle.sh
-          chmod +x comma4/*.sh
+          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          ccache -M 2G
+          ccache -z || true
 
       - name: Build release bundle
         env:
@@ -130,6 +148,10 @@ jobs:
         run: |
           set -euxo pipefail
           tools/release/comma4-build-bundle.sh "$RELEASE_TAG"
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s || true
 
       - name: Upload release assets to GitHub release
         uses: softprops/action-gh-release@v2

@@ -36,6 +36,15 @@ jobs:
       - name: Checkout CommaView
         uses: actions/checkout@v4
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-commaviewd-ci-${{ matrix.target.name }}-${{ hashFiles('commaviewd/**') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-commaviewd-ci-${{ matrix.target.name }}-
+            ccache-${{ runner.os }}-commaviewd-ci-
+
       - name: Install toolchain + deps
         id: armcapnp
         run: |
@@ -61,6 +70,7 @@ jobs:
             g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             capnproto \
+            ccache \
             python3 \
             libzmq3-dev \
             libcapnp-dev
@@ -111,10 +121,13 @@ jobs:
           path: openpilot-src
           submodules: recursive
 
-      - name: Normalize script permissions (public mirror)
+      - name: Configure ccache
         run: |
           set -euxo pipefail
-          chmod +x commaviewd/scripts/*.sh
+          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          ccache -M 2G
+          ccache -z || true
 
       - name: Run commaviewd verification pipeline
         env:
@@ -124,6 +137,10 @@ jobs:
         run: |
           set -euxo pipefail
           commaviewd/scripts/run-verification.sh
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s || true
 
       - name: Upload dist artifacts (debug)
         if: always()
