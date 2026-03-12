@@ -152,7 +152,7 @@ Outputs:
 - `release/v0.1.5-alpha/commaview-comma4-v0.1.5-alpha.tar.gz`
 - `release/v0.1.5-alpha/commaview-comma4-v0.1.5-alpha.tar.gz.sha256`
 
-Then upload both files to GitHub Release `v0.1.5-alpha` (or next tag), and update `comma4/install.sh` pinned tag as needed.
+Then upload both files to GitHub Release `v0.1.5-alpha` (or next tag), and update `comma4/version.env` as needed.
 
 ---
 

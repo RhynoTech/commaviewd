@@ -6,11 +6,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 VERSION_ENV="${SCRIPT_DIR}/version.env"
 
-VERSION="0.1.5-alpha"
-RELEASE_TAG="v0.1.5-alpha"
-if [ -f "$VERSION_ENV" ]; then
-  # shellcheck disable=SC1090
-  . "$VERSION_ENV"
+if [ ! -f "$VERSION_ENV" ]; then
+  echo "ERROR: missing required version source: $VERSION_ENV" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+. "$VERSION_ENV"
+
+if [ -z "${VERSION:-}" ] || [ -z "${RELEASE_TAG:-}" ]; then
+  echo "ERROR: version.env must define VERSION and RELEASE_TAG" >&2
+  exit 1
 fi
 
 GITHUB_REPO="${COMMAVIEW_RELEASE_REPO:-RhynoTech/CommaView}"

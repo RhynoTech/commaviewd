@@ -3,13 +3,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VERSION_ENV="${ROOT}/comma4/version.env"
-DEFAULT_TAG="v0.1.5-alpha"
-if [[ -f "$VERSION_ENV" ]]; then
-  # shellcheck disable=SC1090
-  . "$VERSION_ENV"
-  DEFAULT_TAG="${RELEASE_TAG:-$DEFAULT_TAG}"
+if [[ ! -f "$VERSION_ENV" ]]; then
+  echo "ERROR: missing required version source: $VERSION_ENV" >&2
+  exit 1
 fi
-TAG="${1:-$DEFAULT_TAG}"
+# shellcheck disable=SC1090
+. "$VERSION_ENV"
+if [[ -z "${RELEASE_TAG:-}" ]]; then
+  echo "ERROR: version.env must define RELEASE_TAG" >&2
+  exit 1
+fi
+TAG="${1:-$RELEASE_TAG}"
 NAME="commaview-comma4-${TAG}"
 OUT_DIR="${ROOT}/release/${TAG}"
 STAGE_DIR="${OUT_DIR}/${NAME}"
