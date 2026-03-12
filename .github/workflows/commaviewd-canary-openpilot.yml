@@ -25,15 +25,6 @@ jobs:
       - name: Checkout CommaView
         uses: actions/checkout@v4
 
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-commaviewd-canary-openpilot-${{ matrix.upstream_ref }}-${{ hashFiles('commaviewd/**') }}
-          restore-keys: |
-            ccache-${{ runner.os }}-commaviewd-canary-openpilot-${{ matrix.upstream_ref }}-
-            ccache-${{ runner.os }}-commaviewd-canary-openpilot-
-
       - name: Install toolchain + deps
         id: armcapnp
         run: |
@@ -59,7 +50,6 @@ jobs:
             g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             capnproto \
-            ccache \
             python3 \
             libzmq3-dev \
             libcapnp-dev
@@ -102,21 +92,35 @@ jobs:
           echo "arm_capnp_so=$ARM_CAPNP_SO" >> "$GITHUB_OUTPUT"
           echo "arm_kj_so=$ARM_KJ_SO" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve upstream SHA
+        id: upstream
+        run: |
+          set -euo pipefail
+          REF='${{ matrix.upstream_ref }}'
+          SHA="$(git ls-remote "https://github.com/commaai/openpilot.git" "refs/heads/${REF}" | awk '{print $1}')"
+          if [[ -z "$SHA" ]]; then
+            SHA="$(git ls-remote "https://github.com/commaai/openpilot.git" "refs/tags/${REF}" | awk '{print $1}')"
+          fi
+          if [[ -z "$SHA" ]]; then
+            SHA="$REF"
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Restore upstream source cache
+        id: upstream-cache
+        uses: actions/cache@v4
+        with:
+          path: openpilot-src
+          key: upstream-src-${{ runner.os }}-commaai-openpilot-${{ steps.upstream.outputs.sha }}
+
       - name: Checkout openpilot source
+        if: steps.upstream-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: commaai/openpilot
           ref: ${{ matrix.upstream_ref }}
           path: openpilot-src
           submodules: recursive
-
-      - name: Configure ccache
-        run: |
-          set -euxo pipefail
-          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
-          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -M 2G
-          ccache -z || true
 
       - name: Run commaviewd verification pipeline
         env:
@@ -126,10 +130,6 @@ jobs:
         run: |
           set -euxo pipefail
           commaviewd/scripts/run-verification.sh
-
-      - name: ccache stats
-        if: always()
-        run: ccache -s || true
 
       - name: Upload dist artifacts (debug)
         if: always()
