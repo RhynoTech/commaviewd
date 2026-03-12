@@ -9,6 +9,9 @@ concurrency:
   group: commaviewd-canary-openpilot
   cancel-in-progress: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   verify:
     name: Canary verify (${{ matrix.upstream_ref }})

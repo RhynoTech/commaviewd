@@ -16,6 +16,9 @@ concurrency:
   group: commaviewd-ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   verify:
     name: verify (${{ matrix.target.name }})

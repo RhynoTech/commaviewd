@@ -20,6 +20,7 @@ concurrency:
 
 env:
   OPENPILOT_REF: a27efe5796e31f77e97efb33762522f2ddc3b0d0
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   bundle-and-publish:
