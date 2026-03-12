@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVER_CPP="/home/pear/CommaView/commaviewd/src/http_server.cpp"
-CONTROL_CPP="/home/pear/CommaView/commaviewd/src/control_mode.cpp"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVER_CPP="$ROOT/src/http_server.cpp"
+CONTROL_CPP="$ROOT/src/control_mode.cpp"
 
 [ -f "$SERVER_CPP" ] || { echo "FAIL: missing $SERVER_CPP"; exit 1; }
 [ -f "$CONTROL_CPP" ] || { echo "FAIL: missing $CONTROL_CPP"; exit 1; }

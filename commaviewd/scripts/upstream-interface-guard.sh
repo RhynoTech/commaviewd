@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--help" ]]; then
   cat <<USAGE
-Usage: OP_ROOT=/path/to/openpilot commaviewd/scripts/upstream-interface-guard.sh [--manifest <path>]
+Usage: OP_ROOT=/path/to/openpilot-src commaviewd/scripts/upstream-interface-guard.sh [--manifest <path>]
 Fast-fails when upstream schema/service interfaces drift in ways that can break CommaViewD.
 USAGE
   exit 0
@@ -11,7 +11,12 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
-OP_ROOT="${OP_ROOT:-/home/pear/openpilot-src}"
+DEFAULT_OP_ROOT="$REPO_ROOT/../openpilot-src"
+if [[ -d "$DEFAULT_OP_ROOT" ]]; then
+  OP_ROOT="${OP_ROOT:-$DEFAULT_OP_ROOT}"
+else
+  OP_ROOT="${OP_ROOT:-$HOME/openpilot-src}"
+fi
 DIST_DIR="${DIST_DIR:-$REPO_ROOT/dist}"
 MANIFEST="$DIST_DIR/upstream-interface-manifest.json"
 
@@ -56,7 +61,6 @@ done
   exit 1
 }
 
-# Services used by bridge runtime subscriptions.
 required_services=(
   roadEncodeData
   wideRoadEncodeData
@@ -77,7 +81,6 @@ for svc in "${required_services[@]}"; do
   check_token "$OP_ROOT/cereal/log.capnp" "$svc"
 done
 
-# Fields/method contracts used by telemetry serialization.
 required_capnp_fields=(
   alertText1
   alertText2

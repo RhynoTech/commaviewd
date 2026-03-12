@@ -159,7 +159,7 @@ jobs:
             if [[ -f dist/release-smoke-manifest.json ]]; then
               echo "- Release smoke: dist/release-smoke-manifest.json"
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload dist artifacts (debug)
         if: always()

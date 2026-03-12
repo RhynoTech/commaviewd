@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build CommaView runtime binaries on Ubuntu Node.
-# Outputs (default):
-#   /home/pear/CommaView/dist/commaviewd-host
-#   /home/pear/CommaView/dist/commaviewd-aarch64
-#   /home/pear/CommaView/dist/lib/libcapnp-0.8.0.so
-#   /home/pear/CommaView/dist/lib/libkj-0.8.0.so
+# Build CommaView runtime binaries.
+# Outputs (default under repo dist/):
+#   dist/commaviewd-host
+#   dist/commaviewd-aarch64
+#   dist/lib/libcapnp-0.8.0.so
+#   dist/lib/libkj-0.8.0.so
 
-OP_ROOT="${OP_ROOT:-/home/pear/openpilot-src}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
+DEFAULT_OP_ROOT="$REPO_ROOT/../openpilot-src"
+if [[ -d "$DEFAULT_OP_ROOT" ]]; then
+  OP_ROOT="${OP_ROOT:-$DEFAULT_OP_ROOT}"
+else
+  OP_ROOT="${OP_ROOT:-$HOME/openpilot-src}"
+fi
 DIST_DIR="${DIST_DIR:-$REPO_ROOT/dist}"
 
 MAIN_SRC="$ROOT/src/main.cc"

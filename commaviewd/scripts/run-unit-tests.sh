@@ -3,14 +3,20 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--help" ]]; then
   cat <<USAGE
-Usage: OP_ROOT=/home/pear/openpilot-src commaviewd/scripts/run-unit-tests.sh
+Usage: OP_ROOT=/path/to/openpilot-src commaviewd/scripts/run-unit-tests.sh
 Compiles and runs commaviewd unit tests (framing, runtime mode, control policy, telemetry).
 USAGE
   exit 0
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OP_ROOT="${OP_ROOT:-/home/pear/openpilot-src}"
+REPO_ROOT="$(cd "$ROOT/.." && pwd)"
+DEFAULT_OP_ROOT="$REPO_ROOT/../openpilot-src"
+if [[ -d "$DEFAULT_OP_ROOT" ]]; then
+  OP_ROOT="${OP_ROOT:-$DEFAULT_OP_ROOT}"
+else
+  OP_ROOT="${OP_ROOT:-$HOME/openpilot-src}"
+fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--help" ]]; then
   cat <<USAGE
-Usage: OP_ROOT=/home/pear/openpilot-src commaviewd/scripts/reproducible-build.sh [--manifest <path>]
+Usage: OP_ROOT=/path/to/openpilot-src commaviewd/scripts/reproducible-build.sh [--manifest <path>]
 Builds commaviewd twice and verifies host + aarch64 digests are identical.
 USAGE
   exit 0
@@ -11,7 +11,12 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
-OP_ROOT="${OP_ROOT:-/home/pear/openpilot-src}"
+DEFAULT_OP_ROOT="$REPO_ROOT/../openpilot-src"
+if [[ -d "$DEFAULT_OP_ROOT" ]]; then
+  OP_ROOT="${OP_ROOT:-$DEFAULT_OP_ROOT}"
+else
+  OP_ROOT="${OP_ROOT:-$HOME/openpilot-src}"
+fi
 DIST_DIR="${DIST_DIR:-$REPO_ROOT/dist}"
 MANIFEST="$DIST_DIR/reproducible-build-manifest.json"
 

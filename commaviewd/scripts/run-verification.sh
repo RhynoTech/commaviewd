@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--help" ]]; then
   cat <<USAGE
-Usage: OP_ROOT=/home/pear/openpilot-src commaviewd/scripts/run-verification.sh
+Usage: OP_ROOT=/path/to/openpilot-src commaviewd/scripts/run-verification.sh
 Runs full verification pipeline:
   1) upstream interface guard
   2) reproducible build
@@ -16,7 +16,12 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
-OP_ROOT="${OP_ROOT:-/home/pear/openpilot-src}"
+DEFAULT_OP_ROOT="$REPO_ROOT/../openpilot-src"
+if [[ -d "$DEFAULT_OP_ROOT" ]]; then
+  OP_ROOT="${OP_ROOT:-$DEFAULT_OP_ROOT}"
+else
+  OP_ROOT="${OP_ROOT:-$HOME/openpilot-src}"
+fi
 DIST_DIR="${DIST_DIR:-$REPO_ROOT/dist}"
 RELEASE_SMOKE_TAG="${RELEASE_SMOKE_TAG:-ci-smoke}"
 RELEASE_SMOKE_MANIFEST="$DIST_DIR/release-smoke-manifest.json"

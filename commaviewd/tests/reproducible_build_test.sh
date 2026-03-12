@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT="/home/pear/CommaView/commaviewd/scripts/reproducible-build.sh"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT="$ROOT/scripts/reproducible-build.sh"
 
 [ -x "$SCRIPT" ] || { echo "FAIL: missing executable $SCRIPT"; exit 1; }
 "$SCRIPT" --help >/dev/null
