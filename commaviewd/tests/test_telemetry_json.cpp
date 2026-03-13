@@ -330,6 +330,53 @@ void test_road_camera_state_json() {
   assert(has(out, "\"logMonoTime\":1212"));
 }
 
+void test_new_payload_defaults_and_empty_lists() {
+  {
+    capnp::MallocMessageBuilder mb;
+    auto evt = mb.initRoot<cereal::Event>();
+    evt.setLogMonoTime(1515);
+    auto model = evt.initModelV2();
+    model.setFrameId(1);
+
+    auto lanes = model.initLaneLines(1);
+    set_xyz(lanes[0], 0.0f, 1.0f, 0.0f, 0.1f, 0.0f, 0.0f);
+
+    auto edges = model.initRoadEdges(1);
+    set_xyz(edges[0], 0.0f, 1.0f, 2.0f, 2.1f, 0.0f, 0.0f);
+
+    std::string out = commaview::telemetry::build_telemetry_json(evt.asReader());
+    assert(has(out, "\"type\":\"modelV2\""));
+    assert(has(out, "\"prob\":0"));
+    assert(has(out, "\"std\":0"));
+    assert(has(out, "\"laneLineStds\":[]"));
+    assert(has(out, "\"roadEdgeStds\":[]"));
+  }
+
+  {
+    capnp::MallocMessageBuilder mb;
+    auto evt = mb.initRoot<cereal::Event>();
+    evt.setLogMonoTime(1616);
+    auto dm = evt.initDriverMonitoringState();
+    dm.setFaceDetected(false);
+
+    std::string out = commaview::telemetry::build_telemetry_json(evt.asReader());
+    assert(has(out, "\"type\":\"driverMonitoringState\""));
+    assert(has(out, "\"events\":[]"));
+    assert(has(out, "\"logMonoTime\":1616"));
+  }
+
+  {
+    capnp::MallocMessageBuilder mb;
+    auto evt = mb.initRoot<cereal::Event>();
+    evt.setLogMonoTime(1717);
+    evt.initOnroadEvents(0);
+
+    std::string out = commaview::telemetry::build_telemetry_json(evt.asReader());
+    assert(has(out, "\"type\":\"onroadEvents\""));
+    assert(has(out, "\"count\":0"));
+    assert(has(out, "\"events\":[]"));
+  }
+}
 
 void test_json_safety_escaping_and_non_finite() {
   {
@@ -375,6 +422,7 @@ int main() {
   test_driver_monitoring_and_driver_state_v2_json();
   test_onroad_events_json();
   test_road_camera_state_json();
+  test_new_payload_defaults_and_empty_lists();
   test_json_safety_escaping_and_non_finite();
   return 0;
 }

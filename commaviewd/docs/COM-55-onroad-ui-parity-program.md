@@ -86,3 +86,12 @@ commaviewd/scripts/run-unit-tests.sh
 - Upstream parity captures reviewed for key onroad states.
 - No stale/legacy overlay paths remain.
 - Final validation summary attached to the issue.
+
+## COM-57 telemetry contract test command
+Run from repo root:
+
+```bash
+commaviewd/scripts/run-unit-tests.sh
+```
+
+This includes `tests/test_telemetry_json.cpp` coverage for new payload service types and fallback/default behavior checks.
