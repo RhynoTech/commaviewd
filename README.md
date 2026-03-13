@@ -19,6 +19,10 @@
 - `tools/release/` — release bundle builder
 - `.github/workflows/` — CI/release/canary workflows
 
+## Program plans
+
+- `commaviewd/docs/COM-55-onroad-ui-parity-program.md` — phased execution plan for comma4 onroad UI parity.
+
 ## Install on comma4
 
 Install/update:
