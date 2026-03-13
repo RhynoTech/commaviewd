@@ -1,5 +1,6 @@
 #include "json_builder.h"
 
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <type_traits>
@@ -10,12 +11,31 @@ namespace {
 std::string json_escape(const std::string& s) {
   std::string out;
   out.reserve(s.size());
-  for (char c : s) {
+  constexpr char kHex[] = "0123456789abcdef";
+  for (unsigned char c : s) {
     switch (c) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
+      case '"':
+        out.push_back('\\');
+        out.push_back('"');
+        break;
+      case '\\':
+        out.push_back('\\');
+        out.push_back('\\');
+        break;
+      case '\b': out += "\\b"; break;
+      case '\f': out += "\\f"; break;
       case '\n': out += "\\n"; break;
-      default: out += c;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (c < 0x20) {
+          out += "\\u00";
+          out += kHex[(c >> 4) & 0x0f];
+          out += kHex[c & 0x0f];
+        } else {
+          out += static_cast<char>(c);
+        }
+        break;
     }
   }
   return out;
@@ -29,7 +49,9 @@ template <typename T>
 std::string json_num(T value) {
   char buf[64];
   if constexpr (std::is_floating_point_v<T>) {
-    snprintf(buf, sizeof(buf), "%.6g", static_cast<double>(value));
+    const double d = static_cast<double>(value);
+    if (!std::isfinite(d)) return "null";
+    snprintf(buf, sizeof(buf), "%.6g", d);
   } else if constexpr (std::is_signed_v<T>) {
     snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(value));
   } else {

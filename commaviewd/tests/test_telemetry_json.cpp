@@ -2,6 +2,7 @@
 
 #include <capnp/message.h>
 #include <cassert>
+#include <limits>
 #include <string>
 
 #include "cereal/gen/cpp/log.capnp.h"
@@ -329,6 +330,38 @@ void test_road_camera_state_json() {
   assert(has(out, "\"logMonoTime\":1212"));
 }
 
+
+void test_json_safety_escaping_and_non_finite() {
+  {
+    capnp::MallocMessageBuilder mb;
+    auto evt = mb.initRoot<cereal::Event>();
+    evt.setLogMonoTime(1313);
+    auto ss = evt.initSelfdriveState();
+    ss.setEnabled(true);
+    ss.setAlertText1("Line1\nLine2\t\"quoted\"\rDone");
+    ss.setAlertText2("ok");
+    ss.setAlertType("warn");
+
+    std::string out = commaview::telemetry::build_telemetry_json(evt.asReader());
+    assert(has(out, "Line1\\nLine2\\t"));
+    assert(has(out, "quoted"));
+    assert(has(out, "\\rDone"));
+  }
+
+  {
+    capnp::MallocMessageBuilder mb;
+    auto evt = mb.initRoot<cereal::Event>();
+    evt.setLogMonoTime(1414);
+    auto cs = evt.initCarState();
+    cs.setVEgo(std::numeric_limits<float>::quiet_NaN());
+    cs.setSteeringAngleDeg(std::numeric_limits<float>::infinity());
+
+    std::string out = commaview::telemetry::build_telemetry_json(evt.asReader());
+    assert(has(out, "\"speed\":null"));
+    assert(has(out, "\"steeringAngle\":null"));
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -342,5 +375,6 @@ int main() {
   test_driver_monitoring_and_driver_state_v2_json();
   test_onroad_events_json();
   test_road_camera_state_json();
+  test_json_safety_escaping_and_non_finite();
   return 0;
 }
