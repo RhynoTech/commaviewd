@@ -52,11 +52,13 @@ static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;
 static constexpr int PORT_DRIVER = 8202;
 
-// Test profile: telemetry split testing to isolate engagement impact.
+// Parity profile: onroad-critical telemetry set, emitted at coalesced 10 Hz.
 static const char* TELEMETRY_SERVICES[] = {
-  "carState", "selfdriveState", "deviceState", "liveCalibration", "radarState", "modelV2"
+  "carState", "selfdriveState", "deviceState", "liveCalibration", "radarState", "modelV2",
+  "carControl", "carOutput", "liveParameters", "driverMonitoringState",
+  "driverStateV2", "onroadEvents", "roadCameraState"
 };
-static constexpr int NUM_TELEM = 6;
+static constexpr int NUM_TELEM = 13;
 static constexpr int TELEMETRY_EMIT_MS = 100;  // 10 Hz coalesced telemetry
 
 static constexpr uint32_t TELEMETRY_BIT_CARSTATE = 1u << 0;
@@ -65,13 +67,27 @@ static constexpr uint32_t TELEMETRY_BIT_DEVICESTATE = 1u << 2;
 static constexpr uint32_t TELEMETRY_BIT_LIVECALIB = 1u << 3;
 static constexpr uint32_t TELEMETRY_BIT_RADAR = 1u << 4;
 static constexpr uint32_t TELEMETRY_BIT_MODELV2 = 1u << 5;
+static constexpr uint32_t TELEMETRY_BIT_CARCONTROL = 1u << 6;
+static constexpr uint32_t TELEMETRY_BIT_CAROUTPUT = 1u << 7;
+static constexpr uint32_t TELEMETRY_BIT_LIVEPARAMS = 1u << 8;
+static constexpr uint32_t TELEMETRY_BIT_DRIVERMON = 1u << 9;
+static constexpr uint32_t TELEMETRY_BIT_DRIVERV2 = 1u << 10;
+static constexpr uint32_t TELEMETRY_BIT_ONROADEVENTS = 1u << 11;
+static constexpr uint32_t TELEMETRY_BIT_ROADCAMSTATE = 1u << 12;
 static constexpr uint32_t TELEMETRY_MASK_ALL =
     TELEMETRY_BIT_CARSTATE |
     TELEMETRY_BIT_SELFDRIVE |
     TELEMETRY_BIT_DEVICESTATE |
     TELEMETRY_BIT_LIVECALIB |
     TELEMETRY_BIT_RADAR |
-    TELEMETRY_BIT_MODELV2;
+    TELEMETRY_BIT_MODELV2 |
+    TELEMETRY_BIT_CARCONTROL |
+    TELEMETRY_BIT_CAROUTPUT |
+    TELEMETRY_BIT_LIVEPARAMS |
+    TELEMETRY_BIT_DRIVERMON |
+    TELEMETRY_BIT_DRIVERV2 |
+    TELEMETRY_BIT_ONROADEVENTS |
+    TELEMETRY_BIT_ROADCAMSTATE;
 static constexpr uint32_t TELEMETRY_MASK_SAFE_NO_CAR =
     TELEMETRY_MASK_ALL & ~TELEMETRY_BIT_CARSTATE;
 
@@ -116,6 +132,13 @@ static bool telemetry_enabled_index(int i) {
     case 3: return (g_telemetry_mask & TELEMETRY_BIT_LIVECALIB) != 0;
     case 4: return (g_telemetry_mask & TELEMETRY_BIT_RADAR) != 0;
     case 5: return (g_telemetry_mask & TELEMETRY_BIT_MODELV2) != 0;
+    case 6: return (g_telemetry_mask & TELEMETRY_BIT_CARCONTROL) != 0;
+    case 7: return (g_telemetry_mask & TELEMETRY_BIT_CAROUTPUT) != 0;
+    case 8: return (g_telemetry_mask & TELEMETRY_BIT_LIVEPARAMS) != 0;
+    case 9: return (g_telemetry_mask & TELEMETRY_BIT_DRIVERMON) != 0;
+    case 10: return (g_telemetry_mask & TELEMETRY_BIT_DRIVERV2) != 0;
+    case 11: return (g_telemetry_mask & TELEMETRY_BIT_ONROADEVENTS) != 0;
+    case 12: return (g_telemetry_mask & TELEMETRY_BIT_ROADCAMSTATE) != 0;
     default: return false;
   }
 }
@@ -128,6 +151,13 @@ static const char* telemetry_mask_label() {
   if (g_telemetry_mask == TELEMETRY_BIT_LIVECALIB) return "liveCalibration";
   if (g_telemetry_mask == TELEMETRY_BIT_RADAR) return "radarState";
   if (g_telemetry_mask == TELEMETRY_BIT_MODELV2) return "modelV2";
+  if (g_telemetry_mask == TELEMETRY_BIT_CARCONTROL) return "carControl";
+  if (g_telemetry_mask == TELEMETRY_BIT_CAROUTPUT) return "carOutput";
+  if (g_telemetry_mask == TELEMETRY_BIT_LIVEPARAMS) return "liveParameters";
+  if (g_telemetry_mask == TELEMETRY_BIT_DRIVERMON) return "driverMonitoringState";
+  if (g_telemetry_mask == TELEMETRY_BIT_DRIVERV2) return "driverStateV2";
+  if (g_telemetry_mask == TELEMETRY_BIT_ONROADEVENTS) return "onroadEvents";
+  if (g_telemetry_mask == TELEMETRY_BIT_ROADCAMSTATE) return "roadCameraState";
   if (g_telemetry_mask == TELEMETRY_MASK_SAFE_NO_CAR) return "safeNoCar";
   return "custom";
 }
@@ -260,12 +290,26 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   std::string model_json_latest;
   std::string radar_json_latest;
   std::string calibration_json_latest;
+  std::string car_control_json_latest;
+  std::string car_output_json_latest;
+  std::string live_parameters_json_latest;
+  std::string driver_monitoring_json_latest;
+  std::string driver_state_v2_json_latest;
+  std::string onroad_events_json_latest;
+  std::string road_camera_state_json_latest;
   bool have_car_json = false;
   bool have_controls_json = false;
   bool have_device_json = false;
   bool have_model_json = false;
   bool have_radar_json = false;
   bool have_calibration_json = false;
+  bool have_car_control_json = false;
+  bool have_car_output_json = false;
+  bool have_live_parameters_json = false;
+  bool have_driver_monitoring_json = false;
+  bool have_driver_state_v2_json = false;
+  bool have_onroad_events_json = false;
+  bool have_road_camera_state_json = false;
   AlignedBuffer aligned_buf;
   ClientControlState control_state;
 
@@ -410,6 +454,34 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                 calibration_json_latest = std::move(json);
                 have_calibration_json = true;
                 break;
+              case cereal::Event::CAR_CONTROL:
+                car_control_json_latest = std::move(json);
+                have_car_control_json = true;
+                break;
+              case cereal::Event::CAR_OUTPUT:
+                car_output_json_latest = std::move(json);
+                have_car_output_json = true;
+                break;
+              case cereal::Event::LIVE_PARAMETERS:
+                live_parameters_json_latest = std::move(json);
+                have_live_parameters_json = true;
+                break;
+              case cereal::Event::DRIVER_MONITORING_STATE:
+                driver_monitoring_json_latest = std::move(json);
+                have_driver_monitoring_json = true;
+                break;
+              case cereal::Event::DRIVER_STATE_V2:
+                driver_state_v2_json_latest = std::move(json);
+                have_driver_state_v2_json = true;
+                break;
+              case cereal::Event::ONROAD_EVENTS:
+                onroad_events_json_latest = std::move(json);
+                have_onroad_events_json = true;
+                break;
+              case cereal::Event::ROAD_CAMERA_STATE:
+                road_camera_state_json_latest = std::move(json);
+                have_road_camera_state_json = true;
+                break;
               default:
                 break;
             }
@@ -486,6 +558,62 @@ static void handle_client(int client_fd, const char* video_service, int port) {
             telem_count++;
           }
         }
+        if (have_car_control_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, car_control_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_car_output_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, car_output_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_live_parameters_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, live_parameters_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_driver_monitoring_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, driver_monitoring_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_driver_state_v2_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, driver_state_v2_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_onroad_events_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, onroad_events_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
+        if (have_road_camera_state_json) {
+          if (g_telemetry_blackhole) {
+            telem_drop_count++;
+          } else {
+            if (!send_meta_json(client_fd, road_camera_state_json_latest)) goto disconnect;
+            telem_count++;
+          }
+        }
 
         const uint64_t telem_log_counter = g_telemetry_blackhole ? telem_drop_count : telem_count;
         if (telem_log_counter <= 3 || (telem_log_counter % 200) == 0) {
@@ -552,6 +680,13 @@ int commaview_bridge_main(int argc, char* argv[]) {
     if (strcmp(argv[i], "--telem-calib-only") == 0) g_telemetry_mask = TELEMETRY_BIT_LIVECALIB;
     if (strcmp(argv[i], "--telem-radar-only") == 0) g_telemetry_mask = TELEMETRY_BIT_RADAR;
     if (strcmp(argv[i], "--telem-modelv2-only") == 0) g_telemetry_mask = TELEMETRY_BIT_MODELV2;
+    if (strcmp(argv[i], "--telem-carcontrol-only") == 0) g_telemetry_mask = TELEMETRY_BIT_CARCONTROL;
+    if (strcmp(argv[i], "--telem-caroutput-only") == 0) g_telemetry_mask = TELEMETRY_BIT_CAROUTPUT;
+    if (strcmp(argv[i], "--telem-liveparams-only") == 0) g_telemetry_mask = TELEMETRY_BIT_LIVEPARAMS;
+    if (strcmp(argv[i], "--telem-drivermon-only") == 0) g_telemetry_mask = TELEMETRY_BIT_DRIVERMON;
+    if (strcmp(argv[i], "--telem-driverv2-only") == 0) g_telemetry_mask = TELEMETRY_BIT_DRIVERV2;
+    if (strcmp(argv[i], "--telem-onroadevents-only") == 0) g_telemetry_mask = TELEMETRY_BIT_ONROADEVENTS;
+    if (strcmp(argv[i], "--telem-roadcam-only") == 0) g_telemetry_mask = TELEMETRY_BIT_ROADCAMSTATE;
     if (strcmp(argv[i], "--telem-safe-no-car") == 0) g_telemetry_mask = TELEMETRY_MASK_SAFE_NO_CAR;
   }
 
