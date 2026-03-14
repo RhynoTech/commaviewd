@@ -55,14 +55,15 @@ static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;
 static constexpr int PORT_DRIVER = 8202;
 
-// Parity profile: onroad-critical telemetry set, emitted at coalesced 10 Hz.
+// Parity profile: onroad-critical telemetry set, emitted at coalesced 20 Hz.
 static const char* TELEMETRY_SERVICES[] = {
   "carState", "selfdriveState", "deviceState", "liveCalibration", "radarState", "modelV2",
   "carControl", "carOutput", "liveParameters", "driverMonitoringState",
   "driverStateV2", "onroadEvents", "roadCameraState"
 };
 static constexpr int NUM_TELEM = 13;
-static constexpr int TELEMETRY_EMIT_MS = 100;  // 10 Hz coalesced telemetry
+static constexpr int TELEMETRY_EMIT_MS_DEFAULT = 50;  // 20 Hz parity target
+static int g_telemetry_emit_ms = TELEMETRY_EMIT_MS_DEFAULT;
 
 static constexpr uint32_t TELEMETRY_BIT_CARSTATE = 1u << 0;
 static constexpr uint32_t TELEMETRY_BIT_SELFDRIVE = 1u << 1;
@@ -146,6 +147,20 @@ static bool telemetry_enabled_index(int i) {
     case 12: return (g_telemetry_mask & TELEMETRY_BIT_ROADCAMSTATE) != 0;
     default: return false;
   }
+}
+
+static int clamp_telem_emit_ms(int value) {
+  if (value < 10) return 10;
+  if (value > 1000) return 1000;
+  return value;
+}
+
+static int parse_int_or_default(const char* text, int fallback) {
+  if (text == nullptr || *text == '\0') return fallback;
+  char* end = nullptr;
+  long v = strtol(text, &end, 10);
+  if (end == text || (end && *end != '\0')) return fallback;
+  return static_cast<int>(v);
 }
 
 static const char* telemetry_mask_label() {
@@ -351,7 +366,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   uint64_t telem_drain_count = 0;
   uint64_t suppressed_video_count = 0;
   auto t0 = std::chrono::steady_clock::now();
-  auto next_telem_emit = t0 + std::chrono::milliseconds(TELEMETRY_EMIT_MS);
+  auto next_telem_emit = t0 + std::chrono::milliseconds(g_telemetry_emit_ms);
   std::string car_json_latest;
   std::string controls_json_latest;
   std::string device_json_latest;
@@ -603,7 +618,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
     if (include_telemetry) {
       auto now = std::chrono::steady_clock::now();
       if (now >= next_telem_emit) {
-        next_telem_emit = now + std::chrono::milliseconds(TELEMETRY_EMIT_MS);
+        next_telem_emit = now + std::chrono::milliseconds(g_telemetry_emit_ms);
 
         if (have_car_json) {
           if (g_telemetry_blackhole) {
@@ -731,12 +746,13 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
         const uint64_t telem_log_counter = g_telemetry_blackhole ? telem_drop_count : (telem_count + telem_raw_count);
         if (telem_log_counter <= 3 || (telem_log_counter % 200) == 0) {
-          printf("[%s] telem_json=%llu telem_raw=%llu drop=%llu drain=%llu (coalesced 10Hz)%s\n",
+          printf("[%s] telem_json=%llu telem_raw=%llu drop=%llu drain=%llu (coalesced %dms)%s\n",
                  video_service,
                  static_cast<unsigned long long>(telem_count),
                  static_cast<unsigned long long>(telem_raw_count),
                  static_cast<unsigned long long>(telem_drop_count),
                  static_cast<unsigned long long>(telem_drain_count),
+                 g_telemetry_emit_ms,
                  g_telemetry_blackhole ? " [BLACKHOLE]" : "");
           fflush(stdout);
         }
@@ -782,6 +798,10 @@ int commaview_bridge_main(int argc, char* argv[]) {
   signal(SIGTERM, sig_handler);
   signal(SIGPIPE, SIG_IGN);
 
+  if (const char* env_emit = std::getenv("COMMAVIEW_TELEMETRY_EMIT_MS")) {
+    g_telemetry_emit_ms = clamp_telem_emit_ms(parse_int_or_default(env_emit, g_telemetry_emit_ms));
+  }
+
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--dev") == 0) g_dev_mode = true;
     if (strcmp(argv[i], "--video-only") == 0) g_video_only = true;
@@ -793,6 +813,9 @@ int commaview_bridge_main(int argc, char* argv[]) {
     if (strcmp(argv[i], "--meta-raw") == 0) g_emit_meta_raw = true;
     if (strcmp(argv[i], "--meta-raw-only") == 0) { g_emit_meta_raw = true; g_emit_meta_json = false; }
     if (strcmp(argv[i], "--meta-json-only") == 0) { g_emit_meta_json = true; g_emit_meta_raw = false; }
+    if (strcmp(argv[i], "--telem-emit-ms") == 0 && (i + 1) < argc) {
+      g_telemetry_emit_ms = clamp_telem_emit_ms(parse_int_or_default(argv[++i], g_telemetry_emit_ms));
+    }
     if (strcmp(argv[i], "--telem-car-only") == 0) g_telemetry_mask = TELEMETRY_BIT_CARSTATE;
     if (strcmp(argv[i], "--telem-selfdrive-only") == 0) g_telemetry_mask = TELEMETRY_BIT_SELFDRIVE;
     if (strcmp(argv[i], "--telem-device-only") == 0) g_telemetry_mask = TELEMETRY_BIT_DEVICESTATE;
@@ -811,7 +834,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
 
   const char** video_services = g_dev_mode ? VIDEO_SERVICES_DEV : VIDEO_SERVICES_PROD;
 
-  printf("CommaView Bridge v3.3.8-safe-bundle (C++)%s%s%s%s%s%s%s%s%s [TELEM=%s]\n",
+  printf("CommaView Bridge v3.3.8-safe-bundle (C++)%s%s%s%s%s%s%s%s%s [TELEM=%s][EMIT_MS=%d]\n",
          g_dev_mode ? " [DEV MODE: livestream]" : "",
          g_video_only ? " [VIDEO ONLY]" : " [VIDEO+TELEMETRY]",
          g_suppress_video ? " [SUPPRESS_VIDEO_TX]" : "",
@@ -821,7 +844,8 @@ int commaview_bridge_main(int argc, char* argv[]) {
          g_telemetry_subscribe_only ? " [TELEMETRY SUBSCRIBE_ONLY]" : "",
          g_emit_meta_json ? " [META_JSON]" : "",
          g_emit_meta_raw ? " [META_RAW]" : "",
-         telemetry_mask_label());
+         telemetry_mask_label(),
+         g_telemetry_emit_ms);
   fflush(stdout);
 
   std::vector<std::pair<int, const char*>> streams;
