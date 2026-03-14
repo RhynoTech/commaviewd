@@ -39,12 +39,19 @@ bool send_frame(int fd, const uint8_t* payload, size_t payload_len) {
   return send_all(fd, payload, payload_len);
 }
 
-bool send_meta_json(int fd, const std::string& json, uint8_t msg_meta_type) {
-  if (json.empty()) return true;
-  std::vector<uint8_t> payload(1 + json.size());
-  payload[0] = msg_meta_type;
-  memcpy(&payload[1], json.data(), json.size());
+bool send_meta_bytes(int fd, const uint8_t* bytes, size_t bytes_len, uint8_t msg_type) {
+  if (bytes == nullptr || bytes_len == 0) return true;
+  std::vector<uint8_t> payload(1 + bytes_len);
+  payload[0] = msg_type;
+  memcpy(&payload[1], bytes, bytes_len);
   return send_frame(fd, payload.data(), payload.size());
+}
+
+bool send_meta_json(int fd, const std::string& json, uint8_t msg_meta_type) {
+  return send_meta_bytes(fd,
+                         reinterpret_cast<const uint8_t*>(json.data()),
+                         json.size(),
+                         msg_meta_type);
 }
 
 }  // namespace commaview::net
