@@ -220,16 +220,26 @@ static bool send_meta_raw_frame(int fd,
                                 uint8_t service_index,
                                 uint16_t event_which,
                                 uint64_t log_mono_time,
+                                const std::string& json_payload,
                                 const uint8_t* raw_data,
                                 size_t raw_size) {
   if (raw_data == nullptr || raw_size == 0) return true;
-  std::vector<uint8_t> payload(1 + 1 + 1 + 2 + 8 + 4 + raw_size);
-  payload[0] = META_RAW_VERSION;
+  const uint32_t json_len = static_cast<uint32_t>(json_payload.size());
+  const uint32_t raw_len = static_cast<uint32_t>(raw_size);
+  std::vector<uint8_t> payload(1 + 1 + 2 + 8 + 4 + json_len + 4 + raw_len);
+  payload[0] = 0x02;  // raw meta envelope v2 includes json snapshot + raw event
   payload[1] = service_index;
   put_be16(&payload[2], event_which);
   put_be64(&payload[4], log_mono_time);
-  put_be32(&payload[12], static_cast<uint32_t>(raw_size));
-  memcpy(&payload[16], raw_data, raw_size);
+  put_be32(&payload[12], json_len);
+  size_t off = 16;
+  if (json_len > 0) {
+    memcpy(&payload[off], json_payload.data(), json_len);
+    off += json_len;
+  }
+  put_be32(&payload[off], raw_len);
+  off += 4;
+  memcpy(&payload[off], raw_data, raw_len);
   return commaview::net::send_meta_bytes(fd, payload.data(), payload.size(), MSG_META_RAW);
 }
 
@@ -371,6 +381,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   std::vector<std::vector<uint8_t>> raw_latest(NUM_TELEM);
   std::vector<uint64_t> raw_log_mono(NUM_TELEM, 0);
   std::vector<uint16_t> raw_event_which(NUM_TELEM, 0);
+  std::vector<std::string> raw_json_latest(NUM_TELEM);
   std::vector<bool> have_raw(NUM_TELEM, false);
   AlignedBuffer aligned_buf;
   ClientControlState control_state;
@@ -500,6 +511,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
           }
           std::string json = build_telemetry_json(event);
           if (!json.empty()) {
+            if (raw_idx >= 0) raw_json_latest[raw_idx] = json;
             switch (event.which()) {
               case cereal::Event::CAR_STATE:
                 car_json_latest = std::move(json);
@@ -698,6 +710,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                                      static_cast<uint8_t>(i),
                                      raw_event_which[i],
                                      raw_log_mono[i],
+                                     raw_json_latest[i],
                                      raw.data(),
                                      raw.size())) goto disconnect;
             telem_raw_count++;
