@@ -39,6 +39,7 @@
 #include <cctype>
 #include <mutex>
 #include <unordered_map>
+#include <fstream>
 
 #include <capnp/serialize.h>
 #include "cereal/gen/cpp/log.capnp.h"
@@ -258,6 +259,33 @@ static bool send_meta_raw_frame(int fd,
   return commaview::net::send_meta_bytes(fd, payload.data(), payload.size(), MSG_META_RAW);
 }
 
+static std::string stats_path_for_service(const char* service_name) {
+  std::string safe = service_name ? service_name : "unknown";
+  for (char& ch : safe) {
+    if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_') ch = '_';
+  }
+  return std::string("/tmp/commaview-telemetry-") + safe + ".json";
+}
+
+static void write_telemetry_stats_file(const std::string& path,
+                                       const char* service_name,
+                                       uint64_t telem_json,
+                                       uint64_t telem_raw,
+                                       uint64_t telem_drop,
+                                       uint64_t telem_drain,
+                                       int emit_ms) {
+  std::ofstream out(path, std::ios::trunc);
+  if (!out) return;
+  out << "{"
+      << "\"service\":\"" << (service_name ? service_name : "unknown") << "\","
+      << "\"telemJson\":" << telem_json << ","
+      << "\"telemRaw\":" << telem_raw << ","
+      << "\"telemDrop\":" << telem_drop << ","
+      << "\"telemDrain\":" << telem_drain << ","
+      << "\"emitMs\":" << emit_ms
+      << "}";
+}
+
 static void set_session_policy(const std::string& session_id, bool suppress_video) {
   commaview::control::set_session_policy(session_id, suppress_video);
 }
@@ -367,6 +395,8 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   uint64_t suppressed_video_count = 0;
   auto t0 = std::chrono::steady_clock::now();
   auto next_telem_emit = t0 + std::chrono::milliseconds(g_telemetry_emit_ms);
+  auto next_stats_flush = t0 + std::chrono::milliseconds(1000);
+  const std::string telemetry_stats_path = stats_path_for_service(video_service);
   std::string car_json_latest;
   std::string controls_json_latest;
   std::string device_json_latest;
@@ -755,6 +785,17 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                  g_telemetry_emit_ms,
                  g_telemetry_blackhole ? " [BLACKHOLE]" : "");
           fflush(stdout);
+        }
+
+        if (now >= next_stats_flush) {
+          next_stats_flush = now + std::chrono::milliseconds(1000);
+          write_telemetry_stats_file(telemetry_stats_path,
+                                     video_service,
+                                     telem_count,
+                                     telem_raw_count,
+                                     telem_drop_count,
+                                     telem_drain_count,
+                                     g_telemetry_emit_ms);
         }
       }
     }
