@@ -5,24 +5,38 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 VERSION_ENV="${SCRIPT_DIR}/version.env"
-
-if [ ! -f "$VERSION_ENV" ]; then
-  echo "ERROR: missing required version source: $VERSION_ENV" >&2
-  exit 1
-fi
-# shellcheck disable=SC1090
-. "$VERSION_ENV"
-
-if [ -z "${VERSION:-}" ] || [ -z "${RELEASE_TAG:-}" ]; then
-  echo "ERROR: version.env must define VERSION and RELEASE_TAG" >&2
-  exit 1
-fi
-
 GITHUB_REPO="${COMMAVIEWD_RELEASE_REPO:-RhynoTech/commaviewd}"
+
+resolve_latest_release_tag() {
+  local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20"
+  curl -fsSL --retry 3 --retry-delay 1 "$api_url"     | tr -d '\r'     | grep -m1 '"tag_name":'     | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/' || true
+}
+
+if [ -f "$VERSION_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$VERSION_ENV"
+fi
+
+RELEASE_TAG="${COMMAVIEWD_RELEASE_TAG:-${RELEASE_TAG:-}}"
+if [ -z "$RELEASE_TAG" ] && [ -n "${COMMAVIEWD_DEFAULT_TAG:-}" ]; then
+  RELEASE_TAG="$COMMAVIEWD_DEFAULT_TAG"
+fi
+if [ -z "$RELEASE_TAG" ] && [ -n "${COMMAVIEWD_INSTALLER_REF:-}" ] && [[ "${COMMAVIEWD_INSTALLER_REF}" == v* ]]; then
+  RELEASE_TAG="$COMMAVIEWD_INSTALLER_REF"
+fi
+if [ -z "$RELEASE_TAG" ]; then
+  RELEASE_TAG="$(resolve_latest_release_tag)"
+fi
+if [ -z "$RELEASE_TAG" ]; then
+  RELEASE_TAG="v0.0.1-alpha"
+fi
+
+VERSION="${COMMAVIEWD_VERSION:-${VERSION:-${RELEASE_TAG#v}}}"
+
 ASSET_NAME="${COMMAVIEWD_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
 ASSET_SHA_NAME="${ASSET_NAME}.sha256"
 BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
-INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-${RELEASE_TAG}}"
+INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-master}"
 INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma4}"
 
 INSTALL_DIR="/data/commaview"
@@ -164,6 +178,12 @@ deploy_required_scripts() {
   copy_required_file "stop.sh" "$INSTALL_DIR/stop.sh"
   copy_required_file "uninstall.sh" "$INSTALL_DIR/uninstall.sh"
   copy_required_file "install_tailscale_runtime.sh" "$INSTALL_DIR/tailscale/install_tailscale_runtime.sh"
+
+  cat > "$INSTALL_DIR/version.env" <<EOF
+VERSION="${VERSION}"
+RELEASE_TAG="${RELEASE_TAG}"
+EOF
+  chmod 644 "$INSTALL_DIR/version.env"
 }
 
 

@@ -3,18 +3,29 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 VERSION_ENV="${SCRIPT_DIR}/version.env"
+GITHUB_REPO="${COMMAVIEWD_RELEASE_REPO:-RhynoTech/commaviewd}"
 
-DEFAULT_TAG="${COMMAVIEWD_DEFAULT_TAG:-v0.0.1-alpha}"
+resolve_latest_release_tag() {
+  local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20"
+  curl -fsSL --retry 3 --retry-delay 1 "$api_url"     | tr -d '\r'     | grep -m1 '"tag_name":'     | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/' || true
+}
+
+DEFAULT_TAG="${COMMAVIEWD_DEFAULT_TAG:-${COMMAVIEWD_RELEASE_TAG:-}}"
 if [ -f "$VERSION_ENV" ]; then
   # shellcheck disable=SC1090
   . "$VERSION_ENV"
-  if [ -n "${RELEASE_TAG:-}" ]; then
+  if [ -n "${RELEASE_TAG:-}" ] && [ -z "$DEFAULT_TAG" ]; then
     DEFAULT_TAG="$RELEASE_TAG"
   fi
 fi
+if [ -z "$DEFAULT_TAG" ]; then
+  DEFAULT_TAG="$(resolve_latest_release_tag)"
+fi
+if [ -z "$DEFAULT_TAG" ]; then
+  DEFAULT_TAG="v0.0.1-alpha"
+fi
 
 TAG="$DEFAULT_TAG"
-GITHUB_REPO="${COMMAVIEWD_RELEASE_REPO:-RhynoTech/commaviewd}"
 
 usage() {
   cat <<USAGE
