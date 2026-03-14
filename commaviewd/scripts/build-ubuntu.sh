@@ -37,6 +37,8 @@ PATCHED_MSGQ_LOCAL="${PATCHED_MSGQ_LOCAL:-$ROOT/msgq_patched.cc}"
 
 ARM_CAPNP_SO="${ARM_CAPNP_SO:-/usr/lib/aarch64-linux-gnu/libcapnp-0.8.0.so}"
 ARM_KJ_SO="${ARM_KJ_SO:-/usr/lib/aarch64-linux-gnu/libkj-0.8.0.so}"
+ARM_CAPNP_NAME="$(basename "$ARM_CAPNP_SO")"
+ARM_KJ_NAME="$(basename "$ARM_KJ_SO")"
 
 MSGQ_SOURCE="$OP_ROOT/msgq_repo/msgq/msgq.cc"
 if [[ -f "$PATCHED_MSGQ_LOCAL" ]]; then
@@ -99,11 +101,11 @@ aarch64-linux-gnu-g++ -O2 -std=c++17 -DCOMMAVIEW_BRIDGE_NO_MAIN \
   -o "$ARM_OUT" "${COMMON_SRCS[@]}" \
   -lzmq -lcapnp -lkj -lpthread
 
-echo "[4/5] Bundling comma runtime libs (0.8 ABI)..."
-install -m 755 "$ARM_CAPNP_SO" "$BUNDLE_LIB_DIR/libcapnp-0.8.0.so"
-install -m 755 "$ARM_KJ_SO" "$BUNDLE_LIB_DIR/libkj-0.8.0.so"
+echo "[4/5] Bundling comma runtime libs (detected ABI)..."
+install -m 755 "$ARM_CAPNP_SO" "$BUNDLE_LIB_DIR/$ARM_CAPNP_NAME"
+install -m 755 "$ARM_KJ_SO" "$BUNDLE_LIB_DIR/$ARM_KJ_NAME"
 
 echo "[5/5] Done"
-ls -lh "$HOST_OUT" "$ARM_OUT" "$BUNDLE_LIB_DIR/libcapnp-0.8.0.so" "$BUNDLE_LIB_DIR/libkj-0.8.0.so"
+ls -lh "$HOST_OUT" "$ARM_OUT" "$BUNDLE_LIB_DIR/$ARM_CAPNP_NAME" "$BUNDLE_LIB_DIR/$ARM_KJ_NAME"
 file "$HOST_OUT" "$ARM_OUT"
 aarch64-linux-gnu-readelf -d "$ARM_OUT" | egrep 'NEEDED|RPATH|RUNPATH' || true

@@ -54,8 +54,6 @@ DIST_DIR="${DIST_DIR:-${ROOT}/dist}"
 
 required_stage_files=(
   "commaviewd"
-  "lib/libcapnp-0.8.0.so"
-  "lib/libkj-0.8.0.so"
   "upgrade.sh"
   "start.sh"
   "stop.sh"
@@ -71,6 +69,20 @@ validate_stage_contents() {
       missing=1
     fi
   done
+
+  local capnp_count kj_count
+  capnp_count=$(find "$STAGE_DIR/lib" -maxdepth 1 -type f -name 'libcapnp-*.so' | wc -l | tr -d ' ')
+  kj_count=$(find "$STAGE_DIR/lib" -maxdepth 1 -type f -name 'libkj-*.so' | wc -l | tr -d ' ')
+
+  if [[ "$capnp_count" -eq 0 ]]; then
+    echo "ERROR: staged bundle missing libcapnp-*.so" >&2
+    missing=1
+  fi
+  if [[ "$kj_count" -eq 0 ]]; then
+    echo "ERROR: staged bundle missing libkj-*.so" >&2
+    missing=1
+  fi
+
   [[ "$missing" -eq 0 ]] || exit 1
 }
 
@@ -87,8 +99,24 @@ fi
 
 echo "[2/3] Staging bundle files..."
 install -m 755 "${DIST_DIR}/commaviewd-aarch64" "${STAGE_DIR}/commaviewd"
-install -m 755 "${DIST_DIR}/lib/libcapnp-0.8.0.so" "${STAGE_DIR}/lib/libcapnp-0.8.0.so"
-install -m 755 "${DIST_DIR}/lib/libkj-0.8.0.so" "${STAGE_DIR}/lib/libkj-0.8.0.so"
+
+shopt -s nullglob
+capnp_libs=("${DIST_DIR}/lib"/libcapnp-*.so)
+kj_libs=("${DIST_DIR}/lib"/libkj-*.so)
+shopt -u nullglob
+
+if [[ ${#capnp_libs[@]} -eq 0 ]]; then
+  echo "ERROR: dist missing libcapnp-*.so under ${DIST_DIR}/lib" >&2
+  exit 1
+fi
+if [[ ${#kj_libs[@]} -eq 0 ]]; then
+  echo "ERROR: dist missing libkj-*.so under ${DIST_DIR}/lib" >&2
+  exit 1
+fi
+
+for src in "${capnp_libs[@]}" "${kj_libs[@]}"; do
+  install -m 755 "$src" "${STAGE_DIR}/lib/$(basename "$src")"
+done
 
 install -m 755 "${ROOT}/comma4/upgrade.sh" "${STAGE_DIR}/upgrade.sh"
 install -m 755 "${ROOT}/comma4/start.sh" "${STAGE_DIR}/start.sh"

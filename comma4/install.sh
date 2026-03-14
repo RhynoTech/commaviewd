@@ -350,7 +350,9 @@ if [ ! -f "$INSTALL_DIR/commaviewd" ]; then
   echo "ERROR: bundle missing $INSTALL_DIR/commaviewd" >&2
   exit 1
 fi
-if [ ! -f "$INSTALL_DIR/lib/libcapnp-0.8.0.so" ] || [ ! -f "$INSTALL_DIR/lib/libkj-0.8.0.so" ]; then
+capnp_lib_count=$(find "$INSTALL_DIR/lib" -maxdepth 1 -type f -name 'libcapnp-*.so' | wc -l | tr -d ' ')
+kj_lib_count=$(find "$INSTALL_DIR/lib" -maxdepth 1 -type f -name 'libkj-*.so' | wc -l | tr -d ' ')
+if [ "$capnp_lib_count" -eq 0 ] || [ "$kj_lib_count" -eq 0 ]; then
   echo "ERROR: bundle missing required runtime libs in $INSTALL_DIR/lib" >&2
   exit 1
 fi
