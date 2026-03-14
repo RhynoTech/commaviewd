@@ -34,6 +34,7 @@ constexpr const char* kTailscaleRuntimeInstaller = "/data/commaview/tailscale/in
 constexpr const char* kControlLogFile = "/data/commaview/logs/commaviewd-control.log";
 constexpr const char* kSetupCompleteParam = "CommaViewTailscaleSetupComplete";
 constexpr int kDefaultApiPort = 5002;
+constexpr const char* kVersionFile = "/data/commaview/VERSION";
 
 struct TailscaleSnapshot {
   bool enabled = false;
@@ -77,6 +78,11 @@ std::string read_file_trimmed(const std::string& path) {
   std::stringstream ss;
   ss << f.rdbuf();
   return trim_copy(ss.str());
+}
+
+std::string runtime_version() {
+  const std::string v = read_file_trimmed(kVersionFile);
+  return v.empty() ? "unknown" : v;
 }
 
 bool write_file(const std::string& path, const std::string& value, mode_t mode = 0644) {
@@ -468,9 +474,11 @@ std::string tailscale_set_enabled(bool enable) {
     args.push_back("--authkey");
     args.push_back(authkey);
     args.push_back("--accept-routes");
+    args.push_back("--netfilter-mode=off");
     args.push_back("--reset");
   } else {
     args.push_back("--accept-routes");
+    args.push_back("--netfilter-mode=off");
   }
 
   if (geteuid() != 0) {
@@ -584,10 +592,12 @@ int run_control_mode(int argc, char* argv[]) {
         return make_json(200, setup_complete_json(read_setup_complete()));
       }
       if (req.path == "/commaview/version") {
-        return make_json(200, "{\"version\":\"0.1.4-alpha\"}");
+        const std::string version = runtime_version();
+        return make_json(200, "{\"version\":\"" + json_escape(version) + "\"}");
       }
       if (req.path == "/commaview/status") {
-        std::string body = "{\"version\":\"0.1.4-alpha\",\"api_port\":5002,\"tailscale\":" + tailscale_status() + "}";
+        const std::string version = runtime_version();
+        std::string body = "{\"version\":\"" + json_escape(version) + "\",\"api_port\":5002,\"tailscale\":" + tailscale_status() + "}";
         return make_json(200, body);
       }
       return make_json(404, "{\"error\":\"not found\"}");
