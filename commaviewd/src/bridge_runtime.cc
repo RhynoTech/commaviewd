@@ -109,8 +109,8 @@ static bool g_telemetry_only = false;
 static bool g_telemetry_blackhole = false;
 static bool g_telemetry_drain_only = false;
 static bool g_telemetry_subscribe_only = false;
-static bool g_emit_meta_json = true;
-static bool g_emit_meta_raw = false;
+static bool g_emit_meta_json = false;
+static bool g_emit_meta_raw = true;
 static uint32_t g_telemetry_mask = TELEMETRY_MASK_ALL;
 static std::atomic<bool> g_running{true};
 
