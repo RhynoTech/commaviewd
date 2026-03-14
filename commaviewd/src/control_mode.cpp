@@ -473,10 +473,18 @@ std::string tailscale_set_enabled(bool enable) {
     args.push_back("--accept-routes");
   }
 
+  if (geteuid() != 0) {
+    const char* operator_user = std::getenv("USER");
+    if (operator_user != nullptr && std::strlen(operator_user) > 0) {
+      args.push_back("--operator");
+      args.push_back(operator_user);
+    }
+  }
+
   int rc = 0;
   std::string out;
   std::string err;
-  if (!run_command(args, &rc, &out, &err)) {
+  if (!run_command_with_optional_sudo(args, &rc, &out, &err)) {
     return command_result_json(false, true, capture_tailscale_snapshot(), "tailscale up spawn failed");
   }
   if (rc != 0) {
