@@ -394,30 +394,42 @@ static void handle_client(int client_fd, const char* video_service, int port) {
     auto ready = poller->poll(20);
 
     for (auto* sock : ready) {
-      std::unique_ptr<Message> raw_msg(sock->receive(true));
-      if (!raw_msg) continue;
-
-      const size_t raw_size = raw_msg->getSize();
-
-      if (include_telemetry && g_telemetry_drain_only) {
-        bool is_telem_sock = false;
+      int telem_sock_idx = -1;
+      if (include_telemetry) {
         for (int i = 0; i < NUM_TELEM; i++) {
           if (sock == telem_socks[i]) {
-            is_telem_sock = true;
+            telem_sock_idx = i;
             break;
           }
         }
-        if (is_telem_sock) {
+      }
+
+      std::unique_ptr<Message> raw_msg(sock->receive(true));
+      if (!raw_msg) continue;
+
+      // Latest-only semantics for telemetry sockets: drain queued historical samples
+      // and keep only the freshest message before decode/emit.
+      if (telem_sock_idx >= 0 && !g_telemetry_subscribe_only) {
+        while (true) {
+          std::unique_ptr<Message> newer(sock->receive(true));
+          if (!newer) break;
+          raw_msg = std::move(newer);
           telem_drain_count++;
-          if (telem_drain_count <= 3 || (telem_drain_count % 200) == 0) {
-            printf("[%s] telem-drain=%llu raw=%zu [DRAIN_ONLY]\n",
-                   video_service,
-                   static_cast<unsigned long long>(telem_drain_count),
-                   raw_size);
-            fflush(stdout);
-          }
-          continue;
         }
+      }
+
+      const size_t raw_size = raw_msg->getSize();
+
+      if (include_telemetry && g_telemetry_drain_only && telem_sock_idx >= 0) {
+        telem_drain_count++;
+        if (telem_drain_count <= 3 || (telem_drain_count % 200) == 0) {
+          printf("[%s] telem-drain=%llu raw=%zu [DRAIN_ONLY]\n",
+                 video_service,
+                 static_cast<unsigned long long>(telem_drain_count),
+                 raw_size);
+          fflush(stdout);
+        }
+        continue;
       }
 
       try {
@@ -719,11 +731,12 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
         const uint64_t telem_log_counter = g_telemetry_blackhole ? telem_drop_count : (telem_count + telem_raw_count);
         if (telem_log_counter <= 3 || (telem_log_counter % 200) == 0) {
-          printf("[%s] telem_json=%llu telem_raw=%llu drop=%llu (coalesced 10Hz)%s\n",
+          printf("[%s] telem_json=%llu telem_raw=%llu drop=%llu drain=%llu (coalesced 10Hz)%s\n",
                  video_service,
                  static_cast<unsigned long long>(telem_count),
                  static_cast<unsigned long long>(telem_raw_count),
                  static_cast<unsigned long long>(telem_drop_count),
+                 static_cast<unsigned long long>(telem_drain_count),
                  g_telemetry_blackhole ? " [BLACKHOLE]" : "");
           fflush(stdout);
         }
