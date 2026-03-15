@@ -25,6 +25,7 @@ NET_SOCKET_SRC="$ROOT/src/socket.cpp"
 CONTROL_POLICY_SRC="$ROOT/src/policy.cpp"
 VIDEO_ROUTER_SRC="$ROOT/src/router.cpp"
 TELEMETRY_JSON_SRC="$ROOT/src/json_builder.cpp"
+TELEMETRY_STATS_SRC="$ROOT/src/telemetry_stats.cpp"
 RUNTIME_MODE_SRC="$ROOT/src/mode.cpp"
 RUNTIME_BRIDGE_MODE_SRC="$ROOT/src/bridge_mode.cpp"
 RUNTIME_CONTROL_MODE_SRC="$ROOT/src/control_mode.cpp"
@@ -52,7 +53,7 @@ require_file() {
 
 for f in \
   "$MAIN_SRC" "$BRIDGE_SRC" "$NET_FRAMING_SRC" "$NET_SOCKET_SRC" \
-  "$CONTROL_POLICY_SRC" "$VIDEO_ROUTER_SRC" "$TELEMETRY_JSON_SRC" \
+  "$CONTROL_POLICY_SRC" "$VIDEO_ROUTER_SRC" "$TELEMETRY_JSON_SRC" "$TELEMETRY_STATS_SRC" \
   "$RUNTIME_MODE_SRC" "$RUNTIME_BRIDGE_MODE_SRC" "$RUNTIME_CONTROL_MODE_SRC" \
   "$API_HTTP_SERVER_SRC" \
   "$OP_ROOT/cereal/log.capnp" "$OP_ROOT/cereal/services.py" \
@@ -79,7 +80,7 @@ COMMON_SRCS=(
   "$RUNTIME_MODE_SRC" "$RUNTIME_BRIDGE_MODE_SRC" "$RUNTIME_CONTROL_MODE_SRC"
   "$API_HTTP_SERVER_SRC"
   "$NET_FRAMING_SRC" "$NET_SOCKET_SRC" "$CONTROL_POLICY_SRC"
-  "$VIDEO_ROUTER_SRC" "$TELEMETRY_JSON_SRC"
+  "$VIDEO_ROUTER_SRC" "$TELEMETRY_JSON_SRC" "$TELEMETRY_STATS_SRC"
   "$OP_ROOT/cereal/messaging/socketmaster.cc"
   "$MSGQ_SOURCE"
   "$OP_ROOT/msgq_repo/msgq/event.cc" "$OP_ROOT/msgq_repo/msgq/impl_fake.cc"

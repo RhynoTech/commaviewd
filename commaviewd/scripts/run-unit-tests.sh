@@ -51,9 +51,15 @@ $CXX -O2 -std=c++17 "${INC[@]}" \
   -lcapnp -lkj -lpthread \
   -o "$TMP/test_telemetry_json"
 
+$CXX -O2 -std=c++17 "${INC[@]}" \
+  "$ROOT/tests/test_telemetry_stats.cpp" \
+  "$ROOT/src/telemetry_stats.cpp" \
+  -o "$TMP/test_telemetry_stats"
+
 "$TMP/test_net_framing"
 "$TMP/test_runtime_mode"
 "$TMP/test_control_policy"
 "$TMP/test_telemetry_json"
+"$TMP/test_telemetry_stats"
 
 echo "PASS: commaviewd unit tests passed"

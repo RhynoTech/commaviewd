@@ -3,6 +3,7 @@
 #include "policy.h"
 #include "router.h"
 #include "json_builder.h"
+#include "telemetry_stats.h"
 /**
  * CommaView Unified Bridge (C++)
  *
@@ -789,6 +790,8 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   uint64_t telem_raw_count = 0;
   uint64_t telem_drop_count = 0;
   uint64_t telem_drain_count = 0;
+  std::vector<commaview::telemetry::ServiceCounters> service_stats(NUM_TELEM);
+  commaview::telemetry::LoopCounters loop_stats;
   uint64_t suppressed_video_count = 0;
   auto t0 = std::chrono::steady_clock::now();
   auto next_telem_emit = t0 + std::chrono::milliseconds(g_telemetry_emit_ms);
@@ -830,6 +833,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   ClientControlState control_state;
 
   while (g_running) {
+    const auto loop_started = std::chrono::steady_clock::now();
     if (!client_socket_alive(client_fd)) break;
 
     consume_client_control_frames(client_fd, &control_state, video_service);
@@ -849,6 +853,9 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
       std::unique_ptr<Message> raw_msg(sock->receive(true));
       if (!raw_msg) continue;
+      if (telem_sock_idx >= 0) {
+        commaview::telemetry::note_ingest(service_stats, telem_sock_idx);
+      }
 
       // Latest-only semantics for telemetry sockets: drain queued historical samples
       // and keep only the freshest message before decode/emit.
@@ -858,6 +865,8 @@ static void handle_client(int client_fd, const char* video_service, int port) {
           if (!newer) break;
           raw_msg = std::move(newer);
           telem_drain_count++;
+          commaview::telemetry::note_ingest(service_stats, telem_sock_idx);
+          commaview::telemetry::note_coalesced(service_stats, telem_sock_idx);
         }
       }
 
@@ -865,6 +874,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
       if (include_telemetry && g_telemetry_drain_only && telem_sock_idx >= 0) {
         telem_drain_count++;
+        commaview::telemetry::note_drop(service_stats, telem_sock_idx);
         if (telem_drain_count <= 3 || (telem_drain_count % 200) == 0) {
           printf("[%s] telem-drain=%llu raw=%zu [DRAIN_ONLY]\n",
                  video_service,
@@ -1171,6 +1181,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
             if (!have_raw[i]) continue;
             if (g_telemetry_blackhole) {
               telem_drop_count++;
+              commaview::telemetry::note_drop(service_stats, i);
               continue;
             }
             const auto& raw = raw_latest[i];
@@ -1184,6 +1195,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                                      raw.data(),
                                      raw.size())) goto disconnect;
             telem_raw_count++;
+            commaview::telemetry::note_emit_raw(service_stats, i);
           }
         }
 
@@ -1209,9 +1221,19 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                                      telem_drop_count,
                                      telem_drain_count,
                                      g_telemetry_emit_ms);
+          if (!commaview::telemetry::service_counter_invariants_hold(service_stats)) {
+            printf("[%s] telemetry counter invariant violated: coalesced>ingest\n", video_service);
+            fflush(stdout);
+          }
         }
       }
     }
+
+    const auto loop_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - loop_started);
+    commaview::telemetry::note_loop(loop_stats,
+                                    static_cast<uint64_t>(loop_elapsed.count()),
+                                    g_telemetry_emit_ms);
   }
 
 disconnect:
