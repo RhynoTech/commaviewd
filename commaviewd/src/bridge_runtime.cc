@@ -183,6 +183,13 @@ static const char* telemetry_mask_label() {
   if (g_telemetry_mask == TELEMETRY_MASK_SAFE_NO_CAR) return "safeNoCar";
   return "custom";
 }
+static const char* telemetry_mode_label() {
+  if (g_emit_meta_json && g_emit_meta_raw) return "raw+json";
+  if (g_emit_meta_json) return "json-only";
+  if (g_emit_meta_raw) return "raw-only";
+  return "none";
+}
+
 
 static size_t queue_size_for_service(const char* service_name) {
   auto it = services.find(std::string(service_name));
@@ -1280,8 +1287,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
   }
 
   const char** video_services = g_dev_mode ? VIDEO_SERVICES_DEV : VIDEO_SERVICES_PROD;
-
-  printf("CommaView Bridge v3.3.8-safe-bundle (C++)%s%s%s%s%s%s%s%s%s [TELEM=%s][EMIT_MS=%d]\n",
+  printf("CommaView Bridge v3.3.8-safe-bundle (C++)%s%s%s%s%s%s%s%s [META_MODE=%s][EMIT_MS=%d]\n",
          g_dev_mode ? " [DEV MODE: livestream]" : "",
          g_video_only ? " [VIDEO ONLY]" : " [VIDEO+TELEMETRY]",
          g_suppress_video ? " [SUPPRESS_VIDEO_TX]" : "",
@@ -1289,9 +1295,8 @@ int commaview_bridge_main(int argc, char* argv[]) {
          g_telemetry_blackhole ? " [TELEMETRY BLACKHOLE]" : "",
          g_telemetry_drain_only ? " [TELEMETRY DRAIN_ONLY]" : "",
          g_telemetry_subscribe_only ? " [TELEMETRY SUBSCRIBE_ONLY]" : "",
-         g_emit_meta_json ? " [META_JSON]" : "",
-         g_emit_meta_raw ? " [META_RAW]" : "",
          telemetry_mask_label(),
+         telemetry_mode_label(),
          g_telemetry_emit_ms);
   fflush(stdout);
 

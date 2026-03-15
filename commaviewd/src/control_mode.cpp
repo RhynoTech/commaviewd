@@ -85,6 +85,14 @@ std::string runtime_version() {
   return v.empty() ? "unknown" : v;
 }
 
+std::string telemetry_mode() {
+    const char* env = std::getenv("COMMAVIEWD_TELEMETRY_MODE");
+    std::string mode = env ? trim_copy(env) : "raw-only";
+    if (mode.empty()) return "raw-only";
+    if (mode == "raw-only" || mode == "json-only" || mode == "raw+json") return mode;
+    return "raw-only";
+}
+
 bool write_file(const std::string& path, const std::string& value, mode_t mode = 0644) {
   int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, mode);
   if (fd < 0) return false;
@@ -597,7 +605,8 @@ int run_control_mode(int argc, char* argv[]) {
       }
       if (req.path == "/commaview/status") {
         const std::string version = runtime_version();
-        std::string body = "{\"version\":\"" + json_escape(version) + "\",\"api_port\":5002,\"tailscale\":" + tailscale_status() + "}";
+        const std::string telemetryMode = telemetry_mode();
+        std::string body = "{\"version\":\"" + json_escape(version) + "\",\"api_port\":5002,\"telemetryMode\":\"" + json_escape(telemetryMode) + "\",\"tailscale\":" + tailscale_status() + "}";
         return make_json(200, body);
       }
       return make_json(404, "{\"error\":\"not found\"}");

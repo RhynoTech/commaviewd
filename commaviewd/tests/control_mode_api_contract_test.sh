@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER_CPP="$ROOT/src/http_server.cpp"
 CONTROL_CPP="$ROOT/src/control_mode.cpp"
-
+grep -Fq "telemetryMode" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose telemetryMode"; exit 1; }
 [ -f "$SERVER_CPP" ] || { echo "FAIL: missing $SERVER_CPP"; exit 1; }
 [ -f "$CONTROL_CPP" ] || { echo "FAIL: missing $CONTROL_CPP"; exit 1; }
 
