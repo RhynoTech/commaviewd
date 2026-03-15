@@ -39,6 +39,7 @@
 #include <cctype>
 #include <mutex>
 #include <unordered_map>
+#include <algorithm>
 #include <fstream>
 
 #include <capnp/serialize.h>
@@ -232,27 +233,106 @@ static int telemetry_index_for_which(cereal::Event::Which which) {
   }
 }
 
+
+static void push_u8(std::vector<uint8_t>& out, uint8_t v) {
+  out.push_back(v);
+}
+
+static void push_u16(std::vector<uint8_t>& out, uint16_t v) {
+  uint8_t b[2];
+  put_be16(b, v);
+  out.insert(out.end(), b, b + 2);
+}
+
+static void push_u32(std::vector<uint8_t>& out, uint32_t v) {
+  uint8_t b[4];
+  put_be32(b, v);
+  out.insert(out.end(), b, b + 4);
+}
+
+static void push_f32(std::vector<uint8_t>& out, float value) {
+  uint32_t bits = 0;
+  static_assert(sizeof(float) == sizeof(uint32_t), "float size");
+  memcpy(&bits, &value, sizeof(bits));
+  push_u32(out, bits);
+}
+
+static void push_str_u16(std::vector<uint8_t>& out, kj::StringPtr s) {
+  const auto n = static_cast<uint16_t>(std::min<size_t>(s.size(), 65535));
+  push_u16(out, n);
+  out.insert(out.end(), s.begin(), s.begin() + n);
+}
+
+static std::vector<uint8_t> encode_car_state_typed(cereal::CarState::Reader cs) {
+  std::vector<uint8_t> out;
+  out.reserve(1 + 4 * 5 + 4);
+  push_u8(out, 0x01);  // schema version
+  push_f32(out, static_cast<float>(cs.getVEgo()));
+  push_f32(out, static_cast<float>(cs.getSteeringAngleDeg()));
+  push_u8(out, cs.getBrakePressed() ? 1 : 0);
+  push_u8(out, cs.getGasPressed() ? 1 : 0);
+  push_f32(out, static_cast<float>(cs.getAEgo()));
+  push_f32(out, static_cast<float>(cs.getSteeringTorqueEps()));
+  push_u8(out, cs.getSteeringPressed() ? 1 : 0);
+  push_u8(out, cs.getCanValid() ? 1 : 0);
+  push_u8(out, cs.getCanTimeout() ? 1 : 0);
+  push_u32(out, static_cast<uint32_t>(cs.getCanErrorCounter()));
+  return out;
+}
+
+static std::vector<uint8_t> encode_selfdrive_state_typed(cereal::SelfdriveState::Reader ss) {
+  std::vector<uint8_t> out;
+  out.reserve(64);
+  push_u8(out, 0x01);  // schema version
+  push_u8(out, ss.getEnabled() ? 1 : 0);
+  push_u8(out, ss.getActive() ? 1 : 0);
+  push_u8(out, ss.getEngageable() ? 1 : 0);
+  push_u8(out, ss.getExperimentalMode() ? 1 : 0);
+  push_u32(out, static_cast<uint32_t>(ss.getState()));
+  push_u32(out, static_cast<uint32_t>(ss.getAlertStatus()));
+  push_u32(out, static_cast<uint32_t>(ss.getAlertSize()));
+  push_u32(out, static_cast<uint32_t>(ss.getAlertSound()));
+  push_u32(out, static_cast<uint32_t>(ss.getAlertHudVisual()));
+  push_u32(out, static_cast<uint32_t>(ss.getPersonality()));
+  push_str_u16(out, ss.getAlertText1());
+  push_str_u16(out, ss.getAlertText2());
+  push_str_u16(out, ss.getAlertType());
+  return out;
+}
+
 static bool send_meta_raw_frame(int fd,
                                 uint8_t service_index,
                                 uint16_t event_which,
                                 uint64_t log_mono_time,
+                                const std::vector<uint8_t>& typed_payload,
                                 const std::string& json_payload,
                                 const uint8_t* raw_data,
                                 size_t raw_size) {
   if (raw_data == nullptr || raw_size == 0) return true;
+  const uint32_t typed_len = static_cast<uint32_t>(typed_payload.size());
   const uint32_t json_len = static_cast<uint32_t>(json_payload.size());
   const uint32_t raw_len = static_cast<uint32_t>(raw_size);
-  std::vector<uint8_t> payload(1 + 1 + 2 + 8 + 4 + json_len + 4 + raw_len);
-  payload[0] = 0x02;  // raw meta envelope v2 includes json snapshot + raw event
+  std::vector<uint8_t> payload(1 + 1 + 2 + 8 + 4 + typed_len + 4 + json_len + 4 + raw_len);
+  payload[0] = 0x03;  // raw meta envelope v3 includes typed + json snapshot + raw event
   payload[1] = service_index;
   put_be16(&payload[2], event_which);
   put_be64(&payload[4], log_mono_time);
-  put_be32(&payload[12], json_len);
-  size_t off = 16;
+
+  size_t off = 12;
+  put_be32(&payload[off], typed_len);
+  off += 4;
+  if (typed_len > 0) {
+    memcpy(&payload[off], typed_payload.data(), typed_len);
+    off += typed_len;
+  }
+
+  put_be32(&payload[off], json_len);
+  off += 4;
   if (json_len > 0) {
     memcpy(&payload[off], json_payload.data(), json_len);
     off += json_len;
   }
+
   put_be32(&payload[off], raw_len);
   off += 4;
   memcpy(&payload[off], raw_data, raw_len);
@@ -427,6 +507,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   std::vector<uint64_t> raw_log_mono(NUM_TELEM, 0);
   std::vector<uint16_t> raw_event_which(NUM_TELEM, 0);
   std::vector<std::string> raw_json_latest(NUM_TELEM);
+  std::vector<std::vector<uint8_t>> raw_typed_latest(NUM_TELEM);
   std::vector<bool> have_raw(NUM_TELEM, false);
   AlignedBuffer aligned_buf;
   ClientControlState control_state;
@@ -571,10 +652,12 @@ static void handle_client(int client_fd, const char* video_service, int port) {
             if (raw_idx >= 0) raw_json_latest[raw_idx] = json;
             switch (event.which()) {
               case cereal::Event::CAR_STATE:
+                raw_typed_latest[0] = encode_car_state_typed(event.getCarState());
                 car_json_latest = std::move(json);
                 have_car_json = true;
                 break;
               case cereal::Event::SELFDRIVE_STATE:
+                raw_typed_latest[1] = encode_selfdrive_state_typed(event.getSelfdriveState());
                 controls_json_latest = std::move(json);
                 have_controls_json = true;
                 break;
@@ -767,6 +850,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                                      static_cast<uint8_t>(i),
                                      raw_event_which[i],
                                      raw_log_mono[i],
+                                     raw_typed_latest[i],
                                      raw_json_latest[i],
                                      raw.data(),
                                      raw.size())) goto disconnect;
