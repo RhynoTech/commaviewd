@@ -350,6 +350,76 @@ static std::vector<uint8_t> encode_car_control_typed(cereal::CarControl::Reader 
   return out;
 }
 
+
+static std::vector<uint8_t> encode_car_output_typed(cereal::CarOutput::Reader co) {
+  std::vector<uint8_t> out;
+  out.reserve(1 + 4 * 9 + 4);
+  const auto act = co.getActuatorsOutput();
+  push_u8(out, 0x01);  // schema version
+  push_f32(out, static_cast<float>(act.getTorque()));
+  push_f32(out, static_cast<float>(act.getSteeringAngleDeg()));
+  push_f32(out, static_cast<float>(act.getCurvature()));
+  push_f32(out, static_cast<float>(act.getAccel()));
+  push_u32(out, static_cast<uint32_t>(act.getLongControlState()));
+  push_f32(out, static_cast<float>(act.getGas()));
+  push_f32(out, static_cast<float>(act.getBrake()));
+  push_f32(out, static_cast<float>(act.getTorqueOutputCan()));
+  push_f32(out, static_cast<float>(act.getSpeed()));
+  return out;
+}
+
+static std::vector<uint8_t> encode_live_parameters_typed(cereal::LiveParametersData::Reader lp) {
+  std::vector<uint8_t> out;
+  auto values = lp.getDebugFilterState().getValue();
+  auto stds = lp.getDebugFilterState().getStd();
+  out.reserve(160 + values.size() * 4 + stds.size() * 4);
+  push_u8(out, 0x01);  // schema version
+  push_u8(out, lp.getValid() ? 1 : 0);
+  push_u8(out, lp.getSensorValid() ? 1 : 0);
+  push_u8(out, lp.getPosenetValid() ? 1 : 0);
+  push_f32(out, static_cast<float>(lp.getGyroBias()));
+  push_f32(out, static_cast<float>(lp.getAngleOffsetDeg()));
+  push_f32(out, static_cast<float>(lp.getAngleOffsetAverageDeg()));
+  push_f32(out, static_cast<float>(lp.getStiffnessFactor()));
+  push_f32(out, static_cast<float>(lp.getSteerRatio()));
+  push_f32(out, static_cast<float>(lp.getRoll()));
+  push_f32(out, static_cast<float>(lp.getPosenetSpeed()));
+  push_f32(out, static_cast<float>(lp.getAngleOffsetFastStd()));
+  push_f32(out, static_cast<float>(lp.getAngleOffsetAverageStd()));
+  push_f32(out, static_cast<float>(lp.getStiffnessFactorStd()));
+  push_f32(out, static_cast<float>(lp.getSteerRatioStd()));
+  push_u8(out, lp.getAngleOffsetValid() ? 1 : 0);
+  push_u8(out, lp.getAngleOffsetAverageValid() ? 1 : 0);
+  push_u8(out, lp.getSteerRatioValid() ? 1 : 0);
+  push_u8(out, lp.getStiffnessFactorValid() ? 1 : 0);
+
+  push_u32(out, static_cast<uint32_t>(values.size()));
+  for (auto v : values) push_f32(out, static_cast<float>(v));
+  push_u32(out, static_cast<uint32_t>(stds.size()));
+  for (auto v : stds) push_f32(out, static_cast<float>(v));
+  return out;
+}
+
+static std::vector<uint8_t> encode_onroad_events_typed(capnp::List<cereal::OnroadEvent>::Reader events) {
+  std::vector<uint8_t> out;
+  out.reserve(8 + events.size() * 16);
+  push_u8(out, 0x01);  // schema version
+  push_u32(out, static_cast<uint32_t>(events.size()));
+  for (auto e : events) {
+    push_u32(out, static_cast<uint32_t>(e.getName()));
+    push_u8(out, e.getEnable() ? 1 : 0);
+    push_u8(out, e.getNoEntry() ? 1 : 0);
+    push_u8(out, e.getWarning() ? 1 : 0);
+    push_u8(out, e.getUserDisable() ? 1 : 0);
+    push_u8(out, e.getSoftDisable() ? 1 : 0);
+    push_u8(out, e.getImmediateDisable() ? 1 : 0);
+    push_u8(out, e.getPreEnable() ? 1 : 0);
+    push_u8(out, e.getPermanent() ? 1 : 0);
+    push_u8(out, e.getOverrideLateral() ? 1 : 0);
+    push_u8(out, e.getOverrideLongitudinal() ? 1 : 0);
+  }
+  return out;
+}
 static std::vector<uint8_t> encode_driver_monitoring_typed(cereal::DriverMonitoringState::Reader dm) {
   std::vector<uint8_t> out;
   out.reserve(96);
@@ -779,10 +849,12 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                 have_car_control_json = true;
                 break;
               case cereal::Event::CAR_OUTPUT:
+                raw_typed_latest[7] = encode_car_output_typed(event.getCarOutput());
                 car_output_json_latest = std::move(json);
                 have_car_output_json = true;
                 break;
               case cereal::Event::LIVE_PARAMETERS:
+                raw_typed_latest[8] = encode_live_parameters_typed(event.getLiveParameters());
                 live_parameters_json_latest = std::move(json);
                 have_live_parameters_json = true;
                 break;
@@ -796,6 +868,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                 have_driver_state_v2_json = true;
                 break;
               case cereal::Event::ONROAD_EVENTS:
+                raw_typed_latest[11] = encode_onroad_events_typed(event.getOnroadEvents());
                 onroad_events_json_latest = std::move(json);
                 have_onroad_events_json = true;
                 break;
