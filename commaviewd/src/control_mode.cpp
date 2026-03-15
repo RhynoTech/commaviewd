@@ -33,6 +33,7 @@ constexpr const char* kTailscaleAuthKeyFile = "/data/commaview/tailscale/authkey
 constexpr const char* kTailscaleRuntimeInstaller = "/data/commaview/tailscale/install_tailscale_runtime.sh";
 constexpr const char* kControlLogFile = "/data/commaview/logs/commaviewd-control.log";
 constexpr const char* kSetupCompleteParam = "CommaViewTailscaleSetupComplete";
+constexpr const char* kAllowOnroadDebugParam = "CommaViewTailscaleAllowOnroadDebug";
 constexpr int kDefaultApiPort = 5002;
 constexpr const char* kVersionFile = "/data/commaview/VERSION";
 
@@ -41,6 +42,7 @@ struct TailscaleSnapshot {
   bool onroad = false;
   bool daemon_running = false;
   bool auth_key_pending = false;
+  bool allow_onroad_debug = false;
   std::string backend_state = "unknown";
 };
 
@@ -124,11 +126,20 @@ bool write_setup_complete(bool value) {
   return write_param(kSetupCompleteParam, value ? "1" : "0");
 }
 
-bool extract_setup_complete_flag(const std::string& body, bool* value_out) {
-  if (value_out == nullptr) return false;
-  size_t pos = body.find("\"setupComplete\"");
+bool read_allow_onroad_debug() {
+  return read_param(kAllowOnroadDebugParam) == "1";
+}
+
+bool write_allow_onroad_debug(bool value) {
+  return write_param(kAllowOnroadDebugParam, value ? "1" : "0");
+}
+
+bool extract_bool_flag(const std::string& body, const char* key, bool* value_out) {
+  if (value_out == nullptr || key == nullptr) return false;
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t pos = body.find(needle);
   if (pos == std::string::npos) return false;
-  pos = body.find(':', pos);
+  pos = body.find(':', pos + needle.size());
   if (pos == std::string::npos) return false;
   pos++;
   while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) pos++;
@@ -143,6 +154,14 @@ bool extract_setup_complete_flag(const std::string& body, bool* value_out) {
     return true;
   }
   return false;
+}
+
+bool extract_setup_complete_flag(const std::string& body, bool* value_out) {
+  return extract_bool_flag(body, "setupComplete", value_out);
+}
+
+bool extract_allow_onroad_debug_flag(const std::string& body, bool* value_out) {
+  return extract_bool_flag(body, "allowOnroadDebug", value_out);
 }
 
 std::string setup_complete_json(bool value) {
@@ -403,6 +422,7 @@ TailscaleSnapshot capture_tailscale_snapshot() {
   s.daemon_running = tailscaled_running();
   s.backend_state = tailscale_backend_state();
   s.auth_key_pending = authkey_pending();
+  s.allow_onroad_debug = read_allow_onroad_debug();
   return s;
 }
 
@@ -413,7 +433,8 @@ std::string snapshot_json(const TailscaleSnapshot& s) {
       << "\"onroad\":" << (s.onroad ? "true" : "false") << ","
       << "\"daemonRunning\":" << (s.daemon_running ? "true" : "false") << ","
       << "\"backendState\":\"" << json_escape(s.backend_state) << "\","
-      << "\"authKeyPending\":" << (s.auth_key_pending ? "true" : "false")
+      << "\"authKeyPending\":" << (s.auth_key_pending ? "true" : "false") << ","
+      << "\"allowOnroadDebug\":" << (s.allow_onroad_debug ? "true" : "false")
       << "}";
   return out.str();
 }
@@ -427,7 +448,8 @@ std::string command_result_json(bool ok, bool available, const TailscaleSnapshot
       << "\"onroad\":" << (snap.onroad ? "true" : "false") << ","
       << "\"daemonRunning\":" << (snap.daemon_running ? "true" : "false") << ","
       << "\"backendState\":\"" << json_escape(snap.backend_state) << "\","
-      << "\"authKeyPending\":" << (snap.auth_key_pending ? "true" : "false");
+      << "\"authKeyPending\":" << (snap.auth_key_pending ? "true" : "false") << ","
+      << "\"allowOnroadDebug\":" << (snap.allow_onroad_debug ? "true" : "false");
   if (!error.empty()) {
     out << ",\"error\":\"" << json_escape(error) << "\"";
   }
@@ -437,7 +459,7 @@ std::string command_result_json(bool ok, bool available, const TailscaleSnapshot
 
 std::string tailscale_status() {
   if (!file_executable(kTailscaleBin) || !file_executable(kTailscaledBin)) {
-    return "{\"enabled\":false,\"onroad\":false,\"daemonRunning\":false,\"backendState\":\"missing\",\"authKeyPending\":false,\"available\":false}";
+    return "{\"enabled\":false,\"onroad\":false,\"daemonRunning\":false,\"backendState\":\"missing\",\"authKeyPending\":false,\"allowOnroadDebug\":false,\"available\":false}";
   }
   return snapshot_json(capture_tailscale_snapshot());
 }
@@ -456,7 +478,8 @@ std::string tailscale_set_enabled(bool enable) {
     return command_result_json(false, false, capture_tailscale_snapshot(), "tailscale runtime missing");
   }
 
-  const auto action = commaview::control::decide_tailscale_action(is_onroad(), enable);
+  const bool treat_as_onroad = is_onroad() && !read_allow_onroad_debug();
+  const auto action = commaview::control::decide_tailscale_action(treat_as_onroad, enable);
   if (action == commaview::control::TailscalePolicyAction::kForceDown) {
     write_param("CommaViewTailscaleEnabled", "0");
     force_tailscale_down_and_stop();
@@ -557,6 +580,28 @@ std::string tailscale_set_authkey(const std::string& authkey) {
   return command_result_json(true, true, capture_tailscale_snapshot());
 }
 
+std::string tailscale_debug_onroad_json(bool allow) {
+  std::ostringstream out;
+  out << "{\"allowOnroadDebug\":" << (allow ? "true" : "false") << "}";
+  return out.str();
+}
+
+std::string tailscale_set_allow_onroad_debug(bool allow) {
+  if (!write_allow_onroad_debug(allow)) {
+    return "{\"ok\":false,\"error\":\"failed to write allowOnroadDebug\"}";
+  }
+
+  if (!allow && is_onroad()) {
+    write_param("CommaViewTailscaleEnabled", "0");
+    force_tailscale_down_and_stop();
+  }
+
+  std::ostringstream out;
+  out << "{\"ok\":true,\"allowOnroadDebug\":" << (read_allow_onroad_debug() ? "true" : "false")
+      << ",\"tailscale\":" << tailscale_status() << "}";
+  return out.str();
+}
+
 bool is_authorized(const commaview::api::HttpRequest& req, const std::string& token) {
   if (token.empty()) return true;
   auto it = req.headers.find("x-commaview-token");
@@ -598,6 +643,9 @@ int run_control_mode(int argc, char* argv[]) {
       }
       if (req.path == "/tailscale/setup-complete") {
         return make_json(200, setup_complete_json(read_setup_complete()));
+      }
+      if (req.path == "/tailscale/debug-onroad") {
+        return make_json(200, tailscale_debug_onroad_json(read_allow_onroad_debug()));
       }
       if (req.path == "/commaview/version") {
         const std::string version = runtime_version();
@@ -645,6 +693,15 @@ int run_control_mode(int argc, char* argv[]) {
           return make_json(500, setup_complete_write_json(false, read_setup_complete(), "failed to write setupComplete"));
         }
         return make_json(200, setup_complete_write_json(true, read_setup_complete()));
+      }
+      if (req.path == "/tailscale/debug-onroad") {
+        bool allow = false;
+        if (!extract_allow_onroad_debug_flag(req.body, &allow)) {
+          return make_json(400, "{\"ok\":false,\"error\":\"allowOnroadDebug required\"}");
+        }
+        std::string body = tailscale_set_allow_onroad_debug(allow);
+        int code = body.find("\"ok\":false") != std::string::npos ? 500 : 200;
+        return make_json(code, body);
       }
 
       return make_json(404, "{\"error\":\"not found\"}");
