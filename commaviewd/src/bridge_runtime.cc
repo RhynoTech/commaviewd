@@ -250,6 +250,12 @@ static void push_u32(std::vector<uint8_t>& out, uint32_t v) {
   out.insert(out.end(), b, b + 4);
 }
 
+static void push_u64(std::vector<uint8_t>& out, uint64_t v) {
+  uint8_t b[8];
+  put_be64(b, v);
+  out.insert(out.end(), b, b + 8);
+}
+
 static void push_f32(std::vector<uint8_t>& out, float value) {
   uint32_t bits = 0;
   static_assert(sizeof(float) == sizeof(uint32_t), "float size");
@@ -300,6 +306,96 @@ static std::vector<uint8_t> encode_selfdrive_state_typed(cereal::SelfdriveState:
   return out;
 }
 
+
+static std::vector<uint8_t> encode_car_control_typed(cereal::CarControl::Reader cc) {
+  std::vector<uint8_t> out;
+  out.reserve(128);
+  const auto act = cc.getActuators();
+  const auto cruise = cc.getCruiseControl();
+  const auto hud = cc.getHudControl();
+
+  push_u8(out, 0x01);  // schema version
+  push_u8(out, cc.getEnabled() ? 1 : 0);
+  push_u8(out, cc.getLatActive() ? 1 : 0);
+  push_u8(out, cc.getLongActive() ? 1 : 0);
+  push_u8(out, cc.getLeftBlinker() ? 1 : 0);
+  push_u8(out, cc.getRightBlinker() ? 1 : 0);
+  push_f32(out, static_cast<float>(cc.getCurrentCurvature()));
+
+  push_f32(out, static_cast<float>(act.getTorque()));
+  push_f32(out, static_cast<float>(act.getSteeringAngleDeg()));
+  push_f32(out, static_cast<float>(act.getCurvature()));
+  push_f32(out, static_cast<float>(act.getAccel()));
+  push_u32(out, static_cast<uint32_t>(act.getLongControlState()));
+  push_f32(out, static_cast<float>(act.getGas()));
+  push_f32(out, static_cast<float>(act.getBrake()));
+  push_f32(out, static_cast<float>(act.getTorqueOutputCan()));
+  push_f32(out, static_cast<float>(act.getSpeed()));
+
+  push_u8(out, cruise.getCancel() ? 1 : 0);
+  push_u8(out, cruise.getResume() ? 1 : 0);
+  push_u8(out, cruise.getOverride() ? 1 : 0);
+
+  push_u8(out, hud.getSpeedVisible() ? 1 : 0);
+  push_f32(out, static_cast<float>(hud.getSetSpeed()));
+  push_u8(out, hud.getLanesVisible() ? 1 : 0);
+  push_u8(out, hud.getLeadVisible() ? 1 : 0);
+  push_u32(out, static_cast<uint32_t>(hud.getVisualAlert()));
+  push_u8(out, hud.getRightLaneVisible() ? 1 : 0);
+  push_u8(out, hud.getLeftLaneVisible() ? 1 : 0);
+  push_u8(out, hud.getRightLaneDepart() ? 1 : 0);
+  push_u8(out, hud.getLeftLaneDepart() ? 1 : 0);
+  push_u32(out, static_cast<uint32_t>(hud.getLeadDistanceBars()));
+  push_u32(out, static_cast<uint32_t>(hud.getAudibleAlert()));
+  return out;
+}
+
+static std::vector<uint8_t> encode_driver_monitoring_typed(cereal::DriverMonitoringState::Reader dm) {
+  std::vector<uint8_t> out;
+  out.reserve(96);
+  push_u8(out, 0x01);  // schema version
+  push_u8(out, dm.getFaceDetected() ? 1 : 0);
+  push_u8(out, dm.getIsDistracted() ? 1 : 0);
+  push_u32(out, static_cast<uint32_t>(dm.getDistractedType()));
+  push_f32(out, static_cast<float>(dm.getAwarenessStatus()));
+  push_f32(out, static_cast<float>(dm.getAwarenessActive()));
+  push_f32(out, static_cast<float>(dm.getAwarenessPassive()));
+  push_f32(out, static_cast<float>(dm.getStepChange()));
+  push_f32(out, static_cast<float>(dm.getPosePitchOffset()));
+  push_u32(out, static_cast<uint32_t>(dm.getPosePitchValidCount()));
+  push_f32(out, static_cast<float>(dm.getPoseYawOffset()));
+  push_u32(out, static_cast<uint32_t>(dm.getPoseYawValidCount()));
+  push_u8(out, dm.getIsLowStd() ? 1 : 0);
+  push_u32(out, static_cast<uint32_t>(dm.getHiStdCount()));
+  push_u8(out, dm.getIsActiveMode() ? 1 : 0);
+  push_u8(out, dm.getIsRHD() ? 1 : 0);
+  push_u32(out, static_cast<uint32_t>(dm.getUncertainCount()));
+  return out;
+}
+
+static std::vector<uint8_t> encode_road_camera_state_typed(cereal::FrameData::Reader f) {
+  std::vector<uint8_t> out;
+  auto temps = f.getTemperaturesC();
+  out.reserve(96 + temps.size() * 4);
+  push_u8(out, 0x01);  // schema version
+  push_u32(out, static_cast<uint32_t>(f.getFrameId()));
+  push_u32(out, static_cast<uint32_t>(f.getFrameIdSensor()));
+  push_u32(out, static_cast<uint32_t>(f.getRequestId()));
+  push_u32(out, static_cast<uint32_t>(f.getEncodeId()));
+  push_u64(out, static_cast<uint64_t>(f.getTimestampEof()));
+  push_u64(out, static_cast<uint64_t>(f.getTimestampSof()));
+  push_f32(out, static_cast<float>(f.getProcessingTime()));
+  push_u32(out, static_cast<uint32_t>(f.getIntegLines()));
+  push_f32(out, static_cast<float>(f.getGain()));
+  push_u8(out, f.getHighConversionGain() ? 1 : 0);
+  push_f32(out, static_cast<float>(f.getMeasuredGreyFraction()));
+  push_f32(out, static_cast<float>(f.getTargetGreyFraction()));
+  push_f32(out, static_cast<float>(f.getExposureValPercent()));
+  push_u32(out, static_cast<uint32_t>(temps.size()));
+  for (auto t : temps) push_f32(out, static_cast<float>(t));
+  push_u32(out, static_cast<uint32_t>(f.getSensor()));
+  return out;
+}
 static bool send_meta_raw_frame(int fd,
                                 uint8_t service_index,
                                 uint16_t event_which,
@@ -678,6 +774,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                 have_calibration_json = true;
                 break;
               case cereal::Event::CAR_CONTROL:
+                raw_typed_latest[6] = encode_car_control_typed(event.getCarControl());
                 car_control_json_latest = std::move(json);
                 have_car_control_json = true;
                 break;
@@ -690,6 +787,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                 have_live_parameters_json = true;
                 break;
               case cereal::Event::DRIVER_MONITORING_STATE:
+                raw_typed_latest[9] = encode_driver_monitoring_typed(event.getDriverMonitoringState());
                 driver_monitoring_json_latest = std::move(json);
                 have_driver_monitoring_json = true;
                 break;
@@ -702,6 +800,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                 have_onroad_events_json = true;
                 break;
               case cereal::Event::ROAD_CAMERA_STATE:
+                raw_typed_latest[12] = encode_road_camera_state_typed(event.getRoadCameraState());
                 road_camera_state_json_latest = std::move(json);
                 have_road_camera_state_json = true;
                 break;
