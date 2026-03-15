@@ -453,6 +453,38 @@ static std::vector<uint8_t> encode_live_parameters_typed(cereal::LiveParametersD
   return out;
 }
 
+
+static void push_float_list(std::vector<uint8_t>& out, capnp::List<float>::Reader vals) {
+  push_u32(out, static_cast<uint32_t>(vals.size()));
+  for (auto v : vals) push_f32(out, static_cast<float>(v));
+}
+
+static void encode_driver_pose_typed(std::vector<uint8_t>& out, cereal::DriverStateV2::DriverData::Reader d) {
+  push_float_list(out, d.getFaceOrientation());
+  push_float_list(out, d.getFaceOrientationStd());
+  push_float_list(out, d.getFacePosition());
+  push_float_list(out, d.getFacePositionStd());
+  push_f32(out, static_cast<float>(d.getFaceProb()));
+  push_f32(out, static_cast<float>(d.getLeftEyeProb()));
+  push_f32(out, static_cast<float>(d.getRightEyeProb()));
+  push_f32(out, static_cast<float>(d.getLeftBlinkProb()));
+  push_f32(out, static_cast<float>(d.getRightBlinkProb()));
+  push_f32(out, static_cast<float>(d.getSunglassesProb()));
+  push_f32(out, static_cast<float>(d.getPhoneProb()));
+}
+
+static std::vector<uint8_t> encode_driver_state_v2_typed(cereal::DriverStateV2::Reader d) {
+  std::vector<uint8_t> out;
+  out.reserve(256);
+  push_u8(out, 0x01);  // schema version
+  push_u32(out, static_cast<uint32_t>(d.getFrameId()));
+  push_f32(out, static_cast<float>(d.getModelExecutionTime()));
+  push_f32(out, static_cast<float>(d.getGpuExecutionTime()));
+  push_f32(out, static_cast<float>(d.getWheelOnRightProb()));
+  encode_driver_pose_typed(out, d.getLeftDriverData());
+  encode_driver_pose_typed(out, d.getRightDriverData());
+  return out;
+}
 static std::vector<uint8_t> encode_onroad_events_typed(capnp::List<cereal::OnroadEvent>::Reader events) {
   std::vector<uint8_t> out;
   out.reserve(8 + events.size() * 16);
@@ -920,6 +952,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                 have_driver_monitoring_json = true;
                 break;
               case cereal::Event::DRIVER_STATE_V2:
+                raw_typed_latest[10] = encode_driver_state_v2_typed(event.getDriverStateV2());
                 driver_state_v2_json_latest = std::move(json);
                 have_driver_state_v2_json = true;
                 break;
