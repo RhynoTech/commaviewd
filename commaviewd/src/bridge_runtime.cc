@@ -351,6 +351,59 @@ static std::vector<uint8_t> encode_car_control_typed(cereal::CarControl::Reader 
 }
 
 
+
+static std::vector<uint8_t> encode_device_state_typed(cereal::DeviceState::Reader ds) {
+  std::vector<uint8_t> out;
+  out.reserve(64);
+  auto cpu = ds.getCpuTempC();
+  auto gpu = ds.getGpuTempC();
+  const float cpu0 = cpu.size() > 0 ? static_cast<float>(cpu[0]) : 0.0f;
+  const float gpu0 = gpu.size() > 0 ? static_cast<float>(gpu[0]) : 0.0f;
+
+  push_u8(out, 0x01);  // schema version
+  push_f32(out, cpu0);
+  push_f32(out, gpu0);
+  push_u32(out, static_cast<uint32_t>(ds.getMemoryUsagePercent()));
+  push_f32(out, static_cast<float>(ds.getFreeSpacePercent()));
+  push_u32(out, static_cast<uint32_t>(ds.getNetworkStrength()));
+  push_u32(out, static_cast<uint32_t>(ds.getThermalStatus()));
+  push_u8(out, ds.getStarted() ? 1 : 0);
+  return out;
+}
+
+static std::vector<uint8_t> encode_radar_state_typed(cereal::RadarState::Reader rs) {
+  std::vector<uint8_t> out;
+  out.reserve(64);
+  auto l1 = rs.getLeadOne();
+  auto l2 = rs.getLeadTwo();
+
+  push_u8(out, 0x01);  // schema version
+  auto push_lead = [&](cereal::RadarState::LeadData::Reader l) {
+    push_f32(out, static_cast<float>(l.getDRel()));
+    push_f32(out, static_cast<float>(l.getYRel()));
+    push_f32(out, static_cast<float>(l.getVRel()));
+    push_f32(out, static_cast<float>(l.getARel()));
+    push_u8(out, l.getStatus() ? 1 : 0);
+  };
+  push_lead(l1);
+  push_lead(l2);
+  return out;
+}
+
+static std::vector<uint8_t> encode_live_calibration_typed(cereal::LiveCalibrationData::Reader lc) {
+  std::vector<uint8_t> out;
+  auto rpy = lc.getRpyCalib();
+  auto h = lc.getHeight();
+  out.reserve(64);
+  push_u8(out, 0x01);  // schema version
+  push_u32(out, static_cast<uint32_t>(rpy.size()));
+  for (auto v : rpy) push_f32(out, static_cast<float>(v));
+  push_u32(out, static_cast<uint32_t>(h.size()));
+  for (auto v : h) push_f32(out, static_cast<float>(v));
+  push_u32(out, static_cast<uint32_t>(lc.getCalStatus()));
+  push_u32(out, static_cast<uint32_t>(lc.getCalPerc()));
+  return out;
+}
 static std::vector<uint8_t> encode_car_output_typed(cereal::CarOutput::Reader co) {
   std::vector<uint8_t> out;
   out.reserve(1 + 4 * 9 + 4);
@@ -828,6 +881,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                 have_controls_json = true;
                 break;
               case cereal::Event::DEVICE_STATE:
+                raw_typed_latest[2] = encode_device_state_typed(event.getDeviceState());
                 device_json_latest = std::move(json);
                 have_device_json = true;
                 break;
@@ -836,10 +890,12 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                 have_model_json = true;
                 break;
               case cereal::Event::RADAR_STATE:
+                raw_typed_latest[4] = encode_radar_state_typed(event.getRadarState());
                 radar_json_latest = std::move(json);
                 have_radar_json = true;
                 break;
               case cereal::Event::LIVE_CALIBRATION:
+                raw_typed_latest[3] = encode_live_calibration_typed(event.getLiveCalibration());
                 calibration_json_latest = std::move(json);
                 have_calibration_json = true;
                 break;
