@@ -352,10 +352,16 @@ static std::vector<uint8_t> encode_car_control_typed(cereal::CarControl::Reader 
 
 
 
+static void push_float_list(std::vector<uint8_t>& out, capnp::List<float>::Reader vals) {
+  push_u32(out, static_cast<uint32_t>(vals.size()));
+  for (auto v : vals) push_f32(out, static_cast<float>(v));
+}
+
 static std::vector<uint8_t> encode_device_state_typed(cereal::DeviceState::Reader ds) {
   std::vector<uint8_t> out;
   out.reserve(64);
   auto cpu = ds.getCpuTempC();
+
   auto gpu = ds.getGpuTempC();
   const float cpu0 = cpu.size() > 0 ? static_cast<float>(cpu[0]) : 0.0f;
   const float gpu0 = gpu.size() > 0 ? static_cast<float>(gpu[0]) : 0.0f;
@@ -390,6 +396,63 @@ static std::vector<uint8_t> encode_radar_state_typed(cereal::RadarState::Reader 
   return out;
 }
 
+
+static std::vector<uint8_t> encode_model_v2_typed(cereal::ModelDataV2::Reader m) {
+  std::vector<uint8_t> out;
+  out.reserve(4096);
+
+  auto push_xyz = [&](cereal::XYZTData::Reader xyz) {
+    push_float_list(out, xyz.getX());
+    push_float_list(out, xyz.getY());
+    push_float_list(out, xyz.getZ());
+  };
+
+  push_u8(out, 0x01);  // schema version
+  push_u64(out, static_cast<uint64_t>(m.getFrameId()));
+  push_u64(out, static_cast<uint64_t>(m.getFrameIdExtra()));
+  push_u64(out, static_cast<uint64_t>(m.getFrameAge()));
+  push_f32(out, static_cast<float>(m.getFrameDropPerc()));
+  push_u64(out, static_cast<uint64_t>(m.getTimestampEof()));
+
+  auto lanes = m.getLaneLines();
+  auto lane_probs = m.getLaneLineProbs();
+  auto lane_stds = m.getLaneLineStds();
+  push_u32(out, static_cast<uint32_t>(lanes.size()));
+  for (unsigned i = 0; i < lanes.size(); i++) {
+    push_xyz(lanes[i]);
+    const float prob = (i < lane_probs.size()) ? lane_probs[i] : 0.0f;
+    const float std = (i < lane_stds.size()) ? lane_stds[i] : 0.0f;
+    push_f32(out, prob);
+    push_f32(out, std);
+  }
+
+  auto edges = m.getRoadEdges();
+  auto edge_stds = m.getRoadEdgeStds();
+  push_u32(out, static_cast<uint32_t>(edges.size()));
+  for (unsigned i = 0; i < edges.size(); i++) {
+    push_xyz(edges[i]);
+    const float std = (i < edge_stds.size()) ? edge_stds[i] : 0.0f;
+    push_f32(out, std);
+  }
+
+  auto pos = m.getPosition();
+  push_float_list(out, pos.getX());
+  push_float_list(out, pos.getY());
+  push_float_list(out, pos.getZ());
+
+  auto leads = m.getLeadsV3();
+  push_u32(out, static_cast<uint32_t>(leads.size()));
+  for (unsigned i = 0; i < leads.size(); i++) {
+    push_float_list(out, leads[i].getX());
+    push_float_list(out, leads[i].getY());
+    push_u32(out, 0);
+    push_f32(out, static_cast<float>(leads[i].getProb()));
+  }
+
+  push_float_list(out, lane_stds);
+  push_float_list(out, edge_stds);
+  return out;
+}
 static std::vector<uint8_t> encode_live_calibration_typed(cereal::LiveCalibrationData::Reader lc) {
   std::vector<uint8_t> out;
   auto rpy = lc.getRpyCalib();
@@ -454,10 +517,6 @@ static std::vector<uint8_t> encode_live_parameters_typed(cereal::LiveParametersD
 }
 
 
-static void push_float_list(std::vector<uint8_t>& out, capnp::List<float>::Reader vals) {
-  push_u32(out, static_cast<uint32_t>(vals.size()));
-  for (auto v : vals) push_f32(out, static_cast<float>(v));
-}
 
 static void encode_driver_pose_typed(std::vector<uint8_t>& out, cereal::DriverStateV2::DriverData::Reader d) {
   push_float_list(out, d.getFaceOrientation());
@@ -918,6 +977,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                 have_device_json = true;
                 break;
               case cereal::Event::MODEL_V2:
+                raw_typed_latest[5] = encode_model_v2_typed(event.getModelV2());
                 model_json_latest = std::move(json);
                 have_model_json = true;
                 break;
@@ -1107,12 +1167,13 @@ static void handle_client(int client_fd, const char* video_service, int port) {
               continue;
             }
             const auto& raw = raw_latest[i];
+            const std::string json_payload = g_emit_meta_json ? raw_json_latest[i] : std::string();
             if (!send_meta_raw_frame(client_fd,
                                      static_cast<uint8_t>(i),
                                      raw_event_which[i],
                                      raw_log_mono[i],
                                      raw_typed_latest[i],
-                                     raw_json_latest[i],
+                                     json_payload,
                                      raw.data(),
                                      raw.size())) goto disconnect;
             telem_raw_count++;
