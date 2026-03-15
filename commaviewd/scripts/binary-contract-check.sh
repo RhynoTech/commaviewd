@@ -23,8 +23,18 @@ done
 
 HOST_BIN="$DIST_DIR/commaviewd-host"
 ARM_BIN="$DIST_DIR/commaviewd-aarch64"
-ARM_CAPNP="$DIST_DIR/lib/libcapnp-0.8.0.so"
-ARM_KJ="$DIST_DIR/lib/libkj-0.8.0.so"
+ARM_CAPNP_DEFAULT="$DIST_DIR/lib/libcapnp-0.8.0.so"
+ARM_KJ_DEFAULT="$DIST_DIR/lib/libkj-0.8.0.so"
+ARM_CAPNP="$ARM_CAPNP_DEFAULT"
+ARM_KJ="$ARM_KJ_DEFAULT"
+
+# Allow for newer libcapnp/libkj SONAMEs in runner environments.
+if [[ ! -f "$ARM_CAPNP" ]]; then
+  ARM_CAPNP="$(printf "%s\n" "$DIST_DIR/lib"/libcapnp*.so* | head -n 1 || true)"
+fi
+if [[ ! -f "$ARM_KJ" ]]; then
+  ARM_KJ="$(printf "%s\n" "$DIST_DIR/lib"/libkj*.so* | head -n 1 || true)"
+fi
 
 for f in "$HOST_BIN" "$ARM_BIN" "$ARM_CAPNP" "$ARM_KJ"; do
   [[ -f "$f" ]] || { echo "FAIL: missing artifact $f" >&2; exit 1; }
