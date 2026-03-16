@@ -18,6 +18,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
+#include <mutex>
+#include <ctime>
 
 namespace commaview::runtime {
 namespace {
@@ -36,6 +38,8 @@ constexpr const char* kSetupCompleteParam = "CommaViewTailscaleSetupComplete";
 constexpr const char* kAllowOnroadDebugParam = "CommaViewTailscaleAllowOnroadDebug";
 constexpr int kDefaultApiPort = 5002;
 constexpr const char* kVersionFile = "/data/commaview/VERSION";
+constexpr const char* kPairingScheme = "commaview://pair";
+constexpr int kPairingCodeTtlSec = 300;
 
 struct TailscaleSnapshot {
   bool enabled = false;
@@ -43,8 +47,22 @@ struct TailscaleSnapshot {
   bool daemon_running = false;
   bool auth_key_pending = false;
   bool allow_onroad_debug = false;
+  bool setup_complete = false;
+  bool available = false;
+  bool authenticated = false;
+  bool connected = false;
+  bool onroad_blocked = false;
   std::string backend_state = "unknown";
 };
+
+struct PairingGrant {
+  std::string code;
+  std::time_t expires_at = 0;
+  bool used = true;
+};
+
+std::mutex g_pairing_mutex;
+PairingGrant g_pairing_grant;
 
 std::string trim_copy(const std::string& in) {
   size_t s = 0;
@@ -69,6 +87,47 @@ std::string json_escape(const std::string& in) {
   }
   return out;
 }
+
+std::string normalize_code(const std::string& in) {
+  std::string out;
+  out.reserve(in.size());
+  for (char c : in) {
+    unsigned char uc = static_cast<unsigned char>(c);
+    if (std::isalnum(uc)) out.push_back(static_cast<char>(std::toupper(uc)));
+  }
+  return out;
+}
+
+bool codes_equal(const std::string& a, const std::string& b) {
+  return normalize_code(a) == normalize_code(b);
+}
+
+std::string random_pair_code() {
+  static const char* alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  std::array<unsigned char, 8> bytes{};
+  int fd = open("/dev/urandom", O_RDONLY);
+  if (fd >= 0) {
+    ssize_t n = read(fd, bytes.data(), bytes.size());
+    close(fd);
+    if (n < static_cast<ssize_t>(bytes.size())) {
+      std::srand(static_cast<unsigned int>(std::time(nullptr) ^ getpid()));
+      for (size_t i = static_cast<size_t>(n < 0 ? 0 : n); i < bytes.size(); ++i) {
+        bytes[i] = static_cast<unsigned char>(std::rand() & 0xFF);
+      }
+    }
+  } else {
+    std::srand(static_cast<unsigned int>(std::time(nullptr) ^ getpid()));
+    for (size_t i = 0; i < bytes.size(); ++i) {
+      bytes[i] = static_cast<unsigned char>(std::rand() & 0xFF);
+    }
+  }
+
+  std::string raw;
+  raw.reserve(8);
+  for (size_t i = 0; i < 8; ++i) raw.push_back(alphabet[bytes[i] % 32]);
+  return raw.substr(0, 4) + "-" + raw.substr(4, 4);
+}
+
 
 bool file_executable(const char* path) {
   return path != nullptr && access(path, X_OK) == 0;
@@ -162,6 +221,24 @@ bool extract_setup_complete_flag(const std::string& body, bool* value_out) {
 
 bool extract_allow_onroad_debug_flag(const std::string& body, bool* value_out) {
   return extract_bool_flag(body, "allowOnroadDebug", value_out);
+}
+
+
+bool extract_string_field(const std::string& body, const char* key, std::string* value_out) {
+  if (key == nullptr || value_out == nullptr) return false;
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t pos = body.find(needle);
+  if (pos == std::string::npos) return false;
+  pos = body.find(':', pos + needle.size());
+  if (pos == std::string::npos) return false;
+  pos++;
+  while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) pos++;
+  if (pos >= body.size() || body[pos] != '"') return false;
+  pos++;
+  size_t end = body.find('"', pos);
+  if (end == std::string::npos) return false;
+  *value_out = body.substr(pos, end - pos);
+  return !value_out->empty();
 }
 
 std::string setup_complete_json(bool value) {
@@ -388,17 +465,19 @@ std::string parse_backend_state(const std::string& status_json) {
   return status_json.substr(pos + 1, end - (pos + 1));
 }
 
-std::string tailscale_backend_state() {
-  if (!file_executable(kTailscaleBin)) return "missing";
+bool parse_connected(const std::string& status_json) {
+  return status_json.find("\"Online\":true") != std::string::npos;
+}
+
+bool query_tailscale_status_json(std::string* out_json, int* rc_out = nullptr, std::string* err_out = nullptr) {
   int rc = 0;
   std::string out;
   std::string err;
-  if (!run_command({kTailscaleBin, "--socket", kTailscaleSocket, "status", "--json"}, &rc, &out, &err)) {
-    return "error";
-  }
-  if (rc != 0) return "error";
-  const std::string parsed = parse_backend_state(out);
-  return parsed.empty() ? "unknown" : parsed;
+  bool ok = run_command({kTailscaleBin, "--socket", kTailscaleSocket, "status", "--json"}, &rc, &out, &err);
+  if (out_json) *out_json = out;
+  if (rc_out) *rc_out = rc;
+  if (err_out) *err_out = err;
+  return ok;
 }
 
 bool authkey_pending() {
@@ -420,9 +499,32 @@ TailscaleSnapshot capture_tailscale_snapshot() {
   s.enabled = read_param("CommaViewTailscaleEnabled") == "1";
   s.onroad = is_onroad();
   s.daemon_running = tailscaled_running();
-  s.backend_state = tailscale_backend_state();
   s.auth_key_pending = authkey_pending();
   s.allow_onroad_debug = read_allow_onroad_debug();
+  s.setup_complete = read_setup_complete();
+  s.available = file_executable(kTailscaleBin) && file_executable(kTailscaledBin);
+  s.onroad_blocked = s.onroad && !s.allow_onroad_debug && s.enabled;
+
+  if (!s.available) {
+    s.backend_state = "missing";
+    s.authenticated = false;
+    s.connected = false;
+    return s;
+  }
+
+  int rc = 0;
+  std::string status_json;
+  std::string err;
+  if (query_tailscale_status_json(&status_json, &rc, &err) && rc == 0) {
+    s.backend_state = parse_backend_state(status_json);
+    s.connected = parse_connected(status_json);
+  } else {
+    s.backend_state = s.daemon_running ? "error" : "stopped";
+    s.connected = false;
+  }
+
+  const bool running = s.backend_state == "Running";
+  s.authenticated = !s.auth_key_pending && (running || s.connected);
   return s;
 }
 
@@ -434,7 +536,12 @@ std::string snapshot_json(const TailscaleSnapshot& s) {
       << "\"daemonRunning\":" << (s.daemon_running ? "true" : "false") << ","
       << "\"backendState\":\"" << json_escape(s.backend_state) << "\","
       << "\"authKeyPending\":" << (s.auth_key_pending ? "true" : "false") << ","
-      << "\"allowOnroadDebug\":" << (s.allow_onroad_debug ? "true" : "false")
+      << "\"allowOnroadDebug\":" << (s.allow_onroad_debug ? "true" : "false") << ","
+      << "\"setupComplete\":" << (s.setup_complete ? "true" : "false") << ","
+      << "\"available\":" << (s.available ? "true" : "false") << ","
+      << "\"authenticated\":" << (s.authenticated ? "true" : "false") << ","
+      << "\"connected\":" << (s.connected ? "true" : "false") << ","
+      << "\"onroadBlocked\":" << (s.onroad_blocked ? "true" : "false")
       << "}";
   return out.str();
 }
@@ -449,7 +556,12 @@ std::string command_result_json(bool ok, bool available, const TailscaleSnapshot
       << "\"daemonRunning\":" << (snap.daemon_running ? "true" : "false") << ","
       << "\"backendState\":\"" << json_escape(snap.backend_state) << "\","
       << "\"authKeyPending\":" << (snap.auth_key_pending ? "true" : "false") << ","
-      << "\"allowOnroadDebug\":" << (snap.allow_onroad_debug ? "true" : "false");
+      << "\"allowOnroadDebug\":" << (snap.allow_onroad_debug ? "true" : "false") << ","
+      << "\"setupComplete\":" << (snap.setup_complete ? "true" : "false") << ","
+      << "\"available\":" << (snap.available ? "true" : "false") << ","
+      << "\"authenticated\":" << (snap.authenticated ? "true" : "false") << ","
+      << "\"connected\":" << (snap.connected ? "true" : "false") << ","
+      << "\"onroadBlocked\":" << (snap.onroad_blocked ? "true" : "false");
   if (!error.empty()) {
     out << ",\"error\":\"" << json_escape(error) << "\"";
   }
@@ -458,9 +570,6 @@ std::string command_result_json(bool ok, bool available, const TailscaleSnapshot
 }
 
 std::string tailscale_status() {
-  if (!file_executable(kTailscaleBin) || !file_executable(kTailscaledBin)) {
-    return "{\"enabled\":false,\"onroad\":false,\"daemonRunning\":false,\"backendState\":\"missing\",\"authKeyPending\":false,\"allowOnroadDebug\":false,\"available\":false}";
-  }
   return snapshot_json(capture_tailscale_snapshot());
 }
 
@@ -539,25 +648,13 @@ std::string tailscale_set_enabled(bool enable) {
 }
 
 bool extract_auth_key(const std::string& body, std::string* authkey_out) {
-  if (authkey_out == nullptr) return false;
-  const char* keys[] = {"\"authKey\"", "\"auth_key\""};
+  return extract_string_field(body, "authKey", authkey_out) ||
+         extract_string_field(body, "auth_key", authkey_out);
+}
 
-  for (const char* key : keys) {
-    size_t pos = body.find(key);
-    if (pos == std::string::npos) continue;
-    pos = body.find(':', pos);
-    if (pos == std::string::npos) continue;
-    pos++;
-    while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) pos++;
-    if (pos >= body.size() || body[pos] != '"') continue;
-    pos++;
-    size_t end = body.find('"', pos);
-    if (end == std::string::npos) continue;
-    *authkey_out = body.substr(pos, end - pos);
-    return !authkey_out->empty();
-  }
-
-  return false;
+bool extract_pair_code(const std::string& body, std::string* code_out) {
+  return extract_string_field(body, "pairCode", code_out) ||
+         extract_string_field(body, "code", code_out);
 }
 
 std::string tailscale_set_authkey(const std::string& authkey) {
@@ -600,6 +697,51 @@ std::string tailscale_set_allow_onroad_debug(bool allow) {
   out << "{\"ok\":true,\"allowOnroadDebug\":" << (read_allow_onroad_debug() ? "true" : "false")
       << ",\"tailscale\":" << tailscale_status() << "}";
   return out.str();
+}
+
+
+std::string pairing_create(const std::string& api_token) {
+  if (api_token.empty()) {
+    return "{\"ok\":false,\"error\":\"api token unavailable\"}";
+  }
+  const std::string code = random_pair_code();
+  {
+    std::lock_guard<std::mutex> lk(g_pairing_mutex);
+    g_pairing_grant.code = code;
+    g_pairing_grant.expires_at = std::time(nullptr) + kPairingCodeTtlSec;
+    g_pairing_grant.used = false;
+  }
+
+  std::ostringstream out;
+  out << "{\"ok\":true,\"pairCode\":\"" << code
+      << "\",\"expiresInSec\":" << kPairingCodeTtlSec
+      << ",\"pairingUri\":\"" << kPairingScheme << "?code=" << code << "\"}";
+  return out.str();
+}
+
+std::string pairing_redeem(const std::string& code, const std::string& api_token) {
+  if (api_token.empty()) {
+    return "{\"ok\":false,\"error\":\"api token unavailable\"}";
+  }
+  if (code.empty()) {
+    return "{\"ok\":false,\"error\":\"pairCode required\"}";
+  }
+
+  std::lock_guard<std::mutex> lk(g_pairing_mutex);
+  const std::time_t now = std::time(nullptr);
+  if (g_pairing_grant.code.empty() || g_pairing_grant.used) {
+    return "{\"ok\":false,\"error\":\"pairing code unavailable\"}";
+  }
+  if (now > g_pairing_grant.expires_at) {
+    g_pairing_grant.used = true;
+    return "{\"ok\":false,\"error\":\"pairing code expired\"}";
+  }
+  if (!codes_equal(code, g_pairing_grant.code)) {
+    return "{\"ok\":false,\"error\":\"invalid pairing code\"}";
+  }
+
+  g_pairing_grant.used = true;
+  return std::string("{\"ok\":true,\"apiToken\":\"") + json_escape(api_token) + "\"}";
 }
 
 bool is_authorized(const commaview::api::HttpRequest& req, const std::string& token) {
@@ -661,8 +803,22 @@ int run_control_mode(int argc, char* argv[]) {
     }
 
     if (req.method == "POST") {
+      if (req.path == "/pairing/redeem") {
+        std::string code;
+        if (!extract_pair_code(req.body, &code)) {
+          return make_json(400, "{\"ok\":false,\"error\":\"pairCode required\"}");
+        }
+        std::string body = pairing_redeem(code, api_token);
+        int status = body.find("\"ok\":true") != std::string::npos ? 200 : 400;
+        return make_json(status, body);
+      }
+
       if (!is_authorized(req, api_token)) {
         return make_json(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
+      }
+
+      if (req.path == "/pairing/create") {
+        return make_json(200, pairing_create(api_token));
       }
 
       if (req.path == "/tailscale/enable") {
