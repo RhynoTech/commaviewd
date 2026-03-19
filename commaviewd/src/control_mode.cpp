@@ -444,12 +444,12 @@ void force_tailscale_down_and_stop() {
     int rc = 0;
     std::string out;
     std::string err;
-    (void)run_command({kTailscaleBin, "--socket", kTailscaleSocket, "down"}, &rc, &out, &err);
+    (void)run_command_with_optional_sudo({kTailscaleBin, "--socket", kTailscaleSocket, "down"}, &rc, &out, &err);
   }
   int rc = 0;
   std::string out;
   std::string err;
-  (void)run_command({"pkill", "-f", kTailscaledBin}, &rc, &out, &err);
+  (void)run_command_with_optional_sudo({"pkill", "-f", kTailscaledBin}, &rc, &out, &err);
 }
 
 std::string parse_backend_state(const std::string& status_json) {
@@ -494,6 +494,10 @@ bool write_authkey(const std::string& key) {
   return write_file(kTailscaleAuthKeyFile, key, 0600);
 }
 
+bool tailscale_state_present() {
+  struct stat st{};
+  return stat(kTailscaleStateFile, &st) == 0 && st.st_size > 0;
+}
 TailscaleSnapshot capture_tailscale_snapshot() {
   TailscaleSnapshot s;
   s.enabled = read_param("CommaViewTailscaleEnabled") == "1";
@@ -610,15 +614,17 @@ std::string tailscale_set_enabled(bool enable) {
 
   std::vector<std::string> args = {kTailscaleBin, "--socket", kTailscaleSocket, "up"};
   std::string authkey = read_authkey();
-  if (!authkey.empty()) {
+  const bool state_present = tailscale_state_present();
+  const bool should_use_authkey = !authkey.empty() && !state_present;
+
+  args.push_back("--accept-routes");
+  args.push_back("--netfilter-mode=off");
+
+  if (should_use_authkey) {
     args.push_back("--authkey");
     args.push_back(authkey);
-    args.push_back("--accept-routes");
-    args.push_back("--netfilter-mode=off");
-    args.push_back("--reset");
-  } else {
-    args.push_back("--accept-routes");
-    args.push_back("--netfilter-mode=off");
+  } else if (state_present && !authkey.empty()) {
+    unlink(kTailscaleAuthKeyFile);
   }
 
   if (geteuid() != 0) {

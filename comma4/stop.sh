@@ -20,10 +20,10 @@ done
 pkill -f '/data/commaview/commaviewd bridge' 2>/dev/null || true
 pkill -f '/data/commaview/commaviewd control' 2>/dev/null || true
 pkill -f '/data/commaview/commaviewd' 2>/dev/null || true
-pkill -f '/data/commaview/tailscale/bin/tailscaled' 2>/dev/null || true
+sudo -n pkill -f /data/commaview/tailscale/bin/tailscaled 2>/dev/null || pkill -f /data/commaview/tailscale/bin/tailscaled 2>/dev/null || true
 
 if [ -x /data/commaview/tailscale/bin/tailscale ]; then
-  /data/commaview/tailscale/bin/tailscale --socket /data/commaview/tailscale/state/tailscaled.sock down >/dev/null 2>&1 || true
+  sudo -n /data/commaview/tailscale/bin/tailscale --socket /data/commaview/tailscale/state/tailscaled.sock down >/dev/null 2>&1 || /data/commaview/tailscale/bin/tailscale --socket /data/commaview/tailscale/state/tailscaled.sock down >/dev/null 2>&1 || true
 fi
 
 echo "CommaView stopped"
