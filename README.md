@@ -23,6 +23,10 @@
 
 - `commaviewd/docs/COM-55-onroad-ui-parity-program.md` — phased execution plan for comma4 onroad UI parity.
 
+## AI telemetry references
+
+- short operator doc: `commaviewd/docs/ai/telemetry-raw-only-readme.md`
+- deep technical doc: `commaviewd/docs/ai/telemetry-raw-only-deep-dive.md`
 ## Install on comma4
 
 Install/update:
