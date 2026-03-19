@@ -1,12 +1,12 @@
 # Raw Telemetry Hard Cutover Implementation Plan
 
-> For Claude: REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-Goal: Make commaviewd telemetry transport raw-only by default so comma does not decode telemetry messages, restoring in-car stability while re-enabling carState delivery.
+**Goal:** Make commaviewd telemetry transport raw-only by default so comma does not decode telemetry messages, restoring in-car stability while re-enabling carState delivery.
 
-Architecture: Keep video path unchanged. In bridge runtime, keep latest-only queue drain behavior, but in default runtime path skip telemetry JSON and typed encoding work and forward raw envelopes only. Keep one internal rollback switch for emergency decode fallback.
+**Architecture:** Keep video path unchanged. In bridge runtime, keep latest-only queue drain behavior, but in default runtime path skip telemetry JSON and typed encoding work and forward raw envelopes only. Keep one internal rollback switch for emergency decode fallback.
 
-Tech Stack: C++17 commaviewd runtime, cereal/msgq subscriptions, shell contract tests, existing commaviewd build and unit test scripts, GitHub Actions release workflow.
+**Tech Stack:** C++17 commaviewd runtime, cereal/msgq subscriptions, shell contract tests, existing commaviewd build and unit test scripts, GitHub Actions release workflow.
 
 ---
 
