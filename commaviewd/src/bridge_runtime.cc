@@ -92,19 +92,7 @@ static cereal::Event::Which expected_video_which_for_port(int port) {
 }
 
 
-static int clamp_telem_emit_ms(int value) {
-  if (value < 10) return 10;
-  if (value > 1000) return 1000;
-  return value;
-}
 
-static int parse_int_or_default(const char* text, int fallback) {
-  if (text == nullptr || *text == '\0') return fallback;
-  char* end = nullptr;
-  long v = strtol(text, &end, 10);
-  if (end == text || (end && *end != '\0')) return fallback;
-  return static_cast<int>(v);
-}
 
 
 
@@ -573,16 +561,10 @@ int commaview_bridge_main(int argc, char* argv[]) {
   signal(SIGTERM, sig_handler);
   signal(SIGPIPE, SIG_IGN);
 
-  if (const char* env_emit = std::getenv("COMMAVIEW_TELEMETRY_EMIT_MS")) {
-    g_telemetry_emit_ms = clamp_telem_emit_ms(parse_int_or_default(env_emit, g_telemetry_emit_ms));
-  }
 
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--dev") == 0) g_dev_mode = true;
-    if (strcmp(argv[i], "--telem-emit-ms") == 0 && (i + 1) < argc) {
-      g_telemetry_emit_ms = clamp_telem_emit_ms(parse_int_or_default(argv[++i], g_telemetry_emit_ms));
-    }
   }
 
   const char** video_services = g_dev_mode ? VIDEO_SERVICES_DEV : VIDEO_SERVICES_PROD;
