@@ -2,7 +2,6 @@
 #include "socket.h"
 #include "policy.h"
 #include "router.h"
-#include "json_builder.h"
 #include "telemetry_stats.h"
 /**
  * CommaView Unified Bridge (C++)
@@ -49,10 +48,8 @@
 #include "cereal/services.h"
 
 static constexpr uint8_t MSG_VIDEO = 0x01;
-static constexpr uint8_t MSG_META  = 0x02;
 static constexpr uint8_t MSG_CONTROL = 0x03;
 static constexpr uint8_t MSG_META_RAW = 0x04;
-static constexpr uint8_t META_RAW_VERSION = 0x01;
 
 static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;
@@ -68,36 +65,6 @@ static constexpr int NUM_TELEM = 13;
 static constexpr int TELEMETRY_EMIT_MS_DEFAULT = 50;  // 20 Hz parity target
 static int g_telemetry_emit_ms = TELEMETRY_EMIT_MS_DEFAULT;
 
-static constexpr uint32_t TELEMETRY_BIT_CARSTATE = 1u << 0;
-static constexpr uint32_t TELEMETRY_BIT_SELFDRIVE = 1u << 1;
-static constexpr uint32_t TELEMETRY_BIT_DEVICESTATE = 1u << 2;
-static constexpr uint32_t TELEMETRY_BIT_LIVECALIB = 1u << 3;
-static constexpr uint32_t TELEMETRY_BIT_RADAR = 1u << 4;
-static constexpr uint32_t TELEMETRY_BIT_MODELV2 = 1u << 5;
-static constexpr uint32_t TELEMETRY_BIT_CARCONTROL = 1u << 6;
-static constexpr uint32_t TELEMETRY_BIT_CAROUTPUT = 1u << 7;
-static constexpr uint32_t TELEMETRY_BIT_LIVEPARAMS = 1u << 8;
-static constexpr uint32_t TELEMETRY_BIT_DRIVERMON = 1u << 9;
-static constexpr uint32_t TELEMETRY_BIT_DRIVERV2 = 1u << 10;
-static constexpr uint32_t TELEMETRY_BIT_ONROADEVENTS = 1u << 11;
-static constexpr uint32_t TELEMETRY_BIT_ROADCAMSTATE = 1u << 12;
-static constexpr uint32_t TELEMETRY_MASK_ALL =
-    TELEMETRY_BIT_CARSTATE |
-    TELEMETRY_BIT_SELFDRIVE |
-    TELEMETRY_BIT_DEVICESTATE |
-    TELEMETRY_BIT_LIVECALIB |
-    TELEMETRY_BIT_RADAR |
-    TELEMETRY_BIT_MODELV2 |
-    TELEMETRY_BIT_CARCONTROL |
-    TELEMETRY_BIT_CAROUTPUT |
-    TELEMETRY_BIT_LIVEPARAMS |
-    TELEMETRY_BIT_DRIVERMON |
-    TELEMETRY_BIT_DRIVERV2 |
-    TELEMETRY_BIT_ONROADEVENTS |
-    TELEMETRY_BIT_ROADCAMSTATE;
-static constexpr uint32_t TELEMETRY_MASK_SAFE_NO_CAR =
-    TELEMETRY_MASK_ALL & ~TELEMETRY_BIT_CARSTATE;
-
 static const char* VIDEO_SERVICES_PROD[] = {
   "roadEncodeData", "wideRoadEncodeData", "driverEncodeData"
 };
@@ -107,15 +74,6 @@ static const char* VIDEO_SERVICES_DEV[] = {
 };
 
 static bool g_dev_mode = false;
-static bool g_video_only = false;
-static bool g_suppress_video = false;
-static bool g_telemetry_only = false;
-static bool g_telemetry_blackhole = false;
-static bool g_telemetry_drain_only = false;
-static bool g_telemetry_subscribe_only = false;
-static bool g_emit_meta_json = false;
-static bool g_emit_meta_raw = true;
-static uint32_t g_telemetry_mask = TELEMETRY_MASK_ALL;
 static std::atomic<bool> g_running{true};
 
 
@@ -133,24 +91,6 @@ static cereal::Event::Which expected_video_which_for_port(int port) {
   return commaview::video::expected_video_which_for_port(port, g_dev_mode);
 }
 
-static bool telemetry_enabled_index(int i) {
-  switch (i) {
-    case 0: return (g_telemetry_mask & TELEMETRY_BIT_CARSTATE) != 0;
-    case 1: return (g_telemetry_mask & TELEMETRY_BIT_SELFDRIVE) != 0;
-    case 2: return (g_telemetry_mask & TELEMETRY_BIT_DEVICESTATE) != 0;
-    case 3: return (g_telemetry_mask & TELEMETRY_BIT_LIVECALIB) != 0;
-    case 4: return (g_telemetry_mask & TELEMETRY_BIT_RADAR) != 0;
-    case 5: return (g_telemetry_mask & TELEMETRY_BIT_MODELV2) != 0;
-    case 6: return (g_telemetry_mask & TELEMETRY_BIT_CARCONTROL) != 0;
-    case 7: return (g_telemetry_mask & TELEMETRY_BIT_CAROUTPUT) != 0;
-    case 8: return (g_telemetry_mask & TELEMETRY_BIT_LIVEPARAMS) != 0;
-    case 9: return (g_telemetry_mask & TELEMETRY_BIT_DRIVERMON) != 0;
-    case 10: return (g_telemetry_mask & TELEMETRY_BIT_DRIVERV2) != 0;
-    case 11: return (g_telemetry_mask & TELEMETRY_BIT_ONROADEVENTS) != 0;
-    case 12: return (g_telemetry_mask & TELEMETRY_BIT_ROADCAMSTATE) != 0;
-    default: return false;
-  }
-}
 
 static int clamp_telem_emit_ms(int value) {
   if (value < 10) return 10;
@@ -166,30 +106,6 @@ static int parse_int_or_default(const char* text, int fallback) {
   return static_cast<int>(v);
 }
 
-static const char* telemetry_mask_label() {
-  if (g_telemetry_mask == TELEMETRY_MASK_ALL) return "all";
-  if (g_telemetry_mask == TELEMETRY_BIT_CARSTATE) return "carState";
-  if (g_telemetry_mask == TELEMETRY_BIT_SELFDRIVE) return "selfdriveState";
-  if (g_telemetry_mask == TELEMETRY_BIT_DEVICESTATE) return "deviceState";
-  if (g_telemetry_mask == TELEMETRY_BIT_LIVECALIB) return "liveCalibration";
-  if (g_telemetry_mask == TELEMETRY_BIT_RADAR) return "radarState";
-  if (g_telemetry_mask == TELEMETRY_BIT_MODELV2) return "modelV2";
-  if (g_telemetry_mask == TELEMETRY_BIT_CARCONTROL) return "carControl";
-  if (g_telemetry_mask == TELEMETRY_BIT_CAROUTPUT) return "carOutput";
-  if (g_telemetry_mask == TELEMETRY_BIT_LIVEPARAMS) return "liveParameters";
-  if (g_telemetry_mask == TELEMETRY_BIT_DRIVERMON) return "driverMonitoringState";
-  if (g_telemetry_mask == TELEMETRY_BIT_DRIVERV2) return "driverStateV2";
-  if (g_telemetry_mask == TELEMETRY_BIT_ONROADEVENTS) return "onroadEvents";
-  if (g_telemetry_mask == TELEMETRY_BIT_ROADCAMSTATE) return "roadCameraState";
-  if (g_telemetry_mask == TELEMETRY_MASK_SAFE_NO_CAR) return "safeNoCar";
-  return "custom";
-}
-static const char* telemetry_mode_label() {
-  if (g_emit_meta_json && g_emit_meta_raw) return "raw+json";
-  if (g_emit_meta_json) return "json-only";
-  if (g_emit_meta_raw) return "raw-only";
-  return "none";
-}
 
 
 static size_t queue_size_for_service(const char* service_name) {
@@ -202,9 +118,6 @@ static void put_be32(uint8_t* buf, uint32_t val) {
   commaview::net::put_be32(buf, val);
 }
 
-static uint32_t read_be32(const uint8_t* buf) {
-  return commaview::net::read_be32(buf);
-}
 
 static void put_be16(uint8_t* buf, uint16_t val) {
   buf[0] = (val >> 8) & 0xFF;
@@ -242,382 +155,6 @@ static int telemetry_index_for_which(cereal::Event::Which which) {
 }
 
 
-static void push_u8(std::vector<uint8_t>& out, uint8_t v) {
-  out.push_back(v);
-}
-
-static void push_u16(std::vector<uint8_t>& out, uint16_t v) {
-  uint8_t b[2];
-  put_be16(b, v);
-  out.insert(out.end(), b, b + 2);
-}
-
-static void push_u32(std::vector<uint8_t>& out, uint32_t v) {
-  uint8_t b[4];
-  put_be32(b, v);
-  out.insert(out.end(), b, b + 4);
-}
-
-static void push_u64(std::vector<uint8_t>& out, uint64_t v) {
-  uint8_t b[8];
-  put_be64(b, v);
-  out.insert(out.end(), b, b + 8);
-}
-
-static void push_f32(std::vector<uint8_t>& out, float value) {
-  uint32_t bits = 0;
-  static_assert(sizeof(float) == sizeof(uint32_t), "float size");
-  memcpy(&bits, &value, sizeof(bits));
-  push_u32(out, bits);
-}
-
-static void push_str_u16(std::vector<uint8_t>& out, kj::StringPtr s) {
-  const auto n = static_cast<uint16_t>(std::min<size_t>(s.size(), 65535));
-  push_u16(out, n);
-  out.insert(out.end(), s.begin(), s.begin() + n);
-}
-
-static std::vector<uint8_t> encode_car_state_typed(cereal::CarState::Reader cs) {
-  std::vector<uint8_t> out;
-  out.reserve(1 + 4 * 5 + 4);
-  push_u8(out, 0x01);  // schema version
-  push_f32(out, static_cast<float>(cs.getVEgo()));
-  push_f32(out, static_cast<float>(cs.getSteeringAngleDeg()));
-  push_u8(out, cs.getBrakePressed() ? 1 : 0);
-  push_u8(out, cs.getGasPressed() ? 1 : 0);
-  push_f32(out, static_cast<float>(cs.getAEgo()));
-  push_f32(out, static_cast<float>(cs.getSteeringTorqueEps()));
-  push_u8(out, cs.getSteeringPressed() ? 1 : 0);
-  push_u8(out, cs.getCanValid() ? 1 : 0);
-  push_u8(out, cs.getCanTimeout() ? 1 : 0);
-  push_u32(out, static_cast<uint32_t>(cs.getCanErrorCounter()));
-  return out;
-}
-
-static std::vector<uint8_t> encode_selfdrive_state_typed(cereal::SelfdriveState::Reader ss) {
-  std::vector<uint8_t> out;
-  out.reserve(64);
-  push_u8(out, 0x01);  // schema version
-  push_u8(out, ss.getEnabled() ? 1 : 0);
-  push_u8(out, ss.getActive() ? 1 : 0);
-  push_u8(out, ss.getEngageable() ? 1 : 0);
-  push_u8(out, ss.getExperimentalMode() ? 1 : 0);
-  push_u32(out, static_cast<uint32_t>(ss.getState()));
-  push_u32(out, static_cast<uint32_t>(ss.getAlertStatus()));
-  push_u32(out, static_cast<uint32_t>(ss.getAlertSize()));
-  push_u32(out, static_cast<uint32_t>(ss.getAlertSound()));
-  push_u32(out, static_cast<uint32_t>(ss.getAlertHudVisual()));
-  push_u32(out, static_cast<uint32_t>(ss.getPersonality()));
-  push_str_u16(out, ss.getAlertText1());
-  push_str_u16(out, ss.getAlertText2());
-  push_str_u16(out, ss.getAlertType());
-  return out;
-}
-
-
-static std::vector<uint8_t> encode_car_control_typed(cereal::CarControl::Reader cc) {
-  std::vector<uint8_t> out;
-  out.reserve(128);
-  const auto act = cc.getActuators();
-  const auto cruise = cc.getCruiseControl();
-  const auto hud = cc.getHudControl();
-
-  push_u8(out, 0x01);  // schema version
-  push_u8(out, cc.getEnabled() ? 1 : 0);
-  push_u8(out, cc.getLatActive() ? 1 : 0);
-  push_u8(out, cc.getLongActive() ? 1 : 0);
-  push_u8(out, cc.getLeftBlinker() ? 1 : 0);
-  push_u8(out, cc.getRightBlinker() ? 1 : 0);
-  push_f32(out, static_cast<float>(cc.getCurrentCurvature()));
-
-  push_f32(out, static_cast<float>(act.getTorque()));
-  push_f32(out, static_cast<float>(act.getSteeringAngleDeg()));
-  push_f32(out, static_cast<float>(act.getCurvature()));
-  push_f32(out, static_cast<float>(act.getAccel()));
-  push_u32(out, static_cast<uint32_t>(act.getLongControlState()));
-  push_f32(out, static_cast<float>(act.getGas()));
-  push_f32(out, static_cast<float>(act.getBrake()));
-  push_f32(out, static_cast<float>(act.getTorqueOutputCan()));
-  push_f32(out, static_cast<float>(act.getSpeed()));
-
-  push_u8(out, cruise.getCancel() ? 1 : 0);
-  push_u8(out, cruise.getResume() ? 1 : 0);
-  push_u8(out, cruise.getOverride() ? 1 : 0);
-
-  push_u8(out, hud.getSpeedVisible() ? 1 : 0);
-  push_f32(out, static_cast<float>(hud.getSetSpeed()));
-  push_u8(out, hud.getLanesVisible() ? 1 : 0);
-  push_u8(out, hud.getLeadVisible() ? 1 : 0);
-  push_u32(out, static_cast<uint32_t>(hud.getVisualAlert()));
-  push_u8(out, hud.getRightLaneVisible() ? 1 : 0);
-  push_u8(out, hud.getLeftLaneVisible() ? 1 : 0);
-  push_u8(out, hud.getRightLaneDepart() ? 1 : 0);
-  push_u8(out, hud.getLeftLaneDepart() ? 1 : 0);
-  push_u32(out, static_cast<uint32_t>(hud.getLeadDistanceBars()));
-  push_u32(out, static_cast<uint32_t>(hud.getAudibleAlert()));
-  return out;
-}
-
-
-
-static void push_float_list(std::vector<uint8_t>& out, capnp::List<float>::Reader vals) {
-  push_u32(out, static_cast<uint32_t>(vals.size()));
-  for (auto v : vals) push_f32(out, static_cast<float>(v));
-}
-
-static std::vector<uint8_t> encode_device_state_typed(cereal::DeviceState::Reader ds) {
-  std::vector<uint8_t> out;
-  out.reserve(64);
-  auto cpu = ds.getCpuTempC();
-
-  auto gpu = ds.getGpuTempC();
-  const float cpu0 = cpu.size() > 0 ? static_cast<float>(cpu[0]) : 0.0f;
-  const float gpu0 = gpu.size() > 0 ? static_cast<float>(gpu[0]) : 0.0f;
-
-  push_u8(out, 0x01);  // schema version
-  push_f32(out, cpu0);
-  push_f32(out, gpu0);
-  push_u32(out, static_cast<uint32_t>(ds.getMemoryUsagePercent()));
-  push_f32(out, static_cast<float>(ds.getFreeSpacePercent()));
-  push_u32(out, static_cast<uint32_t>(ds.getNetworkStrength()));
-  push_u32(out, static_cast<uint32_t>(ds.getThermalStatus()));
-  push_u8(out, ds.getStarted() ? 1 : 0);
-  return out;
-}
-
-static std::vector<uint8_t> encode_radar_state_typed(cereal::RadarState::Reader rs) {
-  std::vector<uint8_t> out;
-  out.reserve(64);
-  auto l1 = rs.getLeadOne();
-  auto l2 = rs.getLeadTwo();
-
-  push_u8(out, 0x01);  // schema version
-  auto push_lead = [&](cereal::RadarState::LeadData::Reader l) {
-    push_f32(out, static_cast<float>(l.getDRel()));
-    push_f32(out, static_cast<float>(l.getYRel()));
-    push_f32(out, static_cast<float>(l.getVRel()));
-    push_f32(out, static_cast<float>(l.getARel()));
-    push_u8(out, l.getStatus() ? 1 : 0);
-  };
-  push_lead(l1);
-  push_lead(l2);
-  return out;
-}
-
-
-static std::vector<uint8_t> encode_model_v2_typed(cereal::ModelDataV2::Reader m) {
-  std::vector<uint8_t> out;
-  out.reserve(4096);
-
-  auto push_xyz = [&](cereal::XYZTData::Reader xyz) {
-    push_float_list(out, xyz.getX());
-    push_float_list(out, xyz.getY());
-    push_float_list(out, xyz.getZ());
-  };
-
-  push_u8(out, 0x01);  // schema version
-  push_u64(out, static_cast<uint64_t>(m.getFrameId()));
-  push_u64(out, static_cast<uint64_t>(m.getFrameIdExtra()));
-  push_u64(out, static_cast<uint64_t>(m.getFrameAge()));
-  push_f32(out, static_cast<float>(m.getFrameDropPerc()));
-  push_u64(out, static_cast<uint64_t>(m.getTimestampEof()));
-
-  auto lanes = m.getLaneLines();
-  auto lane_probs = m.getLaneLineProbs();
-  auto lane_stds = m.getLaneLineStds();
-  push_u32(out, static_cast<uint32_t>(lanes.size()));
-  for (unsigned i = 0; i < lanes.size(); i++) {
-    push_xyz(lanes[i]);
-    const float prob = (i < lane_probs.size()) ? lane_probs[i] : 0.0f;
-    const float std = (i < lane_stds.size()) ? lane_stds[i] : 0.0f;
-    push_f32(out, prob);
-    push_f32(out, std);
-  }
-
-  auto edges = m.getRoadEdges();
-  auto edge_stds = m.getRoadEdgeStds();
-  push_u32(out, static_cast<uint32_t>(edges.size()));
-  for (unsigned i = 0; i < edges.size(); i++) {
-    push_xyz(edges[i]);
-    const float std = (i < edge_stds.size()) ? edge_stds[i] : 0.0f;
-    push_f32(out, std);
-  }
-
-  auto pos = m.getPosition();
-  push_float_list(out, pos.getX());
-  push_float_list(out, pos.getY());
-  push_float_list(out, pos.getZ());
-
-  auto leads = m.getLeadsV3();
-  push_u32(out, static_cast<uint32_t>(leads.size()));
-  for (unsigned i = 0; i < leads.size(); i++) {
-    push_float_list(out, leads[i].getX());
-    push_float_list(out, leads[i].getY());
-    push_u32(out, 0);
-    push_f32(out, static_cast<float>(leads[i].getProb()));
-  }
-
-  push_float_list(out, lane_stds);
-  push_float_list(out, edge_stds);
-  return out;
-}
-static std::vector<uint8_t> encode_live_calibration_typed(cereal::LiveCalibrationData::Reader lc) {
-  std::vector<uint8_t> out;
-  auto rpy = lc.getRpyCalib();
-  auto h = lc.getHeight();
-  out.reserve(64);
-  push_u8(out, 0x01);  // schema version
-  push_u32(out, static_cast<uint32_t>(rpy.size()));
-  for (auto v : rpy) push_f32(out, static_cast<float>(v));
-  push_u32(out, static_cast<uint32_t>(h.size()));
-  for (auto v : h) push_f32(out, static_cast<float>(v));
-  push_u32(out, static_cast<uint32_t>(lc.getCalStatus()));
-  push_u32(out, static_cast<uint32_t>(lc.getCalPerc()));
-  return out;
-}
-static std::vector<uint8_t> encode_car_output_typed(cereal::CarOutput::Reader co) {
-  std::vector<uint8_t> out;
-  out.reserve(1 + 4 * 9 + 4);
-  const auto act = co.getActuatorsOutput();
-  push_u8(out, 0x01);  // schema version
-  push_f32(out, static_cast<float>(act.getTorque()));
-  push_f32(out, static_cast<float>(act.getSteeringAngleDeg()));
-  push_f32(out, static_cast<float>(act.getCurvature()));
-  push_f32(out, static_cast<float>(act.getAccel()));
-  push_u32(out, static_cast<uint32_t>(act.getLongControlState()));
-  push_f32(out, static_cast<float>(act.getGas()));
-  push_f32(out, static_cast<float>(act.getBrake()));
-  push_f32(out, static_cast<float>(act.getTorqueOutputCan()));
-  push_f32(out, static_cast<float>(act.getSpeed()));
-  return out;
-}
-
-static std::vector<uint8_t> encode_live_parameters_typed(cereal::LiveParametersData::Reader lp) {
-  std::vector<uint8_t> out;
-  auto values = lp.getDebugFilterState().getValue();
-  auto stds = lp.getDebugFilterState().getStd();
-  out.reserve(160 + values.size() * 4 + stds.size() * 4);
-  push_u8(out, 0x01);  // schema version
-  push_u8(out, lp.getValid() ? 1 : 0);
-  push_u8(out, lp.getSensorValid() ? 1 : 0);
-  push_u8(out, lp.getPosenetValid() ? 1 : 0);
-  push_f32(out, static_cast<float>(lp.getGyroBias()));
-  push_f32(out, static_cast<float>(lp.getAngleOffsetDeg()));
-  push_f32(out, static_cast<float>(lp.getAngleOffsetAverageDeg()));
-  push_f32(out, static_cast<float>(lp.getStiffnessFactor()));
-  push_f32(out, static_cast<float>(lp.getSteerRatio()));
-  push_f32(out, static_cast<float>(lp.getRoll()));
-  push_f32(out, static_cast<float>(lp.getPosenetSpeed()));
-  push_f32(out, static_cast<float>(lp.getAngleOffsetFastStd()));
-  push_f32(out, static_cast<float>(lp.getAngleOffsetAverageStd()));
-  push_f32(out, static_cast<float>(lp.getStiffnessFactorStd()));
-  push_f32(out, static_cast<float>(lp.getSteerRatioStd()));
-  push_u8(out, lp.getAngleOffsetValid() ? 1 : 0);
-  push_u8(out, lp.getAngleOffsetAverageValid() ? 1 : 0);
-  push_u8(out, lp.getSteerRatioValid() ? 1 : 0);
-  push_u8(out, lp.getStiffnessFactorValid() ? 1 : 0);
-
-  push_u32(out, static_cast<uint32_t>(values.size()));
-  for (auto v : values) push_f32(out, static_cast<float>(v));
-  push_u32(out, static_cast<uint32_t>(stds.size()));
-  for (auto v : stds) push_f32(out, static_cast<float>(v));
-  return out;
-}
-
-
-
-static void encode_driver_pose_typed(std::vector<uint8_t>& out, cereal::DriverStateV2::DriverData::Reader d) {
-  push_float_list(out, d.getFaceOrientation());
-  push_float_list(out, d.getFaceOrientationStd());
-  push_float_list(out, d.getFacePosition());
-  push_float_list(out, d.getFacePositionStd());
-  push_f32(out, static_cast<float>(d.getFaceProb()));
-  push_f32(out, static_cast<float>(d.getLeftEyeProb()));
-  push_f32(out, static_cast<float>(d.getRightEyeProb()));
-  push_f32(out, static_cast<float>(d.getLeftBlinkProb()));
-  push_f32(out, static_cast<float>(d.getRightBlinkProb()));
-  push_f32(out, static_cast<float>(d.getSunglassesProb()));
-  push_f32(out, static_cast<float>(d.getPhoneProb()));
-}
-
-static std::vector<uint8_t> encode_driver_state_v2_typed(cereal::DriverStateV2::Reader d) {
-  std::vector<uint8_t> out;
-  out.reserve(256);
-  push_u8(out, 0x01);  // schema version
-  push_u32(out, static_cast<uint32_t>(d.getFrameId()));
-  push_f32(out, static_cast<float>(d.getModelExecutionTime()));
-  push_f32(out, static_cast<float>(d.getGpuExecutionTime()));
-  push_f32(out, static_cast<float>(d.getWheelOnRightProb()));
-  encode_driver_pose_typed(out, d.getLeftDriverData());
-  encode_driver_pose_typed(out, d.getRightDriverData());
-  return out;
-}
-static std::vector<uint8_t> encode_onroad_events_typed(capnp::List<cereal::OnroadEvent>::Reader events) {
-  std::vector<uint8_t> out;
-  out.reserve(8 + events.size() * 16);
-  push_u8(out, 0x01);  // schema version
-  push_u32(out, static_cast<uint32_t>(events.size()));
-  for (auto e : events) {
-    push_u32(out, static_cast<uint32_t>(e.getName()));
-    push_u8(out, e.getEnable() ? 1 : 0);
-    push_u8(out, e.getNoEntry() ? 1 : 0);
-    push_u8(out, e.getWarning() ? 1 : 0);
-    push_u8(out, e.getUserDisable() ? 1 : 0);
-    push_u8(out, e.getSoftDisable() ? 1 : 0);
-    push_u8(out, e.getImmediateDisable() ? 1 : 0);
-    push_u8(out, e.getPreEnable() ? 1 : 0);
-    push_u8(out, e.getPermanent() ? 1 : 0);
-    push_u8(out, e.getOverrideLateral() ? 1 : 0);
-    push_u8(out, e.getOverrideLongitudinal() ? 1 : 0);
-  }
-  return out;
-}
-static std::vector<uint8_t> encode_driver_monitoring_typed(cereal::DriverMonitoringState::Reader dm) {
-  std::vector<uint8_t> out;
-  out.reserve(96);
-  push_u8(out, 0x01);  // schema version
-  push_u8(out, dm.getFaceDetected() ? 1 : 0);
-  push_u8(out, dm.getIsDistracted() ? 1 : 0);
-  push_u32(out, static_cast<uint32_t>(dm.getDistractedType()));
-  push_f32(out, static_cast<float>(dm.getAwarenessStatus()));
-  push_f32(out, static_cast<float>(dm.getAwarenessActive()));
-  push_f32(out, static_cast<float>(dm.getAwarenessPassive()));
-  push_f32(out, static_cast<float>(dm.getStepChange()));
-  push_f32(out, static_cast<float>(dm.getPosePitchOffset()));
-  push_u32(out, static_cast<uint32_t>(dm.getPosePitchValidCount()));
-  push_f32(out, static_cast<float>(dm.getPoseYawOffset()));
-  push_u32(out, static_cast<uint32_t>(dm.getPoseYawValidCount()));
-  push_u8(out, dm.getIsLowStd() ? 1 : 0);
-  push_u32(out, static_cast<uint32_t>(dm.getHiStdCount()));
-  push_u8(out, dm.getIsActiveMode() ? 1 : 0);
-  push_u8(out, dm.getIsRHD() ? 1 : 0);
-  push_u32(out, static_cast<uint32_t>(dm.getUncertainCount()));
-  return out;
-}
-
-static std::vector<uint8_t> encode_road_camera_state_typed(cereal::FrameData::Reader f) {
-  std::vector<uint8_t> out;
-  auto temps = f.getTemperaturesC();
-  out.reserve(96 + temps.size() * 4);
-  push_u8(out, 0x01);  // schema version
-  push_u32(out, static_cast<uint32_t>(f.getFrameId()));
-  push_u32(out, static_cast<uint32_t>(f.getFrameIdSensor()));
-  push_u32(out, static_cast<uint32_t>(f.getRequestId()));
-  push_u32(out, static_cast<uint32_t>(f.getEncodeId()));
-  push_u64(out, static_cast<uint64_t>(f.getTimestampEof()));
-  push_u64(out, static_cast<uint64_t>(f.getTimestampSof()));
-  push_f32(out, static_cast<float>(f.getProcessingTime()));
-  push_u32(out, static_cast<uint32_t>(f.getIntegLines()));
-  push_f32(out, static_cast<float>(f.getGain()));
-  push_u8(out, f.getHighConversionGain() ? 1 : 0);
-  push_f32(out, static_cast<float>(f.getMeasuredGreyFraction()));
-  push_f32(out, static_cast<float>(f.getTargetGreyFraction()));
-  push_f32(out, static_cast<float>(f.getExposureValPercent()));
-  push_u32(out, static_cast<uint32_t>(temps.size()));
-  for (auto t : temps) push_f32(out, static_cast<float>(t));
-  push_u32(out, static_cast<uint32_t>(f.getSensor()));
-  return out;
-}
 static bool send_meta_raw_frame(int fd,
                                 uint8_t service_index,
                                 uint16_t event_which,
@@ -708,10 +245,6 @@ static bool send_frame(int fd, const uint8_t* payload, size_t payload_len) {
   return commaview::net::send_frame(fd, payload, payload_len);
 }
 
-static bool send_meta_json(int fd, const std::string& json) {
-  return commaview::net::send_meta_json(fd, json, MSG_META);
-}
-
 static bool client_socket_alive(int fd) {
   return commaview::net::client_socket_alive(fd);
 }
@@ -722,10 +255,6 @@ static int create_server(int port) {
 
 static cereal::EncodeData::Reader read_encode_data(cereal::Event::Reader event, int port) {
   return commaview::video::read_encode_data(event, port, g_dev_mode);
-}
-
-static std::string build_telemetry_json(cereal::Event::Reader event) {
-  return commaview::telemetry::build_telemetry_json(event);
 }
 
 static void handle_client(int client_fd, const char* video_service, int port) {
@@ -755,19 +284,18 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
   Context* ctx = Context::create();
 
-  const bool enable_video = !g_telemetry_only;
+  const bool enable_video = true;
   SubSocket* video_sock = nullptr;
   if (enable_video) {
     const size_t video_segment_size = queue_size_for_service(video_service);
     video_sock = SubSocket::create(ctx, video_service, "127.0.0.1", true, true, video_segment_size);
   }
 
-  const bool include_telemetry = !g_video_only && (port == PORT_ROAD || port == PORT_WIDE);
+  const bool include_telemetry = (port == PORT_ROAD || port == PORT_WIDE);
   SubSocket* telem_socks[NUM_TELEM] = {};
 
   if (include_telemetry) {
     for (int i = 0; i < NUM_TELEM; i++) {
-      if (!telemetry_enabled_index(i)) continue;
       const size_t segment_size = queue_size_for_service(TELEMETRY_SERVICES[i]);
       telem_socks[i] = SubSocket::create(ctx, TELEMETRY_SERVICES[i], "127.0.0.1", true, true, segment_size);
     }
@@ -777,7 +305,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   if (video_sock != nullptr) {
     poller->registerSocket(video_sock);
   }
-  if (include_telemetry && !g_telemetry_subscribe_only) {
+  if (include_telemetry) {
     for (int i = 0; i < NUM_TELEM; i++) {
       if (telem_socks[i] != nullptr) poller->registerSocket(telem_socks[i]);
     }
@@ -797,37 +325,9 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   auto next_telem_emit = t0 + std::chrono::milliseconds(g_telemetry_emit_ms);
   auto next_stats_flush = t0 + std::chrono::milliseconds(1000);
   const std::string telemetry_stats_path = stats_path_for_service(video_service);
-  std::string car_json_latest;
-  std::string controls_json_latest;
-  std::string device_json_latest;
-  std::string model_json_latest;
-  std::string radar_json_latest;
-  std::string calibration_json_latest;
-  std::string car_control_json_latest;
-  std::string car_output_json_latest;
-  std::string live_parameters_json_latest;
-  std::string driver_monitoring_json_latest;
-  std::string driver_state_v2_json_latest;
-  std::string onroad_events_json_latest;
-  std::string road_camera_state_json_latest;
-  bool have_car_json = false;
-  bool have_controls_json = false;
-  bool have_device_json = false;
-  bool have_model_json = false;
-  bool have_radar_json = false;
-  bool have_calibration_json = false;
-  bool have_car_control_json = false;
-  bool have_car_output_json = false;
-  bool have_live_parameters_json = false;
-  bool have_driver_monitoring_json = false;
-  bool have_driver_state_v2_json = false;
-  bool have_onroad_events_json = false;
-  bool have_road_camera_state_json = false;
   std::vector<std::vector<uint8_t>> raw_latest(NUM_TELEM);
   std::vector<uint64_t> raw_log_mono(NUM_TELEM, 0);
   std::vector<uint16_t> raw_event_which(NUM_TELEM, 0);
-  std::vector<std::string> raw_json_latest(NUM_TELEM);
-  std::vector<std::vector<uint8_t>> raw_typed_latest(NUM_TELEM);
   std::vector<bool> have_raw(NUM_TELEM, false);
   AlignedBuffer aligned_buf;
   ClientControlState control_state;
@@ -859,7 +359,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
       // Latest-only semantics for telemetry sockets: drain queued historical samples
       // and keep only the freshest message before decode/emit.
-      if (telem_sock_idx >= 0 && !g_telemetry_subscribe_only) {
+      if (telem_sock_idx >= 0) {
         while (true) {
           std::unique_ptr<Message> newer(sock->receive(true));
           if (!newer) break;
@@ -872,18 +372,6 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
       const size_t raw_size = raw_msg->getSize();
 
-      if (include_telemetry && g_telemetry_drain_only && telem_sock_idx >= 0) {
-        telem_drain_count++;
-        commaview::telemetry::note_drop(service_stats, telem_sock_idx);
-        if (telem_drain_count <= 3 || (telem_drain_count % 200) == 0) {
-          printf("[%s] telem-drain=%llu raw=%zu [DRAIN_ONLY]\n",
-                 video_service,
-                 static_cast<unsigned long long>(telem_drain_count),
-                 raw_size);
-          fflush(stdout);
-        }
-        continue;
-      }
 
       try {
         capnp::ReaderOptions options;
@@ -917,7 +405,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
           const size_t data_len = data.size();
           if (data_len == 0) continue;
 
-          bool suppress_video = g_suppress_video;
+          bool suppress_video = false;
           bool session_policy = false;
           if (!suppress_video && get_session_policy(control_state.bound_session_id, &session_policy)) {
             suppress_video = session_policy;
