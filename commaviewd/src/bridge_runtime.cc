@@ -115,6 +115,7 @@ static bool g_telemetry_drain_only = false;
 static bool g_telemetry_subscribe_only = false;
 static bool g_emit_meta_json = false;
 static bool g_emit_meta_raw = true;
+static bool g_telemetry_legacy_decode = false;
 static uint32_t g_telemetry_mask = TELEMETRY_MASK_ALL;
 static std::atomic<bool> g_running{true};
 
@@ -974,7 +975,8 @@ static void handle_client(int client_fd, const char* video_service, int port) {
             raw_event_which[raw_idx] = static_cast<uint16_t>(which);
             have_raw[raw_idx] = true;
           }
-          std::string json = build_telemetry_json(event);
+          if (g_telemetry_legacy_decode) {
+            std::string json = build_telemetry_json(event);
           if (!json.empty()) {
             if (raw_idx >= 0) raw_json_latest[raw_idx] = json;
             switch (event.which()) {
@@ -1046,6 +1048,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
               default:
                 break;
             }
+          }
           }
         }
       } catch (const std::exception& e) {
@@ -1309,7 +1312,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
   }
 
   const char** video_services = g_dev_mode ? VIDEO_SERVICES_DEV : VIDEO_SERVICES_PROD;
-  printf("CommaView Bridge v3.3.8-safe-bundle (C++)%s%s%s%s%s%s%s%s [META_MODE=%s][EMIT_MS=%d]\n",
+  printf("CommaView Bridge v3.3.8-safe-bundle (C++)%s%s%s%s%s%s%s%s%s [META_MODE=%s][EMIT_MS=%d]\n",
          g_dev_mode ? " [DEV MODE: livestream]" : "",
          g_video_only ? " [VIDEO ONLY]" : " [VIDEO+TELEMETRY]",
          g_suppress_video ? " [SUPPRESS_VIDEO_TX]" : "",
@@ -1317,6 +1320,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
          g_telemetry_blackhole ? " [TELEMETRY BLACKHOLE]" : "",
          g_telemetry_drain_only ? " [TELEMETRY DRAIN_ONLY]" : "",
          g_telemetry_subscribe_only ? " [TELEMETRY SUBSCRIBE_ONLY]" : "",
+         g_telemetry_legacy_decode ? " [LEGACY_DECODE]" : " [RAW_ONLY_DEFAULT]",
          telemetry_mask_label(),
          telemetry_mode_label(),
          g_telemetry_emit_ms);
