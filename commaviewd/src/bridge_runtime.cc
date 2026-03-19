@@ -69,11 +69,7 @@ static const char* VIDEO_SERVICES_PROD[] = {
   "roadEncodeData", "wideRoadEncodeData", "driverEncodeData"
 };
 
-static const char* VIDEO_SERVICES_DEV[] = {
-  "livestreamRoadEncodeData", "livestreamWideRoadEncodeData", "livestreamDriverEncodeData"
-};
 
-static bool g_dev_mode = false;
 static std::atomic<bool> g_running{true};
 
 
@@ -88,7 +84,7 @@ static std::atomic<int>& active_counter_for_port(int port) {
 }
 
 static cereal::Event::Which expected_video_which_for_port(int port) {
-  return commaview::video::expected_video_which_for_port(port, g_dev_mode);
+  return commaview::video::expected_video_which_for_port(port, false);
 }
 
 
@@ -242,7 +238,7 @@ static int create_server(int port) {
 }
 
 static cereal::EncodeData::Reader read_encode_data(cereal::Event::Reader event, int port) {
-  return commaview::video::read_encode_data(event, port, g_dev_mode);
+  return commaview::video::read_encode_data(event, port, false);
 }
 
 static void handle_client(int client_fd, const char* video_service, int port) {
@@ -563,24 +559,18 @@ int commaview_bridge_main(int argc, char* argv[]) {
 
 
 
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--dev") == 0) g_dev_mode = true;
-  }
+  (void)argc;
+  (void)argv;
 
-  const char** video_services = g_dev_mode ? VIDEO_SERVICES_DEV : VIDEO_SERVICES_PROD;
-  printf("CommaView Bridge v3.3.8-safe-bundle (C++)%s [VIDEO+TELEMETRY][RAW_ONLY_DEFAULT][META_MODE=raw-only][EMIT_MS=%d]\n",
-         g_dev_mode ? " [DEV MODE: livestream]" : "",
+  const char** video_services = VIDEO_SERVICES_PROD;
+  printf("CommaView Bridge v3.3.8-safe-bundle (C++) [VIDEO+TELEMETRY][RAW_ONLY_DEFAULT][META_MODE=raw-only][EMIT_MS=%d]\n",
          g_telemetry_emit_ms);
   fflush(stdout);
 
   std::vector<std::pair<int, const char*>> streams;
-  if (g_dev_mode) {
-    streams.push_back({PORT_ROAD, video_services[0]});
-  } else {
-    streams.push_back({PORT_ROAD, video_services[0]});
-    streams.push_back({PORT_WIDE, video_services[1]});
-    streams.push_back({PORT_DRIVER, video_services[2]});
-  }
+  streams.push_back({PORT_ROAD, video_services[0]});
+  streams.push_back({PORT_WIDE, video_services[1]});
+  streams.push_back({PORT_DRIVER, video_services[2]});
 
   std::vector<std::thread> threads;
   std::vector<int> server_fds;

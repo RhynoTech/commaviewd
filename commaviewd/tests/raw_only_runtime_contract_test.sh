@@ -15,6 +15,7 @@ grep -Fq "RAW_ONLY_DEFAULT" "$BRIDGE_CPP" || { echo "FAIL: missing RAW_ONLY_DEFA
 ! grep -Fq -- "--telemetry-subscribe-only" "$BRIDGE_CPP" || { echo "FAIL: telemetry-subscribe-only flag should be removed"; exit 1; }
 ! grep -Fq -- "--telem-safe-no-car" "$BRIDGE_CPP" || { echo "FAIL: telem-safe-no-car flag should be removed"; exit 1; }
 grep -Fq "send_meta_raw_frame" "$BRIDGE_CPP" || { echo "FAIL: raw telemetry emitter missing"; exit 1; }
+! grep -Fq -- "--dev" "$BRIDGE_CPP" || { echo "FAIL: --dev debug flag should be removed"; exit 1; }
 ! grep -Fq -- "--telem-emit-ms" "$BRIDGE_CPP" || { echo "FAIL: telem-emit-ms override flag should be removed"; exit 1; }
 ! grep -Fq "COMMAVIEW_TELEMETRY_EMIT_MS" "$BRIDGE_CPP" || { echo "FAIL: COMMAVIEW_TELEMETRY_EMIT_MS override env should be removed"; exit 1; }
 ! grep -Fq "build_telemetry_json" "$BRIDGE_CPP" || { echo "FAIL: legacy telemetry JSON builder should be removed from bridge runtime"; exit 1; }
