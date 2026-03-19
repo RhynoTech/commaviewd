@@ -62,4 +62,6 @@ $CXX -O2 -std=c++17 "${INC[@]}" \
 "$TMP/test_telemetry_json"
 "$TMP/test_telemetry_stats"
 
+"$ROOT/tests/control_mode_api_contract_test.sh"
+"$ROOT/tests/raw_only_runtime_contract_test.sh"
 echo "PASS: commaviewd unit tests passed"

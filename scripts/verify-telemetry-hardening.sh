@@ -11,13 +11,33 @@ if ! grep -Fq "telemetryMode" commaviewd/src/control_mode.cpp; then
   exit 1
 fi
 
-if ! grep -Fq "raw-only" comma4/start.sh; then
-  echo "FAIL: comma4/start.sh missing default COMMAVIEWD_TELEMETRY_MODE default raw-only"
+if grep -Fq "COMMAVIEWD_TELEMETRY_MODE" comma4/start.sh; then
+  echo "FAIL: comma4/start.sh should not use COMMAVIEWD_TELEMETRY_MODE override anymore"
   exit 1
 fi
 
-if ! grep -Fq "telemetry_mode_label" commaviewd/src/bridge_runtime.cc; then
-  echo "FAIL: bridge startup telemetry mode label missing"
+if ! grep -Fq "commaviewd bridge" comma4/start.sh; then
+  echo "FAIL: comma4/start.sh missing bridge launch command"
+  exit 1
+fi
+
+if ! grep -Fq "RAW_ONLY_DEFAULT" commaviewd/src/bridge_runtime.cc; then
+  echo "FAIL: bridge startup RAW_ONLY_DEFAULT marker missing"
+  exit 1
+fi
+
+if grep -Fq -- "--dev" commaviewd/src/bridge_runtime.cc; then
+  echo "FAIL: --dev debug flag should be absent from bridge runtime"
+  exit 1
+fi
+
+if grep -Fq -- "--telem-emit-ms" commaviewd/src/bridge_runtime.cc; then
+  echo "FAIL: --telem-emit-ms override flag should be absent from bridge runtime"
+  exit 1
+fi
+
+if grep -Fq "COMMAVIEW_TELEMETRY_EMIT_MS" commaviewd/src/bridge_runtime.cc; then
+  echo "FAIL: COMMAVIEW_TELEMETRY_EMIT_MS override env should be absent from bridge runtime"
   exit 1
 fi
 
