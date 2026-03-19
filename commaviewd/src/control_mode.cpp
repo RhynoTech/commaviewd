@@ -147,11 +147,7 @@ std::string runtime_version() {
 }
 
 std::string telemetry_mode() {
-    const char* env = std::getenv("COMMAVIEWD_TELEMETRY_MODE");
-    std::string mode = env ? trim_copy(env) : "raw-only";
-    if (mode.empty()) return "raw-only";
-    if (mode == "raw-only" || mode == "json-only" || mode == "raw+json") return mode;
-    return "raw-only";
+  return "raw-only";
 }
 
 bool write_file(const std::string& path, const std::string& value, mode_t mode = 0644) {

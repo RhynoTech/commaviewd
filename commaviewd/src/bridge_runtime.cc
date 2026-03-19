@@ -115,7 +115,6 @@ static bool g_telemetry_drain_only = false;
 static bool g_telemetry_subscribe_only = false;
 static bool g_emit_meta_json = false;
 static bool g_emit_meta_raw = true;
-static bool g_telemetry_legacy_decode = false;
 static uint32_t g_telemetry_mask = TELEMETRY_MASK_ALL;
 static std::atomic<bool> g_running{true};
 
@@ -975,81 +974,6 @@ static void handle_client(int client_fd, const char* video_service, int port) {
             raw_event_which[raw_idx] = static_cast<uint16_t>(which);
             have_raw[raw_idx] = true;
           }
-          if (g_telemetry_legacy_decode) {
-            std::string json = build_telemetry_json(event);
-          if (!json.empty()) {
-            if (raw_idx >= 0) raw_json_latest[raw_idx] = json;
-            switch (event.which()) {
-              case cereal::Event::CAR_STATE:
-                raw_typed_latest[0] = encode_car_state_typed(event.getCarState());
-                car_json_latest = std::move(json);
-                have_car_json = true;
-                break;
-              case cereal::Event::SELFDRIVE_STATE:
-                raw_typed_latest[1] = encode_selfdrive_state_typed(event.getSelfdriveState());
-                controls_json_latest = std::move(json);
-                have_controls_json = true;
-                break;
-              case cereal::Event::DEVICE_STATE:
-                raw_typed_latest[2] = encode_device_state_typed(event.getDeviceState());
-                device_json_latest = std::move(json);
-                have_device_json = true;
-                break;
-              case cereal::Event::MODEL_V2:
-                raw_typed_latest[5] = encode_model_v2_typed(event.getModelV2());
-                model_json_latest = std::move(json);
-                have_model_json = true;
-                break;
-              case cereal::Event::RADAR_STATE:
-                raw_typed_latest[4] = encode_radar_state_typed(event.getRadarState());
-                radar_json_latest = std::move(json);
-                have_radar_json = true;
-                break;
-              case cereal::Event::LIVE_CALIBRATION:
-                raw_typed_latest[3] = encode_live_calibration_typed(event.getLiveCalibration());
-                calibration_json_latest = std::move(json);
-                have_calibration_json = true;
-                break;
-              case cereal::Event::CAR_CONTROL:
-                raw_typed_latest[6] = encode_car_control_typed(event.getCarControl());
-                car_control_json_latest = std::move(json);
-                have_car_control_json = true;
-                break;
-              case cereal::Event::CAR_OUTPUT:
-                raw_typed_latest[7] = encode_car_output_typed(event.getCarOutput());
-                car_output_json_latest = std::move(json);
-                have_car_output_json = true;
-                break;
-              case cereal::Event::LIVE_PARAMETERS:
-                raw_typed_latest[8] = encode_live_parameters_typed(event.getLiveParameters());
-                live_parameters_json_latest = std::move(json);
-                have_live_parameters_json = true;
-                break;
-              case cereal::Event::DRIVER_MONITORING_STATE:
-                raw_typed_latest[9] = encode_driver_monitoring_typed(event.getDriverMonitoringState());
-                driver_monitoring_json_latest = std::move(json);
-                have_driver_monitoring_json = true;
-                break;
-              case cereal::Event::DRIVER_STATE_V2:
-                raw_typed_latest[10] = encode_driver_state_v2_typed(event.getDriverStateV2());
-                driver_state_v2_json_latest = std::move(json);
-                have_driver_state_v2_json = true;
-                break;
-              case cereal::Event::ONROAD_EVENTS:
-                raw_typed_latest[11] = encode_onroad_events_typed(event.getOnroadEvents());
-                onroad_events_json_latest = std::move(json);
-                have_onroad_events_json = true;
-                break;
-              case cereal::Event::ROAD_CAMERA_STATE:
-                raw_typed_latest[12] = encode_road_camera_state_typed(event.getRoadCameraState());
-                road_camera_state_json_latest = std::move(json);
-                have_road_camera_state_json = true;
-                break;
-              default:
-                break;
-            }
-          }
-          }
         }
       } catch (const std::exception& e) {
         parse_error_count++;
@@ -1074,144 +998,28 @@ static void handle_client(int client_fd, const char* video_service, int port) {
       if (now >= next_telem_emit) {
         next_telem_emit = now + std::chrono::milliseconds(g_telemetry_emit_ms);
 
-        if (have_car_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, car_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_controls_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, controls_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_device_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, device_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_model_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, model_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_radar_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, radar_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_calibration_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, calibration_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_car_control_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, car_control_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_car_output_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, car_output_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_live_parameters_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, live_parameters_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_driver_monitoring_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, driver_monitoring_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_driver_state_v2_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, driver_state_v2_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_onroad_events_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, onroad_events_json_latest)) goto disconnect;
-            telem_count++;
-          }
-        }
-        if (have_road_camera_state_json) {
-          if (g_telemetry_blackhole) {
-            telem_drop_count++;
-          } else if (g_emit_meta_json) {
-            if (!send_meta_json(client_fd, road_camera_state_json_latest)) goto disconnect;
-            telem_count++;
-          }
+        for (int i = 0; i < NUM_TELEM; i++) {
+          if (!have_raw[i]) continue;
+          const auto& raw = raw_latest[i];
+          if (!send_meta_raw_frame(client_fd,
+                                   static_cast<uint8_t>(i),
+                                   raw_event_which[i],
+                                   raw_log_mono[i],
+                                   std::vector<uint8_t>{},
+                                   std::string(),
+                                   raw.data(),
+                                   raw.size())) goto disconnect;
+          telem_raw_count++;
+          commaview::telemetry::note_emit_raw(service_stats, i);
         }
 
-        if (g_emit_meta_raw) {
-          for (int i = 0; i < NUM_TELEM; i++) {
-            if (!have_raw[i]) continue;
-            if (g_telemetry_blackhole) {
-              telem_drop_count++;
-              commaview::telemetry::note_drop(service_stats, i);
-              continue;
-            }
-            const auto& raw = raw_latest[i];
-            const std::string json_payload = g_emit_meta_json ? raw_json_latest[i] : std::string();
-            if (!send_meta_raw_frame(client_fd,
-                                     static_cast<uint8_t>(i),
-                                     raw_event_which[i],
-                                     raw_log_mono[i],
-                                     raw_typed_latest[i],
-                                     json_payload,
-                                     raw.data(),
-                                     raw.size())) goto disconnect;
-            telem_raw_count++;
-            commaview::telemetry::note_emit_raw(service_stats, i);
-          }
-        }
-
-        const uint64_t telem_log_counter = g_telemetry_blackhole ? telem_drop_count : (telem_count + telem_raw_count);
+        const uint64_t telem_log_counter = telem_raw_count;
         if (telem_log_counter <= 3 || (telem_log_counter % 200) == 0) {
-          printf("[%s] telem_json=%llu telem_raw=%llu drop=%llu drain=%llu (coalesced %dms)%s\n",
+          printf("[%s] telem_raw=%llu drain=%llu (coalesced %dms)\n",
                  video_service,
-                 static_cast<unsigned long long>(telem_count),
                  static_cast<unsigned long long>(telem_raw_count),
-                 static_cast<unsigned long long>(telem_drop_count),
                  static_cast<unsigned long long>(telem_drain_count),
-                 g_telemetry_emit_ms,
-                 g_telemetry_blackhole ? " [BLACKHOLE]" : "");
+                 g_telemetry_emit_ms);
           fflush(stdout);
         }
 
@@ -1280,62 +1088,23 @@ int commaview_bridge_main(int argc, char* argv[]) {
   if (const char* env_emit = std::getenv("COMMAVIEW_TELEMETRY_EMIT_MS")) {
     g_telemetry_emit_ms = clamp_telem_emit_ms(parse_int_or_default(env_emit, g_telemetry_emit_ms));
   }
-  if (const char* env_legacy_decode = std::getenv("COMMAVIEW_TELEMETRY_LEGACY_DECODE")) {
-    g_telemetry_legacy_decode = (strcmp(env_legacy_decode, "1") == 0);
-  }
 
 
   for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--telemetry-legacy-decode") == 0) g_telemetry_legacy_decode = true;
     if (strcmp(argv[i], "--dev") == 0) g_dev_mode = true;
-    if (strcmp(argv[i], "--video-only") == 0) g_video_only = true;
-    if (strcmp(argv[i], "--suppress-video") == 0) g_suppress_video = true;
-    if (strcmp(argv[i], "--telemetry-only") == 0) g_telemetry_only = true;
-    if (strcmp(argv[i], "--telemetry-blackhole") == 0) g_telemetry_blackhole = true;
-    if (strcmp(argv[i], "--telemetry-drain-only") == 0) g_telemetry_drain_only = true;
-    if (strcmp(argv[i], "--telemetry-subscribe-only") == 0) g_telemetry_subscribe_only = true;
-    if (strcmp(argv[i], "--meta-raw") == 0) g_emit_meta_raw = true;
-    if (strcmp(argv[i], "--meta-raw-only") == 0) { g_emit_meta_raw = true; g_emit_meta_json = false; }
-    if (strcmp(argv[i], "--meta-json-only") == 0) { g_emit_meta_json = true; g_emit_meta_raw = false; }
     if (strcmp(argv[i], "--telem-emit-ms") == 0 && (i + 1) < argc) {
       g_telemetry_emit_ms = clamp_telem_emit_ms(parse_int_or_default(argv[++i], g_telemetry_emit_ms));
     }
-    if (strcmp(argv[i], "--telem-car-only") == 0) g_telemetry_mask = TELEMETRY_BIT_CARSTATE;
-    if (strcmp(argv[i], "--telem-selfdrive-only") == 0) g_telemetry_mask = TELEMETRY_BIT_SELFDRIVE;
-    if (strcmp(argv[i], "--telem-device-only") == 0) g_telemetry_mask = TELEMETRY_BIT_DEVICESTATE;
-    if (strcmp(argv[i], "--telem-calib-only") == 0) g_telemetry_mask = TELEMETRY_BIT_LIVECALIB;
-    if (strcmp(argv[i], "--telem-radar-only") == 0) g_telemetry_mask = TELEMETRY_BIT_RADAR;
-    if (strcmp(argv[i], "--telem-modelv2-only") == 0) g_telemetry_mask = TELEMETRY_BIT_MODELV2;
-    if (strcmp(argv[i], "--telem-carcontrol-only") == 0) g_telemetry_mask = TELEMETRY_BIT_CARCONTROL;
-    if (strcmp(argv[i], "--telem-caroutput-only") == 0) g_telemetry_mask = TELEMETRY_BIT_CAROUTPUT;
-    if (strcmp(argv[i], "--telem-liveparams-only") == 0) g_telemetry_mask = TELEMETRY_BIT_LIVEPARAMS;
-    if (strcmp(argv[i], "--telem-drivermon-only") == 0) g_telemetry_mask = TELEMETRY_BIT_DRIVERMON;
-    if (strcmp(argv[i], "--telem-driverv2-only") == 0) g_telemetry_mask = TELEMETRY_BIT_DRIVERV2;
-    if (strcmp(argv[i], "--telem-onroadevents-only") == 0) g_telemetry_mask = TELEMETRY_BIT_ONROADEVENTS;
-    if (strcmp(argv[i], "--telem-roadcam-only") == 0) g_telemetry_mask = TELEMETRY_BIT_ROADCAMSTATE;
-    if (strcmp(argv[i], "--telem-safe-no-car") == 0) g_telemetry_mask = TELEMETRY_MASK_SAFE_NO_CAR;
   }
 
   const char** video_services = g_dev_mode ? VIDEO_SERVICES_DEV : VIDEO_SERVICES_PROD;
-  printf("CommaView Bridge v3.3.8-safe-bundle (C++)%s%s%s%s%s%s%s%s%s [META_MODE=%s][EMIT_MS=%d]\n",
+  printf("CommaView Bridge v3.3.8-safe-bundle (C++)%s [VIDEO+TELEMETRY][RAW_ONLY_DEFAULT][META_MODE=raw-only][EMIT_MS=%d]\n",
          g_dev_mode ? " [DEV MODE: livestream]" : "",
-         g_video_only ? " [VIDEO ONLY]" : " [VIDEO+TELEMETRY]",
-         g_suppress_video ? " [SUPPRESS_VIDEO_TX]" : "",
-         g_telemetry_only ? " [TELEMETRY ONLY]" : "",
-         g_telemetry_blackhole ? " [TELEMETRY BLACKHOLE]" : "",
-         g_telemetry_drain_only ? " [TELEMETRY DRAIN_ONLY]" : "",
-         g_telemetry_subscribe_only ? " [TELEMETRY SUBSCRIBE_ONLY]" : "",
-         g_telemetry_legacy_decode ? " [LEGACY_DECODE]" : " [RAW_ONLY_DEFAULT]",
-         telemetry_mask_label(),
-         telemetry_mode_label(),
          g_telemetry_emit_ms);
   fflush(stdout);
 
   std::vector<std::pair<int, const char*>> streams;
-  if (g_telemetry_only) {
-    streams.push_back({PORT_ROAD, video_services[0]});
-  } else if (g_dev_mode) {
-    // Parked/dev mode: keep single road stream for stability.
+  if (g_dev_mode) {
     streams.push_back({PORT_ROAD, video_services[0]});
   } else {
     streams.push_back({PORT_ROAD, video_services[0]});

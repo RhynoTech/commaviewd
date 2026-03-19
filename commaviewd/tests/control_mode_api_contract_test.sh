@@ -19,6 +19,7 @@ grep -Fq '"/tailscale/authkey"' "$CONTROL_CPP" || { echo "FAIL: missing /tailsca
 grep -Fq 'X-CommaView-Token' "$SERVER_CPP" || { echo "FAIL: missing auth token header handling"; exit 1; }
 grep -Fq 'tailscale_set_authkey' "$CONTROL_CPP" || { echo "FAIL: control mode missing tailscale_set_authkey handler"; exit 1; }
 
+! grep -Fq "COMMAVIEWD_TELEMETRY_MODE" "$CONTROL_CPP" || { echo "FAIL: control mode should not depend on COMMAVIEWD_TELEMETRY_MODE"; exit 1; }
 grep -Fq "docs/ai/telemetry-raw-only-readme.md" README.md || { echo "FAIL: missing short raw-only doc link in README"; exit 1; }
 grep -Fq "docs/ai/telemetry-raw-only-deep-dive.md" README.md || { echo "FAIL: missing deep raw-only doc link in README"; exit 1; }
 echo "PASS: control mode API contract routes present"
