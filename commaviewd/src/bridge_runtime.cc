@@ -1280,8 +1280,13 @@ int commaview_bridge_main(int argc, char* argv[]) {
   if (const char* env_emit = std::getenv("COMMAVIEW_TELEMETRY_EMIT_MS")) {
     g_telemetry_emit_ms = clamp_telem_emit_ms(parse_int_or_default(env_emit, g_telemetry_emit_ms));
   }
+  if (const char* env_legacy_decode = std::getenv("COMMAVIEW_TELEMETRY_LEGACY_DECODE")) {
+    g_telemetry_legacy_decode = (strcmp(env_legacy_decode, "1") == 0);
+  }
+
 
   for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--telemetry-legacy-decode") == 0) g_telemetry_legacy_decode = true;
     if (strcmp(argv[i], "--dev") == 0) g_dev_mode = true;
     if (strcmp(argv[i], "--video-only") == 0) g_video_only = true;
     if (strcmp(argv[i], "--suppress-video") == 0) g_suppress_video = true;
