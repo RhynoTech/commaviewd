@@ -3,11 +3,10 @@
 #include "policy.h"
 #include "router.h"
 #include "telemetry_stats.h"
-#include "raw_event_metadata.h"
 /**
  * CommaView Unified Bridge (C++)
  *
- * Streams HEVC video on all ports and telemetry JSON on road+wide ports.
+ * Streams HEVC video and raw telemetry on road+wide ports.
  *
  * Ports:
  *   8200 road, 8201 wide, 8202 driver
@@ -17,9 +16,8 @@
  *   payload[0] = 0x01 (video): [type][header_len_be32][header][data]
  *   payload[0] = 0x02 (meta):  [type][json bytes]
  *   payload[0] = 0x03 (control inbound): [type][json bytes]
- *   payload[0] = 0x04 (meta-raw): [type][version][service_idx][event_which_be16][log_mono_be64][raw_len_be32][raw_event]
+ *   payload[0] = 0x04 (meta-raw): [type][version][service_idx][raw_len_be32][raw_event]
  */
-
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
@@ -142,40 +140,15 @@ static int telemetry_index_for_which(cereal::Event::Which which) {
 
 static bool send_meta_raw_frame(int fd,
                                 uint8_t service_index,
-                                uint16_t event_which,
-                                uint64_t log_mono_time,
-                                const std::vector<uint8_t>& typed_payload,
-                                const std::string& json_payload,
                                 const uint8_t* raw_data,
                                 size_t raw_size) {
   if (raw_data == nullptr || raw_size == 0) return true;
-  const uint32_t typed_len = static_cast<uint32_t>(typed_payload.size());
-  const uint32_t json_len = static_cast<uint32_t>(json_payload.size());
   const uint32_t raw_len = static_cast<uint32_t>(raw_size);
-  std::vector<uint8_t> payload(1 + 1 + 2 + 8 + 4 + typed_len + 4 + json_len + 4 + raw_len);
-  payload[0] = 0x03;  // raw meta envelope v3 includes typed + json snapshot + raw event
+  std::vector<uint8_t> payload(1 + 1 + 4 + raw_len);
+  payload[0] = 0x04;  // raw meta envelope v4 is service index + raw event only
   payload[1] = service_index;
-  put_be16(&payload[2], event_which);
-  put_be64(&payload[4], log_mono_time);
-
-  size_t off = 12;
-  put_be32(&payload[off], typed_len);
-  off += 4;
-  if (typed_len > 0) {
-    memcpy(&payload[off], typed_payload.data(), typed_len);
-    off += typed_len;
-  }
-
-  put_be32(&payload[off], json_len);
-  off += 4;
-  if (json_len > 0) {
-    memcpy(&payload[off], json_payload.data(), json_len);
-    off += json_len;
-  }
-
-  put_be32(&payload[off], raw_len);
-  off += 4;
-  memcpy(&payload[off], raw_data, raw_len);
+  put_be32(&payload[2], raw_len);
+  memcpy(&payload[6], raw_data, raw_len);
   return commaview::net::send_meta_bytes(fd, payload.data(), payload.size(), MSG_META_RAW);
 }
 
@@ -286,13 +259,16 @@ static void handle_client(int client_fd, const char* video_service, int port) {
     }
   }
 
-  Poller* poller = Poller::create();
+  Poller* video_poller = Poller::create();
   if (video_sock != nullptr) {
-    poller->registerSocket(video_sock);
+    video_poller->registerSocket(video_sock);
   }
+
+  Poller* telemetry_poller = nullptr;
   if (include_telemetry) {
+    telemetry_poller = Poller::create();
     for (int i = 0; i < NUM_TELEM; i++) {
-      if (telem_socks[i] != nullptr) poller->registerSocket(telem_socks[i]);
+      if (telem_socks[i] != nullptr) telemetry_poller->registerSocket(telem_socks[i]);
     }
   }
 
@@ -307,13 +283,9 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   commaview::telemetry::LoopCounters loop_stats;
   uint64_t suppressed_video_count = 0;
   auto t0 = std::chrono::steady_clock::now();
-  auto next_telem_emit = t0 + std::chrono::milliseconds(g_telemetry_emit_ms);
+  auto next_telem_poll = t0;
   auto next_stats_flush = t0 + std::chrono::milliseconds(1000);
   const std::string telemetry_stats_path = stats_path_for_service(video_service);
-  std::vector<std::vector<uint8_t>> raw_latest(NUM_TELEM);
-  std::vector<uint64_t> raw_log_mono(NUM_TELEM, 0);
-  std::vector<uint16_t> raw_event_which(NUM_TELEM, 0);
-  std::vector<bool> have_raw(NUM_TELEM, false);
   AlignedBuffer aligned_buf;
   ClientControlState control_state;
 
@@ -323,34 +295,26 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
     consume_client_control_frames(client_fd, &control_state, video_service);
 
-    auto ready = poller->poll(20);
-
-    for (auto* sock : ready) {
-      int telem_sock_idx = -1;
-      if (include_telemetry) {
-        for (int i = 0; i < NUM_TELEM; i++) {
-          if (sock == telem_socks[i]) {
-            telem_sock_idx = i;
-            break;
-          }
+    int video_poll_ms = 20;
+    if (include_telemetry) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= next_telem_poll) {
+        video_poll_ms = 0;
+      } else {
+        const auto millis_until_telem =
+            std::chrono::duration_cast<std::chrono::milliseconds>(next_telem_poll - now).count();
+        if (millis_until_telem < video_poll_ms) {
+          video_poll_ms = static_cast<int>(millis_until_telem);
         }
       }
+    }
+
+    auto ready = video_poller->poll(video_poll_ms);
+
+    for (auto* sock : ready) {
       std::unique_ptr<Message> raw_msg(sock->receive(true));
       if (!raw_msg) continue;
       const size_t raw_size = raw_msg->getSize();
-
-      if (telem_sock_idx >= 0) {
-        commaview::telemetry::note_ingest(service_stats, telem_sock_idx);
-        const uint8_t* raw_ptr = reinterpret_cast<const uint8_t*>(raw_msg->getData());
-        raw_latest[telem_sock_idx].assign(raw_ptr, raw_ptr + raw_size);
-        raw_log_mono[telem_sock_idx] = 0;
-        commaview::telemetry::extract_log_mono_time_from_raw_event(raw_ptr,
-                                                                   raw_size,
-                                                                   &raw_log_mono[telem_sock_idx]);
-        raw_event_which[telem_sock_idx] = commaview::telemetry::event_which_for_service_index(telem_sock_idx);
-        have_raw[telem_sock_idx] = true;
-        continue;
-      }
 
       try {
         capnp::ReaderOptions options;
@@ -428,7 +392,6 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                    data_len);
             fflush(stdout);
           }
-          continue;
         }
 
       } catch (const std::exception& e) {
@@ -449,49 +412,61 @@ static void handle_client(int client_fd, const char* video_service, int port) {
       }
     }
 
-    if (include_telemetry) {
+    if (include_telemetry && telemetry_poller != nullptr) {
       auto now = std::chrono::steady_clock::now();
-      if (now >= next_telem_emit) {
-        next_telem_emit = now + std::chrono::milliseconds(g_telemetry_emit_ms);
+      if (now >= next_telem_poll) {
+        do {
+          next_telem_poll += std::chrono::milliseconds(g_telemetry_emit_ms);
+        } while (next_telem_poll <= now);
 
-        for (int i = 0; i < NUM_TELEM; i++) {
-          if (!have_raw[i]) continue;
-          const auto& raw = raw_latest[i];
+        auto telem_ready = telemetry_poller->poll(0);
+        for (auto* sock : telem_ready) {
+          int telem_sock_idx = -1;
+          for (int i = 0; i < NUM_TELEM; i++) {
+            if (sock == telem_socks[i]) {
+              telem_sock_idx = i;
+              break;
+            }
+          }
+          if (telem_sock_idx < 0) continue;
+
+          std::unique_ptr<Message> raw_msg(sock->receive(true));
+          if (!raw_msg) continue;
+          const size_t raw_size = raw_msg->getSize();
+          const uint8_t* raw_ptr = reinterpret_cast<const uint8_t*>(raw_msg->getData());
+          commaview::telemetry::note_ingest(service_stats, telem_sock_idx);
           if (!send_meta_raw_frame(client_fd,
-                                   static_cast<uint8_t>(i),
-                                   raw_event_which[i],
-                                   raw_log_mono[i],
-                                   std::vector<uint8_t>{},
-                                   std::string(),
-                                   raw.data(),
-                                   raw.size())) goto disconnect;
+                                   static_cast<uint8_t>(telem_sock_idx),
+                                   raw_ptr,
+                                   raw_size)) goto disconnect;
           telem_raw_count++;
-          commaview::telemetry::note_emit_raw(service_stats, i);
+          commaview::telemetry::note_emit_raw(service_stats, telem_sock_idx);
         }
 
         const uint64_t telem_log_counter = telem_raw_count;
-        if (telem_log_counter <= 3 || (telem_log_counter % 200) == 0) {
-          printf("[%s] telem_raw=%llu drain=%llu (coalesced %dms)\n",
+        if (telem_log_counter > 0 && (telem_log_counter <= 3 || (telem_log_counter % 200) == 0)) {
+          printf("[%s] telem_raw=%llu drain=%llu (read+send throttled %dms)\n",
                  video_service,
                  static_cast<unsigned long long>(telem_raw_count),
                  static_cast<unsigned long long>(telem_drain_count),
                  g_telemetry_emit_ms);
           fflush(stdout);
         }
+      }
 
-        if (now >= next_stats_flush) {
-          next_stats_flush = now + std::chrono::milliseconds(1000);
-          write_telemetry_stats_file(telemetry_stats_path,
-                                     video_service,
-                                     telem_count,
-                                     telem_raw_count,
-                                     telem_drop_count,
-                                     telem_drain_count,
-                                     g_telemetry_emit_ms);
-          if (!commaview::telemetry::service_counter_invariants_hold(service_stats)) {
-            printf("[%s] telemetry counter invariant violated: coalesced>ingest\n", video_service);
-            fflush(stdout);
-          }
+      now = std::chrono::steady_clock::now();
+      if (now >= next_stats_flush) {
+        next_stats_flush = now + std::chrono::milliseconds(1000);
+        write_telemetry_stats_file(telemetry_stats_path,
+                                   video_service,
+                                   telem_count,
+                                   telem_raw_count,
+                                   telem_drop_count,
+                                   telem_drain_count,
+                                   g_telemetry_emit_ms);
+        if (!commaview::telemetry::service_counter_invariants_hold(service_stats)) {
+          printf("[%s] telemetry counter invariant violated: raw>ingest\n", video_service);
+          fflush(stdout);
         }
       }
     }
@@ -510,7 +485,8 @@ disconnect:
   active_counter.fetch_sub(1);
   close(client_fd);
 
-  delete poller;
+  delete video_poller;
+  if (telemetry_poller != nullptr) delete telemetry_poller;
   if (video_sock != nullptr) delete video_sock;
   for (int i = 0; i < NUM_TELEM; i++) {
     if (telem_socks[i] != nullptr) delete telem_socks[i];
