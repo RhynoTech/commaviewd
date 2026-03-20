@@ -3,6 +3,7 @@
 #include "policy.h"
 #include "router.h"
 #include "telemetry_stats.h"
+#include "raw_event_metadata.h"
 /**
  * CommaView Unified Bridge (C++)
  *
@@ -334,28 +335,22 @@ static void handle_client(int client_fd, const char* video_service, int port) {
           }
         }
       }
-
       std::unique_ptr<Message> raw_msg(sock->receive(true));
       if (!raw_msg) continue;
-      if (telem_sock_idx >= 0) {
-        commaview::telemetry::note_ingest(service_stats, telem_sock_idx);
-      }
-
-      // Latest-only semantics for telemetry sockets: drain queued historical samples
-      // and keep only the freshest message before decode/emit.
-      if (telem_sock_idx >= 0) {
-        while (true) {
-          std::unique_ptr<Message> newer(sock->receive(true));
-          if (!newer) break;
-          raw_msg = std::move(newer);
-          telem_drain_count++;
-          commaview::telemetry::note_ingest(service_stats, telem_sock_idx);
-          commaview::telemetry::note_coalesced(service_stats, telem_sock_idx);
-        }
-      }
-
       const size_t raw_size = raw_msg->getSize();
 
+      if (telem_sock_idx >= 0) {
+        commaview::telemetry::note_ingest(service_stats, telem_sock_idx);
+        const uint8_t* raw_ptr = reinterpret_cast<const uint8_t*>(raw_msg->getData());
+        raw_latest[telem_sock_idx].assign(raw_ptr, raw_ptr + raw_size);
+        raw_log_mono[telem_sock_idx] = 0;
+        commaview::telemetry::extract_log_mono_time_from_raw_event(raw_ptr,
+                                                                   raw_size,
+                                                                   &raw_log_mono[telem_sock_idx]);
+        raw_event_which[telem_sock_idx] = commaview::telemetry::event_which_for_service_index(telem_sock_idx);
+        have_raw[telem_sock_idx] = true;
+        continue;
+      }
 
       try {
         capnp::ReaderOptions options;
@@ -436,17 +431,6 @@ static void handle_client(int client_fd, const char* video_service, int port) {
           continue;
         }
 
-        if (include_telemetry) {
-          const auto which = event.which();
-          const int raw_idx = telemetry_index_for_which(which);
-          if (raw_idx >= 0) {
-            const uint8_t* raw_ptr = reinterpret_cast<const uint8_t*>(raw_msg->getData());
-            raw_latest[raw_idx].assign(raw_ptr, raw_ptr + raw_size);
-            raw_log_mono[raw_idx] = event.getLogMonoTime();
-            raw_event_which[raw_idx] = static_cast<uint16_t>(which);
-            have_raw[raw_idx] = true;
-          }
-        }
       } catch (const std::exception& e) {
         parse_error_count++;
         printf("[%s] parse exception #%llu: %s (raw=%zu)\n",

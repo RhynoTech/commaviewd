@@ -26,6 +26,7 @@ CONTROL_POLICY_SRC="$ROOT/src/policy.cpp"
 VIDEO_ROUTER_SRC="$ROOT/src/router.cpp"
 TELEMETRY_JSON_SRC="$ROOT/src/json_builder.cpp"
 TELEMETRY_STATS_SRC="$ROOT/src/telemetry_stats.cpp"
+RAW_EVENT_METADATA_SRC="$ROOT/src/raw_event_metadata.cpp"
 RUNTIME_MODE_SRC="$ROOT/src/mode.cpp"
 RUNTIME_BRIDGE_MODE_SRC="$ROOT/src/bridge_mode.cpp"
 RUNTIME_CONTROL_MODE_SRC="$ROOT/src/control_mode.cpp"
@@ -54,6 +55,7 @@ require_file() {
 for f in \
   "$MAIN_SRC" "$BRIDGE_SRC" "$NET_FRAMING_SRC" "$NET_SOCKET_SRC" \
   "$CONTROL_POLICY_SRC" "$VIDEO_ROUTER_SRC" "$TELEMETRY_JSON_SRC" "$TELEMETRY_STATS_SRC" \
+  "$RAW_EVENT_METADATA_SRC" \
   "$RUNTIME_MODE_SRC" "$RUNTIME_BRIDGE_MODE_SRC" "$RUNTIME_CONTROL_MODE_SRC" \
   "$API_HTTP_SERVER_SRC" \
   "$OP_ROOT/cereal/log.capnp" "$OP_ROOT/cereal/services.py" \
@@ -81,6 +83,7 @@ COMMON_SRCS=(
   "$API_HTTP_SERVER_SRC"
   "$NET_FRAMING_SRC" "$NET_SOCKET_SRC" "$CONTROL_POLICY_SRC"
   "$VIDEO_ROUTER_SRC" "$TELEMETRY_JSON_SRC" "$TELEMETRY_STATS_SRC"
+  "$RAW_EVENT_METADATA_SRC"
   "$OP_ROOT/cereal/messaging/socketmaster.cc"
   "$MSGQ_SOURCE"
   "$OP_ROOT/msgq_repo/msgq/event.cc" "$OP_ROOT/msgq_repo/msgq/impl_fake.cc"
@@ -98,7 +101,7 @@ clang++ -O2 -std=c++17 -DCOMMAVIEW_BRIDGE_NO_MAIN \
 echo "[3/5] Building deploy binary (aarch64)..."
 aarch64-linux-gnu-g++ -O2 -std=c++17 -DCOMMAVIEW_BRIDGE_NO_MAIN \
   -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/msgq_repo" \
-  -L/usr/lib/aarch64-linux-gnu -Wl,-rpath,'$ORIGIN/lib' \
+  -L/usr/lib/aarch64-linux-gnu -Wl,-rpath,\$ORIGIN/lib \
   -o "$ARM_OUT" "${COMMON_SRCS[@]}" \
   -lzmq -lcapnp -lkj -lpthread
 
@@ -109,4 +112,4 @@ install -m 755 "$ARM_KJ_SO" "$BUNDLE_LIB_DIR/$ARM_KJ_NAME"
 echo "[5/5] Done"
 ls -lh "$HOST_OUT" "$ARM_OUT" "$BUNDLE_LIB_DIR/$ARM_CAPNP_NAME" "$BUNDLE_LIB_DIR/$ARM_KJ_NAME"
 file "$HOST_OUT" "$ARM_OUT"
-aarch64-linux-gnu-readelf -d "$ARM_OUT" | egrep 'NEEDED|RPATH|RUNPATH' || true
+aarch64-linux-gnu-readelf -d "$ARM_OUT" | egrep "NEEDED|RPATH|RUNPATH" || true
