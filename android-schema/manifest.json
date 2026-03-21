@@ -1,0 +1,42 @@
+{
+  "generatedAt": "2026-03-21T06:17:44Z",
+  "sourceRepo": "RhynoTech/CommaView",
+  "sourceOfTruth": "CommaView/schemas/manifest.json",
+  "sources": {
+    "openpilot": {
+      "remote": "https://github.com/commaai/openpilot",
+      "commit": "a27efe5796e31f77e97efb33762522f2ddc3b0d0"
+    },
+    "opendbc": {
+      "remote": "https://github.com/commaai/opendbc.git",
+      "commit": "ffe10c0c809cc48726292c832b109a14fee603be"
+    }
+  },
+  "files": [
+    {
+      "path": "schemas/cereal/log.capnp",
+      "upstreamPath": "cereal/log.capnp",
+      "sha256": "5aac709f8249f76a824ea7c51ddac8cf24a9b31862e4ba3a71e1370782fc68ff"
+    },
+    {
+      "path": "schemas/cereal/car.capnp",
+      "upstreamPath": "cereal/car.capnp",
+      "sha256": "0b5f6bf6cb49820976cbe4e3693b1f54cc47a0b074b11354ab916fa5fb6cad5a"
+    },
+    {
+      "path": "schemas/cereal/custom.capnp",
+      "upstreamPath": "cereal/custom.capnp",
+      "sha256": "b3fae4d6e0beab2d78661e9d6f05cdd0c675ccb17aa5e2de7746a3ecd637bb33"
+    },
+    {
+      "path": "schemas/cereal/legacy.capnp",
+      "upstreamPath": "cereal/legacy.capnp",
+      "sha256": "4ab15bad593a3433dab2d3c8f9951fa4fbadea2074ca0ebb082139ed38f25131"
+    },
+    {
+      "path": "schemas/cereal/include/c++.capnp",
+      "upstreamPath": "cereal/include/c++.capnp",
+      "sha256": "fb306076cd38c27af1aed20fac6395e9a46fbe5b5df6a248b5f1b6845a079c44"
+    }
+  ]
+}
