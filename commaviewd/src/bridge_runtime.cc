@@ -444,6 +444,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   }
 
   const bool include_telemetry = (port == PORT_ROAD || port == PORT_WIDE);
+  const int car_state_idx = telemetry_index_for_which(cereal::Event::CAR_STATE);
   SubSocket* telem_socks[NUM_TELEM] = {};
   ServicePolicy telem_policies[NUM_TELEM] = {};
 
@@ -452,7 +453,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
       telem_policies[i] = runtime_policy_for_index(i);
       if (!service_policy_subscribes(telem_policies[i])) continue;
       const size_t segment_size = queue_size_for_service(TELEMETRY_SERVICES[i]);
-      const bool conflate = !service_policy_samples(telem_policies[i]);
+      const bool conflate = ((i == car_state_idx) && service_policy_samples(telem_policies[i])) ? true : !service_policy_samples(telem_policies[i]);
       telem_socks[i] = SubSocket::create(ctx, TELEMETRY_SERVICES[i], "127.0.0.1", conflate, true, segment_size);
       if (telem_socks[i] != nullptr) note_runtime_subscriber_delta(i, 1);
     }
@@ -626,6 +627,39 @@ static void handle_client(int client_fd, const char* video_service, int port) {
             }
           }
           if (telem_sock_idx < 0) continue;
+
+          if ((telem_sock_idx == car_state_idx) && service_policy_samples(telem_policies[telem_sock_idx])) {
+            if (now < sampled_next_emit[telem_sock_idx]) continue;
+            std::unique_ptr<Message> raw_msg(sock->receive(true));
+            if (!raw_msg) continue;
+            const size_t raw_size = raw_msg->getSize();
+            const uint8_t* raw_ptr = reinterpret_cast<const uint8_t*>(raw_msg->getData());
+            note_runtime_receive(telem_sock_idx, raw_size);
+            sampled_latest[telem_sock_idx].assign(raw_ptr, raw_ptr + raw_size);
+            sampled_have_latest[telem_sock_idx] = true;
+            const auto& latest = sampled_latest[static_cast<size_t>(telem_sock_idx)];
+            if (latest.empty()) continue;
+            const auto send_started = std::chrono::steady_clock::now();
+            const bool sent = send_meta_raw_frame(client_fd,
+                                                  static_cast<uint8_t>(telem_sock_idx),
+                                                  latest.data(),
+                                                  latest.size());
+            const auto send_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - send_started);
+            note_runtime_emit(telem_sock_idx,
+                              latest.size(),
+                              true,
+                              sent,
+                              static_cast<uint64_t>(send_elapsed.count()));
+            if (!sent) goto disconnect;
+            telem_raw_count++;
+            const int sample_hz = std::max(telem_policies[telem_sock_idx].sample_hz, 1);
+            const auto sample_interval = std::chrono::milliseconds(std::max(1, 1000 / sample_hz));
+            do {
+              sampled_next_emit[telem_sock_idx] += sample_interval;
+            } while (sampled_next_emit[telem_sock_idx] <= now);
+            continue;
+          }
 
           if (service_policy_samples(telem_policies[telem_sock_idx])) {
             uint64_t drained_messages = 0;
