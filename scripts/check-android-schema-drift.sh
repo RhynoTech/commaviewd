@@ -3,6 +3,7 @@ set -euo pipefail
 
 MANIFEST="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/android-schema/manifest.json"
 UPSTREAM_ROOT=""
+MODE="fail"
 LABEL="upstream"
 
 while [[ $# -gt 0 ]]; do
@@ -13,6 +14,8 @@ while [[ $# -gt 0 ]]; do
       UPSTREAM_ROOT="$2"; shift 2 ;;
     --label)
       LABEL="$2"; shift 2 ;;
+    --mode)
+      MODE="$2"; shift 2 ;;
     *)
       echo "Unknown arg: $1" >&2
       exit 2 ;;
@@ -20,7 +23,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$UPSTREAM_ROOT" ]]; then
-  echo "Usage: $0 --upstream-root <path> [--manifest <path>] [--label <label>]" >&2
+  echo "Usage: $0 --upstream-root <path> [--manifest <path>] [--label <label>] [--mode fail|warn]" >&2
   exit 2
 fi
 
@@ -28,11 +31,12 @@ fi
 [[ -d "$UPSTREAM_ROOT" ]] || { echo "FAIL: missing upstream root $UPSTREAM_ROOT" >&2; exit 2; }
 mkdir -p dist
 
-python3 - <<'PY' "$MANIFEST" "$UPSTREAM_ROOT" "$LABEL"
+python3 - <<'PY' "$MANIFEST" "$UPSTREAM_ROOT" "$LABEL" "$MODE"
 import hashlib, json, pathlib, sys
 manifest_path = pathlib.Path(sys.argv[1])
 upstream_root = pathlib.Path(sys.argv[2])
 label = sys.argv[3]
+mode = sys.argv[4]
 manifest = json.loads(manifest_path.read_text())
 results = []
 missing = []
@@ -88,6 +92,6 @@ if step:
     with step.open('a') as fh:
         fh.write('\n'.join(summary) + '\n')
 print('\n'.join(summary))
-if drift or missing:
+if (drift or missing) and mode != "warn":
     sys.exit(1)
 PY
