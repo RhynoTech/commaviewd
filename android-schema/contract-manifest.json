@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "notes": "Handwritten schema contract for commaviewd telemetry drift enforcement.",
+  "services": {
+    "DeviceState": {
+      "file": "cereal/log.capnp",
+      "fields": {
+        "started": { "ordinal": 0, "type": "Bool" }
+      },
+      "enums": {}
+    }
+  }
+}
