@@ -1,6 +1,7 @@
 #include "control_mode.h"
 #include "http_server.h"
 #include "policy.h"
+#include "runtime_debug_config.h"
 
 #include <algorithm>
 #include <array>
@@ -63,6 +64,8 @@ struct PairingGrant {
 
 std::mutex g_pairing_mutex;
 PairingGrant g_pairing_grant;
+bool run_command(const std::vector<std::string>& args, int* exit_code, std::string* stdout_text, std::string* stderr_text);
+std::string tailscale_status();
 
 std::string trim_copy(const std::string& in) {
   size_t s = 0;
@@ -159,6 +162,183 @@ bool write_file(const std::string& path, const std::string& value, mode_t mode =
   return wrote == want;
 }
 
+void ensure_runtime_debug_dirs() {
+  mkdir("/data/commaview/config", 0755);
+  mkdir("/data/commaview/run", 0755);
+}
+
+std::string read_file_raw(const std::string& path) {
+  std::ifstream f(path);
+  if (!f) return "";
+  std::stringstream ss;
+  ss << f.rdbuf();
+  return ss.str();
+}
+
+std::string runtime_restart_reason() {
+  const char* from_env = std::getenv("COMMAVIEWD_RESTART_REASON");
+  if (from_env != nullptr) {
+    const std::string value = trim_copy(from_env);
+    if (!value.empty()) return value;
+  }
+  const std::string from_file = read_file_trimmed("/data/commaview/run/last-restart-reason.txt");
+  return from_file.empty() ? "startup" : from_file;
+}
+
+commaview::runtime_debug::LoadedRuntimeDebugConfig load_persisted_runtime_debug_config() {
+  return commaview::runtime_debug::load_runtime_debug_config();
+}
+
+commaview::runtime_debug::LoadedRuntimeDebugConfig load_effective_runtime_debug_config_state() {
+  auto persisted = load_persisted_runtime_debug_config();
+  auto effective = commaview::runtime_debug::effective_runtime_debug_config(persisted);
+  const std::string effective_path = commaview::runtime_debug::runtime_debug_effective_path();
+  const std::string raw = read_file_raw(effective_path);
+  if (!trim_copy(raw).empty()) {
+    auto parsed = commaview::runtime_debug::parse_runtime_debug_config_body(raw, true, effective_path);
+    if (parsed.valid) {
+      effective = parsed;
+      effective.exists = true;
+      effective.valid = true;
+      effective.safe_fallback = persisted.safe_fallback;
+      effective.warnings = persisted.warnings;
+    }
+  }
+  return effective;
+}
+
+std::string default_runtime_stats_json(const commaview::runtime_debug::LoadedRuntimeDebugConfig& effective) {
+  std::ostringstream out;
+  out << "{";
+  out << "\"uptimeMs\":0,";
+  out << "\"reconnectCount\":0,";
+  out << "\"configVersion\":" << effective.config_version << ",";
+  out << "\"configHash\":\"" << json_escape(effective.config_hash) << "\",";
+  out << "\"lastRestartReason\":\"" << json_escape(runtime_restart_reason()) << "\",";
+  out << "\"telemetryLoop\":{\"iterations\":0,\"avgMicros\":0,\"maxMicros\":0,\"overBudget\":0},";
+  out << "\"videoLoop\":{\"iterations\":0,\"avgMicros\":0,\"maxMicros\":0,\"overBudget\":0},";
+  out << "\"services\":{}";
+  out << "}";
+  return out.str();
+}
+
+std::string load_runtime_stats_json(const commaview::runtime_debug::LoadedRuntimeDebugConfig& effective) {
+  const std::string raw = trim_copy(read_file_raw(commaview::runtime_debug::runtime_debug_stats_path()));
+  return raw.empty() ? default_runtime_stats_json(effective) : raw;
+}
+
+std::string runtime_debug_state_json() {
+  const auto persisted = load_persisted_runtime_debug_config();
+  const auto effective = load_effective_runtime_debug_config_state();
+  const std::vector<std::string> warnings = !effective.warnings.empty() ? effective.warnings : persisted.warnings;
+  std::ostringstream out;
+  out << "{";
+  out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
+  out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true) << ",";
+  out << "\"runtimeStats\":" << load_runtime_stats_json(effective) << ",";
+  out << "\"warnings\":" << commaview::runtime_debug::warnings_json(warnings) << ",";
+  out << "\"safeFallback\":" << ((persisted.safe_fallback || effective.safe_fallback) ? "true" : "false");
+  out << "}";
+  return out.str();
+}
+
+std::string runtime_status_json() {
+  const std::string version = runtime_version();
+  const std::string telemetryMode = telemetry_mode();
+  const auto persisted = load_persisted_runtime_debug_config();
+  const auto effective = load_effective_runtime_debug_config_state();
+  const std::vector<std::string> warnings = !effective.warnings.empty() ? effective.warnings : persisted.warnings;
+  std::ostringstream out;
+  out << "{";
+  out << "\"version\":\"" << json_escape(version) << "\",";
+  out << "\"api_port\":" << kDefaultApiPort << ",";
+  out << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\",";
+  out << "\"tailscale\":" << tailscale_status() << ",";
+  out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
+  out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true) << ",";
+  out << "\"runtimeStats\":" << load_runtime_stats_json(effective) << ",";
+  out << "\"configVersion\":" << effective.config_version << ",";
+  out << "\"configHash\":\"" << json_escape(effective.config_hash) << "\",";
+  out << "\"warnings\":" << commaview::runtime_debug::warnings_json(warnings) << ",";
+  out << "\"safeFallback\":" << ((persisted.safe_fallback || effective.safe_fallback) ? "true" : "false");
+  out << "}";
+  return out.str();
+}
+
+bool write_runtime_debug_config_json(const std::string& body,
+                                     commaview::runtime_debug::LoadedRuntimeDebugConfig* parsed_out,
+                                     std::string* error_out) {
+  auto parsed = commaview::runtime_debug::parse_runtime_debug_config_body(
+      body,
+      true,
+      commaview::runtime_debug::runtime_debug_config_path());
+  if (!parsed.valid) {
+    if (error_out != nullptr) {
+      *error_out = parsed.error.empty() ? "invalid runtime debug config" : parsed.error;
+    }
+    return false;
+  }
+  ensure_runtime_debug_dirs();
+  const std::string canonical = commaview::runtime_debug::canonical_config_contents_json(parsed);
+  if (!write_file(commaview::runtime_debug::runtime_debug_config_path(), canonical, 0644)) {
+    if (error_out != nullptr) *error_out = "failed to write runtime debug config";
+    return false;
+  }
+  parsed.exists = true;
+  parsed.valid = true;
+  parsed.safe_fallback = false;
+  parsed.warnings.clear();
+  if (parsed_out != nullptr) *parsed_out = parsed;
+  return true;
+}
+
+std::string runtime_debug_write_response(bool ok,
+                                         const commaview::runtime_debug::LoadedRuntimeDebugConfig& persisted,
+                                         const std::string& error = "") {
+  auto effective = commaview::runtime_debug::effective_runtime_debug_config(persisted);
+  std::ostringstream out;
+  out << "{";
+  out << "\"ok\":" << (ok ? "true" : "false") << ",";
+  out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
+  out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true);
+  if (!error.empty()) out << ",\"error\":\"" << json_escape(error) << "\"";
+  out << "}";
+  return out.str();
+}
+
+std::string runtime_debug_restore_defaults_response() {
+  commaview::runtime_debug::LoadedRuntimeDebugConfig parsed;
+  std::string error;
+  if (!write_runtime_debug_config_json(commaview::runtime_debug::default_runtime_debug_config_json(), &parsed, &error)) {
+    return runtime_debug_write_response(false, load_persisted_runtime_debug_config(), error);
+  }
+  return runtime_debug_write_response(true, parsed);
+}
+
+std::string runtime_debug_apply_response() {
+  const auto persisted = load_persisted_runtime_debug_config();
+  if (!persisted.valid) {
+    return runtime_debug_write_response(false, persisted, persisted.error.empty() ? "invalid runtime debug config" : persisted.error);
+  }
+  ensure_runtime_debug_dirs();
+  const std::string restart_cmd =
+      "(sleep 1; COMMAVIEWD_RESTART_REASON=runtime-debug-apply bash /data/commaview/start.sh >/data/commaview/logs/runtime-debug-apply.log 2>&1) </dev/null &";
+  int restart_rc = -1;
+  std::string restart_out;
+  std::string restart_err;
+  const bool launched = run_command({"/bin/sh", "-lc", restart_cmd}, &restart_rc, &restart_out, &restart_err);
+  const bool restart_ok = launched && restart_rc == 0;
+  auto effective = commaview::runtime_debug::effective_runtime_debug_config(persisted);
+  std::ostringstream out;
+  out << "{";
+  out << "\"ok\":" << (restart_ok ? "true" : "false") << ",";
+  out << "\"restartScheduled\":" << (restart_ok ? "true" : "false") << ",";
+  out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
+  out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true);
+  if (!restart_ok) out << ",\"error\":\"failed to schedule restart\"";
+  out << "}";
+  return out.str();
+}
 std::string read_param(const char* key) {
   return read_file_trimmed(std::string(kParamsDir) + "/" + key);
 }
@@ -796,10 +976,10 @@ int run_control_mode(int argc, char* argv[]) {
         return make_json(200, "{\"version\":\"" + json_escape(version) + "\"}");
       }
       if (req.path == "/commaview/status") {
-        const std::string version = runtime_version();
-        const std::string telemetryMode = telemetry_mode();
-        std::string body = "{\"version\":\"" + json_escape(version) + "\",\"api_port\":5002,\"telemetryMode\":\"" + json_escape(telemetryMode) + "\",\"tailscale\":" + tailscale_status() + "}";
-        return make_json(200, body);
+        return make_json(200, runtime_status_json());
+      }
+      if (req.path == "/commaview/runtime-debug/config") {
+        return make_json(200, runtime_debug_state_json());
       }
       return make_json(404, "{\"error\":\"not found\"}");
     }
@@ -821,6 +1001,25 @@ int run_control_mode(int argc, char* argv[]) {
 
       if (req.path == "/pairing/create") {
         return make_json(200, pairing_create(api_token));
+      }
+
+      if (req.path == "/commaview/runtime-debug/config") {
+        commaview::runtime_debug::LoadedRuntimeDebugConfig parsed;
+        std::string error;
+        if (!write_runtime_debug_config_json(req.body, &parsed, &error)) {
+          return make_json(400, runtime_debug_write_response(false, load_persisted_runtime_debug_config(), error));
+        }
+        return make_json(200, runtime_debug_write_response(true, parsed));
+      }
+      if (req.path == "/commaview/runtime-debug/defaults") {
+        std::string body = runtime_debug_restore_defaults_response();
+        int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
+        return make_json(code, body);
+      }
+      if (req.path == "/commaview/runtime-debug/apply") {
+        std::string body = runtime_debug_apply_response();
+        int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
+        return make_json(code, body);
       }
 
       if (req.path == "/tailscale/enable") {

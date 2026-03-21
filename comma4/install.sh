@@ -119,6 +119,7 @@ required_files=(
   "stop.sh"
   "uninstall.sh"
   "install_tailscale_runtime.sh"
+  "runtime-debug.defaults.json"
 )
 
 fetch_missing_required_files() {
@@ -175,6 +176,7 @@ validate_required_files() {
 deploy_required_scripts() {
   copy_required_file "upgrade.sh" "$INSTALL_DIR/upgrade.sh"
   copy_required_file "start.sh" "$INSTALL_DIR/start.sh"
+  copy_required_file "runtime-debug.defaults.json" "$INSTALL_DIR/runtime-debug.defaults.json" 644
   copy_required_file "stop.sh" "$INSTALL_DIR/stop.sh"
   copy_required_file "uninstall.sh" "$INSTALL_DIR/uninstall.sh"
   copy_required_file "install_tailscale_runtime.sh" "$INSTALL_DIR/tailscale/install_tailscale_runtime.sh"
