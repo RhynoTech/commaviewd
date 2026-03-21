@@ -5,22 +5,134 @@ from scripts.check_android_schema_drift import diff_contract, load_contract, loa
 FIXTURES = Path(__file__).parent / "fixtures" / "schema_contract"
 
 
-def test_additive_field_is_reported_when_unignored():
-    contract = load_contract({
-        "services": {
-            "DeviceState": {
-                "file": "cereal/log.capnp",
-                "fields": {
-                    "started": {"ordinal": 0, "type": "Bool"}
+def contract_fixture():
+    return load_contract(
+        {
+            "version": 1,
+            "services": {
+                "DeviceState": {
+                    "file": "cereal/log.capnp",
+                    "fields": {
+                        "started": {"ordinal": 0, "type": "Bool"},
+                    },
+                    "enums": {},
                 },
-                "enums": {}
-            }
+                "ThermalStatusHolder": {
+                    "file": "cereal/car.capnp",
+                    "fields": {},
+                    "enums": {
+                        "ThermalStatus": {
+                            "green": {"ordinal": 0},
+                            "yellow": {"ordinal": 1},
+                        }
+                    },
+                },
+            },
         }
-    })
-    ignores = load_ignores({"ignores": []})
-    upstream = parse_schema_tree(FIXTURES / "add_field")
+    )
 
-    report = diff_contract(contract, upstream, ignores, label="fixture")
+
+def test_additive_field_is_reported_when_unignored():
+    report = diff_contract(
+        contract_fixture(),
+        parse_schema_tree(FIXTURES / "add_field"),
+        load_ignores({"version": 1, "ignores": []}),
+        label="fixture",
+    )
 
     assert report["unignoredCount"] == 1
-    assert report["items"][0]["driftClass"] == "field-added"
+    assert {(item["service"], item["symbol"], item["driftClass"]) for item in report["items"]} == {
+        ("DeviceState", "engaged", "field-added")
+    }
+
+
+def test_removed_field_is_reported():
+    report = diff_contract(
+        contract_fixture(),
+        parse_schema_tree(FIXTURES / "remove_field"),
+        load_ignores({"version": 1, "ignores": []}),
+        label="fixture",
+    )
+
+    assert (
+        "DeviceState",
+        "started",
+        "field-removed",
+    ) in {(item["service"], item["symbol"], item["driftClass"]) for item in report["items"]}
+
+
+def test_type_change_is_reported():
+    report = diff_contract(
+        contract_fixture(),
+        parse_schema_tree(FIXTURES / "type_change"),
+        load_ignores({"version": 1, "ignores": []}),
+        label="fixture",
+    )
+
+    assert (
+        "DeviceState",
+        "started",
+        "field-type-changed",
+    ) in {(item["service"], item["symbol"], item["driftClass"]) for item in report["items"]}
+
+
+def test_enum_add_is_reported():
+    report = diff_contract(
+        contract_fixture(),
+        parse_schema_tree(FIXTURES / "enum_add"),
+        load_ignores({"version": 1, "ignores": []}),
+        label="fixture",
+    )
+
+    assert (
+        "ThermalStatusHolder.ThermalStatus",
+        "red",
+        "enum-value-added",
+    ) in {(item["service"], item["symbol"], item["driftClass"]) for item in report["items"]}
+
+
+def test_service_add_is_reported():
+    report = diff_contract(
+        contract_fixture(),
+        parse_schema_tree(FIXTURES / "ignore_case"),
+        load_ignores({"version": 1, "ignores": []}),
+        label="fixture",
+    )
+
+    assert (
+        "IgnoredThing",
+        "IgnoredThing",
+        "service-added",
+    ) in {(item["service"], item["symbol"], item["driftClass"]) for item in report["items"]}
+
+
+def test_ignored_drift_is_suppressed():
+    report = diff_contract(
+        contract_fixture(),
+        parse_schema_tree(FIXTURES / "ignore_case"),
+        load_ignores(
+            {
+                "version": 1,
+                "ignores": [
+                    {
+                        "upstream": "fixture",
+                        "service": "IgnoredThing",
+                        "symbol": "IgnoredThing",
+                        "driftClass": "service-added",
+                        "reason": "fixture suppression",
+                    }
+                ],
+            }
+        ),
+        label="fixture",
+    )
+
+    assert report["unignoredCount"] == 0
+    assert report["items"] == []
+
+
+def test_source_reordering_keeps_same_normalized_keys():
+    base = parse_schema_tree(FIXTURES / "base")
+    reordered = parse_schema_tree(FIXTURES / "reordered")
+
+    assert base == reordered
