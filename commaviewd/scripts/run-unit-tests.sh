@@ -56,11 +56,17 @@ $CXX -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/src/telemetry_stats.cpp" \
   -o "$TMP/test_telemetry_stats"
 
+$CXX -O2 -std=c++17 "${INC[@]}" \
+  "$ROOT/tests/test_http_server_cloexec.cpp" \
+  "$ROOT/src/http_server.cpp" \
+  -o "$TMP/test_http_server_cloexec"
+
 "$TMP/test_net_framing"
 "$TMP/test_runtime_mode"
 "$TMP/test_control_policy"
 "$TMP/test_telemetry_json"
 "$TMP/test_telemetry_stats"
+"$TMP/test_http_server_cloexec"
 
 "$ROOT/tests/control_mode_api_contract_test.sh"
 "$ROOT/tests/raw_only_runtime_contract_test.sh"

@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <netinet/tcp.h>
 #include <sstream>
 #include <string>
@@ -17,6 +18,12 @@ namespace {
 
 constexpr int kReadTimeoutSec = 5;
 constexpr size_t kMaxRequestBytes = 1024 * 1024;
+
+bool set_close_on_exec(int fd) {
+  const int flags = ::fcntl(fd, F_GETFD);
+  if (flags < 0) return false;
+  return ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
+}
 
 std::string trim_copy(const std::string& in) {
   size_t s = 0;
@@ -128,6 +135,12 @@ bool HttpServer::start(std::string* error) {
   server_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd_ < 0) {
     if (error) *error = "socket failed";
+    return false;
+  }
+  if (!set_close_on_exec(server_fd_)) {
+    if (error) *error = "fcntl(FD_CLOEXEC) failed";
+    ::close(server_fd_);
+    server_fd_ = -1;
     return false;
   }
 
