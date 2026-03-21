@@ -180,3 +180,56 @@ def test_ignore_candidate_is_generated_from_report_items():
             },
         ],
     }
+
+
+
+def test_family_scoped_ignore_matches_prefixed_label():
+    report = diff_contract(
+        contract_fixture(),
+        parse_schema_tree(FIXTURES / "ignore_case"),
+        load_ignores(
+            {
+                "version": 1,
+                "ignores": [
+                    {
+                        "upstream": "sunnypilot",
+                        "service": "IgnoredThing",
+                        "symbol": "IgnoredThing",
+                        "driftClass": "service-added",
+                        "reason": "family-scoped suppression",
+                    }
+                ],
+            }
+        ),
+        label="sunnypilot-staging",
+    )
+
+    assert report["unignoredCount"] == 0
+    assert report["items"] == []
+
+
+def test_ignore_candidate_normalizes_prefixed_upstream_label():
+    candidate = build_ignore_candidate(
+        {
+            "label": "sunnypilot-staging",
+            "items": [
+                {
+                    "service": "CarEvent",
+                    "symbol": "CarEvent",
+                    "driftClass": "service-added",
+                    "file": "cereal/car.capnp",
+                },
+            ],
+        }
+    )
+
+    assert candidate["generatedFrom"] == "sunnypilot"
+    assert candidate["ignores"] == [
+        {
+            "upstream": "sunnypilot",
+            "service": "CarEvent",
+            "symbol": "CarEvent",
+            "driftClass": "service-added",
+            "reason": "bootstrap review candidate from drift report",
+        }
+    ]

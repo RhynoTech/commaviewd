@@ -58,6 +58,16 @@ def load_ignores(data):
     return payload
 
 
+def _upstream_family(label: str) -> str:
+    if label in {"both", "openpilot", "sunnypilot"}:
+        return label
+    if label.startswith("openpilot-") or label in {"release-mici-staging", "nightly"}:
+        return "openpilot"
+    if label.startswith("sunnypilot-") or label in {"staging", "dev"}:
+        return "sunnypilot"
+    return label
+
+
 def _empty_service(file_path: str):
     return {"file": file_path, "fields": {}, "enums": {}}
 
@@ -120,9 +130,10 @@ def _parse_capnp_file(path: Path, relative: str, services: Dict[str, dict]) -> N
 
 
 def _is_ignored(ignores: dict, label: str, item: dict) -> bool:
+    family = _upstream_family(label)
     for rule in ignores.get("ignores", []):
-        upstream = rule.get("upstream", "both")
-        if upstream not in ("both", label):
+        upstream = _upstream_family(rule.get("upstream", "both"))
+        if upstream not in ("both", label, family):
             continue
         if rule.get("service") not in (None, item["service"]):
             continue
@@ -205,15 +216,16 @@ def _safe_label(label: str) -> str:
 
 def build_ignore_candidate(report):
     label = report.get("label", "upstream")
+    family = _upstream_family(label)
     ignores = []
     seen = set()
     for item in report.get("items", []):
-        key = (label, item["service"], item["symbol"], item["driftClass"])
+        key = (family, item["service"], item["symbol"], item["driftClass"])
         if key in seen:
             continue
         seen.add(key)
         ignores.append({
-            "upstream": label,
+            "upstream": family,
             "service": item["service"],
             "symbol": item["symbol"],
             "driftClass": item["driftClass"],
@@ -221,7 +233,7 @@ def build_ignore_candidate(report):
         })
     return {
         "version": 1,
-        "generatedFrom": label,
+        "generatedFrom": family,
         "notes": "Candidate ignore manifest generated from drift report for review.",
         "ignores": ignores,
     }

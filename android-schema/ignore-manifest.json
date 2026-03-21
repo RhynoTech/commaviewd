@@ -1,8 +1,63 @@
 {
   "version": 1,
-  "generatedFrom": "sunnypilot",
-  "notes": "Candidate ignore manifest generated from drift report for review.",
+  "notes": "Reviewed schema drift ignores for active CI refs and canary refs.",
   "ignores": [
+    {
+      "upstream": "openpilot",
+      "service": "DeviceState",
+      "symbol": "bottomSocTempC",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "openpilot",
+      "service": "DeviceState",
+      "symbol": "caseTempC",
+      "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "openpilot",
+      "service": "DeviceState",
+      "symbol": "gnssTempC",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "openpilot",
+      "service": "DriverMonitoringState",
+      "symbol": "phoneProbOffset",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "openpilot",
+      "service": "DriverMonitoringState",
+      "symbol": "phoneProbOffsetDEPRECATED",
+      "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "openpilot",
+      "service": "DriverMonitoringState",
+      "symbol": "phoneProbValidCount",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "openpilot",
+      "service": "DriverMonitoringState",
+      "symbol": "phoneProbValidCountDEPRECATED",
+      "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "openpilot",
+      "service": "LivePose",
+      "symbol": "timestamp",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
     {
       "upstream": "sunnypilot",
       "service": "AudioData",
@@ -15,6 +70,34 @@
       "service": "AudioFeedback",
       "symbol": "AudioFeedback",
       "driftClass": "service-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "BackupManagerSP",
+      "symbol": "BackupManagerSP",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "BackupManagerSP.BackupInfo",
+      "symbol": "BackupManagerSP.BackupInfo",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "BackupManagerSP.MetadataEntry",
+      "symbol": "BackupManagerSP.MetadataEntry",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "BackupManagerSP.Version",
+      "symbol": "BackupManagerSP.Version",
+      "driftClass": "service-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
@@ -78,6 +161,20 @@
       "service": "CarControl.HUDControl.AudibleAlert",
       "symbol": "promptStarting",
       "driftClass": "enum-value-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "CarControlSP",
+      "symbol": "CarControlSP",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "CarControlSP.Param",
+      "symbol": "CarControlSP.Param",
+      "driftClass": "service-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
@@ -148,6 +245,27 @@
       "service": "CarParams",
       "symbol": "steerAtStandstill",
       "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "CarParamsSP",
+      "symbol": "CarParamsSP",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "CarParamsSP.NeuralNetworkLateralControl",
+      "symbol": "CarParamsSP.NeuralNetworkLateralControl",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "CarParamsSP.NeuralNetworkLateralControl.Model",
+      "symbol": "CarParamsSP.NeuralNetworkLateralControl.Model",
+      "driftClass": "service-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
@@ -399,6 +517,13 @@
       "upstream": "sunnypilot",
       "service": "CarState.CustomStockLong",
       "symbol": "CarState.CustomStockLong",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "CarStateSP",
+      "symbol": "CarStateSP",
       "driftClass": "service-added",
       "reason": "bootstrap review candidate from drift report"
     },
@@ -677,9 +802,37 @@
     },
     {
       "upstream": "sunnypilot",
+      "service": "CustomReserved7",
+      "symbol": "CustomReserved7",
+      "driftClass": "service-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "CustomReserved8",
+      "symbol": "CustomReserved8",
+      "driftClass": "service-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "CustomReserved9",
+      "symbol": "CustomReserved9",
+      "driftClass": "service-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
       "service": "DebugAlert",
       "symbol": "DebugAlert",
       "driftClass": "service-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "DeviceState",
+      "symbol": "bottomSocTempC",
+      "driftClass": "field-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
@@ -701,6 +854,13 @@
       "service": "DeviceState",
       "symbol": "exhaustTempC",
       "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "DeviceState",
+      "symbol": "gnssTempC",
+      "driftClass": "field-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
@@ -902,8 +1062,36 @@
     {
       "upstream": "sunnypilot",
       "service": "Event",
+      "symbol": "backupManagerSP",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
       "symbol": "bookmarkButton",
       "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
+      "symbol": "carControlSP",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
+      "symbol": "carParamsSP",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
+      "symbol": "carStateSP",
+      "driftClass": "field-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
@@ -1035,6 +1223,27 @@
     {
       "upstream": "sunnypilot",
       "service": "Event",
+      "symbol": "customReserved7",
+      "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
+      "symbol": "customReserved8",
+      "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
+      "symbol": "customReserved9",
+      "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
       "symbol": "driverAssistance",
       "driftClass": "field-removed",
       "reason": "bootstrap review candidate from drift report"
@@ -1113,6 +1322,13 @@
       "upstream": "sunnypilot",
       "service": "Event",
       "symbol": "liveLocationKalmanDEPRECATED",
+      "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
+      "symbol": "liveLocationKalmanDEPRECATED",
       "driftClass": "field-type-changed",
       "reason": "bootstrap review candidate from drift report"
     },
@@ -1161,6 +1377,20 @@
     {
       "upstream": "sunnypilot",
       "service": "Event",
+      "symbol": "modelDataV2SP",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
+      "symbol": "modelManagerSP",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
       "symbol": "modelV2SP",
       "driftClass": "field-added",
       "reason": "bootstrap review candidate from drift report"
@@ -1182,6 +1412,13 @@
     {
       "upstream": "sunnypilot",
       "service": "Event",
+      "symbol": "onroadEventsSP",
+      "driftClass": "field-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
       "symbol": "rawAudioData",
       "driftClass": "field-removed",
       "reason": "bootstrap review candidate from drift report"
@@ -1191,6 +1428,13 @@
       "service": "Event",
       "symbol": "selfdriveState",
       "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "Event",
+      "symbol": "selfdriveStateSP",
+      "driftClass": "field-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
@@ -1261,6 +1505,13 @@
       "service": "InitData",
       "symbol": "gitSrcCommitDate",
       "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "IntelligentCruiseButtonManagement",
+      "symbol": "IntelligentCruiseButtonManagement",
+      "driftClass": "service-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
@@ -1380,6 +1631,13 @@
       "service": "LateralTorqueTuning",
       "symbol": "useSteeringAngleDEPRECATED",
       "driftClass": "field-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "LeadData",
+      "symbol": "LeadData",
+      "driftClass": "service-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
@@ -1531,6 +1789,62 @@
     },
     {
       "upstream": "sunnypilot",
+      "service": "LongitudinalPlanSP.DynamicExperimentalControl",
+      "symbol": "LongitudinalPlanSP.DynamicExperimentalControl",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "LongitudinalPlanSP.E2eAlerts",
+      "symbol": "LongitudinalPlanSP.E2eAlerts",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "LongitudinalPlanSP.SmartCruiseControl",
+      "symbol": "LongitudinalPlanSP.SmartCruiseControl",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "LongitudinalPlanSP.SmartCruiseControl.Map",
+      "symbol": "LongitudinalPlanSP.SmartCruiseControl.Map",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "LongitudinalPlanSP.SmartCruiseControl.Vision",
+      "symbol": "LongitudinalPlanSP.SmartCruiseControl.Vision",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "LongitudinalPlanSP.SpeedLimit",
+      "symbol": "LongitudinalPlanSP.SpeedLimit",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "LongitudinalPlanSP.SpeedLimit.Assist",
+      "symbol": "LongitudinalPlanSP.SpeedLimit.Assist",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "LongitudinalPlanSP.SpeedLimit.Resolver",
+      "symbol": "LongitudinalPlanSP.SpeedLimit.Resolver",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
       "service": "MapTile",
       "symbol": "MapTile",
       "driftClass": "service-added",
@@ -1608,6 +1922,62 @@
     },
     {
       "upstream": "sunnypilot",
+      "service": "ModelManagerSP",
+      "symbol": "ModelManagerSP",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "ModelManagerSP.Artifact",
+      "symbol": "ModelManagerSP.Artifact",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "ModelManagerSP.DownloadProgress",
+      "symbol": "ModelManagerSP.DownloadProgress",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "ModelManagerSP.DownloadUri",
+      "symbol": "ModelManagerSP.DownloadUri",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "ModelManagerSP.Model",
+      "symbol": "ModelManagerSP.Model",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "ModelManagerSP.ModelBundle",
+      "symbol": "ModelManagerSP.ModelBundle",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "ModelManagerSP.Override",
+      "symbol": "ModelManagerSP.Override",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "ModularAssistiveDrivingSystem",
+      "symbol": "ModularAssistiveDrivingSystem",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
       "service": "OnroadEvent",
       "symbol": "OnroadEvent",
       "driftClass": "service-removed",
@@ -1618,6 +1988,20 @@
       "service": "OnroadEventDEPRECATED",
       "symbol": "OnroadEventDEPRECATED",
       "driftClass": "service-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "OnroadEventSP",
+      "symbol": "OnroadEventSP",
+      "driftClass": "service-added",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "OnroadEventSP.Event",
+      "symbol": "OnroadEventSP.Event",
+      "driftClass": "service-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
@@ -1793,6 +2177,13 @@
       "service": "SelfdriveState",
       "symbol": "SelfdriveState",
       "driftClass": "service-removed",
+      "reason": "bootstrap review candidate from drift report"
+    },
+    {
+      "upstream": "sunnypilot",
+      "service": "SelfdriveStateSP",
+      "symbol": "SelfdriveStateSP",
+      "driftClass": "service-added",
       "reason": "bootstrap review candidate from drift report"
     },
     {
