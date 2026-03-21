@@ -10,16 +10,17 @@ POLICY_HEADER="$ROOT/src/telemetry_policy.h"
 
 grep -Fq "enum class ServiceMode { Off, Sample, Pass };" "$POLICY_HEADER" || { echo "FAIL: missing telemetry service mode enum"; exit 1; }
 grep -Fq "{\"carState\", {ServiceMode::Sample, 2}}" "$POLICY_HEADER" || { echo "FAIL: carState should default to SAMPLE@2Hz"; exit 1; }
-grep -Fq "{\"alertDebug\", {ServiceMode::Off, 0}}" "$POLICY_HEADER" || { echo "FAIL: alertDebug should default OFF"; exit 1; }
-grep -Fq "{\"modelDataV2SP\", {ServiceMode::Off, 0}}" "$POLICY_HEADER" || { echo "FAIL: modelDataV2SP should default OFF"; exit 1; }
-grep -Fq "{\"longitudinalPlanSP\", {ServiceMode::Off, 0}}" "$POLICY_HEADER" || { echo "FAIL: longitudinalPlanSP should default OFF"; exit 1; }
-grep -Fq "{\"deviceState\", {ServiceMode::Pass, 0}}" "$POLICY_HEADER" || { echo "FAIL: deviceState should default PASS"; exit 1; }
-grep -Fq "{\"selfdriveState\", {ServiceMode::Pass, 0}}" "$POLICY_HEADER" || { echo "FAIL: selfdriveState should default PASS"; exit 1; }
-grep -Fq "{\"liveCalibration\", {ServiceMode::Pass, 0}}" "$POLICY_HEADER" || { echo "FAIL: liveCalibration should default PASS"; exit 1; }
-grep -Fq "{\"radarState\", {ServiceMode::Pass, 0}}" "$POLICY_HEADER" || { echo "FAIL: radarState should default PASS"; exit 1; }
-grep -Fq "{\"modelV2\", {ServiceMode::Pass, 0}}" "$POLICY_HEADER" || { echo "FAIL: modelV2 should default PASS"; exit 1; }
+grep -Fq "{\"carControl\", {ServiceMode::Off, 0}}" "$POLICY_HEADER" || { echo "FAIL: carControl should default OFF"; exit 1; }
+grep -Fq "{\"carOutput\", {ServiceMode::Off, 0}}" "$POLICY_HEADER" || { echo "FAIL: carOutput should default OFF"; exit 1; }
+grep -Fq "{\"liveParameters\", {ServiceMode::Off, 0}}" "$POLICY_HEADER" || { echo "FAIL: liveParameters should default OFF"; exit 1; }
 grep -Fq "service_policy_subscribes" "$POLICY_HEADER" || { echo "FAIL: missing service_policy_subscribes helper"; exit 1; }
-grep -Fq "telem_policies[i] = default_service_policy_for_name(TELEMETRY_SERVICES[i]);" "$BRIDGE_CPP" || { echo "FAIL: bridge should resolve per-service policy for each telemetry socket"; exit 1; }
-grep -Fq "if (!service_policy_subscribes(telem_policies[i])) continue;" "$BRIDGE_CPP" || { echo "FAIL: OFF services should not subscribe"; exit 1; }
+grep -Fq "service_policy_samples" "$POLICY_HEADER" || { echo "FAIL: missing service_policy_samples helper"; exit 1; }
+grep -Fq "telem_policies[i] = runtime_policy_for_index(i);" "$BRIDGE_CPP" || { echo "FAIL: bridge should resolve effective runtime policy per telemetry socket"; exit 1; }
+grep -Fq "const bool conflate = !service_policy_samples(telem_policies[i]);" "$BRIDGE_CPP" || { echo "FAIL: SAMPLE services should disable conflate for drain-to-latest reads"; exit 1; }
+grep -Fq "std::unique_ptr<Message> drained(sock->receive(true));" "$BRIDGE_CPP" || { echo "FAIL: bridge should drain queued SAMPLE telemetry messages"; exit 1; }
+grep -Fq "sampled_latest[telem_sock_idx].assign" "$BRIDGE_CPP" || { echo "FAIL: bridge should retain the latest drained SAMPLE payload"; exit 1; }
+grep -Fq "if (now < sampled_next_emit[i]) continue;" "$BRIDGE_CPP" || { echo "FAIL: bridge should emit SAMPLE telemetry on cadence"; exit 1; }
+grep -Fq "drainCount" "$BRIDGE_CPP" || { echo "FAIL: runtime stats should expose drainCount"; exit 1; }
+grep -Fq "runtime_debug_stats_path()" "$BRIDGE_CPP" || { echo "FAIL: runtime stats should be written to the runtime stats path"; exit 1; }
 
 echo "PASS: runtime debug policy contract checks passed"
