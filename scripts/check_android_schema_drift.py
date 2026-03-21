@@ -23,10 +23,22 @@ def _load_json(value):
     return value
 
 
+def _sorted_service(service: dict) -> dict:
+    return {
+        "file": service.get("file"),
+        "fields": {name: service.get("fields", {})[name] for name in sorted(service.get("fields", {}))},
+        "enums": {
+            enum_name: {name: service.get("enums", {}).get(enum_name, {})[name] for name in sorted(service.get("enums", {}).get(enum_name, {}))}
+            for enum_name in sorted(service.get("enums", {}))
+        },
+    }
+
+
 def load_contract(data):
     payload = _load_json(data)
     payload.setdefault("version", 1)
     payload.setdefault("services", {})
+    payload["services"] = {name: _sorted_service(payload["services"][name]) for name in sorted(payload["services"])}
     return payload
 
 
@@ -34,6 +46,15 @@ def load_ignores(data):
     payload = _load_json(data)
     payload.setdefault("version", 1)
     payload.setdefault("ignores", [])
+    payload["ignores"] = sorted(
+        payload["ignores"],
+        key=lambda item: (
+            item.get("upstream", "both"),
+            item.get("service", ""),
+            item.get("symbol", ""),
+            item.get("driftClass", ""),
+        ),
+    )
     return payload
 
 
@@ -47,7 +68,7 @@ def parse_schema_tree(root):
     for path in sorted(root.rglob("*.capnp")):
         relative = path.relative_to(root).as_posix()
         _parse_capnp_file(path, relative, services)
-    return {"services": services}
+    return {"services": {name: _sorted_service(services[name]) for name in sorted(services)}}
 
 
 def _parse_capnp_file(path: Path, relative: str, services: Dict[str, dict]) -> None:
@@ -168,6 +189,43 @@ def diff_contract(contract, upstream, ignores, label="upstream"):
     }
 
 
+def build_contract_candidate(upstream: dict, label: str) -> dict:
+    return {
+        "version": 1,
+        "generatedFrom": label,
+        "notes": "Candidate contract manifest generated from parsed upstream schema.",
+        "services": {name: _sorted_service(upstream["services"][name]) for name in sorted(upstream.get("services", {}))},
+    }
+
+
+def _safe_label(label: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-")
+    return safe or "upstream"
+
+
+def build_ignore_candidate(report):
+    label = report.get("label", "upstream")
+    ignores = []
+    seen = set()
+    for item in report.get("items", []):
+        key = (label, item["service"], item["symbol"], item["driftClass"])
+        if key in seen:
+            continue
+        seen.add(key)
+        ignores.append({
+            "upstream": label,
+            "service": item["service"],
+            "symbol": item["symbol"],
+            "driftClass": item["driftClass"],
+            "reason": "bootstrap review candidate from drift report",
+        })
+    return {
+        "version": 1,
+        "generatedFrom": label,
+        "notes": "Candidate ignore manifest generated from drift report for review.",
+        "ignores": ignores,
+    }
+
 def _build_parser():
     parser = argparse.ArgumentParser(description="Structured Android schema drift checker")
     parser.add_argument("--contract", default="android-schema/contract-manifest.json")
@@ -193,9 +251,16 @@ def main(argv: Iterable[str] | None = None) -> int:
             "upstreamRoot": str(args.upstream_root),
         }
     )
+
+    candidate_contract = build_contract_candidate(upstream, args.label)
+    candidate_ignore = build_ignore_candidate(report)
+    safe_label = _safe_label(args.label)
+
     Path("dist").mkdir(exist_ok=True)
-    out = Path("dist/android-schema-drift.json")
-    out.write_text(json.dumps(report, indent=2) + "\n")
+    Path("dist/android-schema-drift.json").write_text(json.dumps(report, indent=2) + "\n")
+    Path(f"dist/android-schema-drift-{safe_label}.json").write_text(json.dumps(report, indent=2) + "\n")
+    Path(f"dist/android-schema-contract-{safe_label}.json").write_text(json.dumps(candidate_contract, indent=2) + "\n")
+    Path(f"dist/android-schema-ignore-{safe_label}.json").write_text(json.dumps(candidate_ignore, indent=2) + "\n")
 
     summary = [
         f"### Android schema drift check ({args.label})",
@@ -203,6 +268,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"- Ignore manifest: `{args.ignore_manifest}`",
         f"- Upstream root: `{args.upstream_root}`",
         f"- Unignored drift count: `{report['unignoredCount']}`",
+        f"- Candidate contract artifact: `dist/android-schema-contract-{safe_label}.json`",
+        f"- Candidate ignore artifact: `dist/android-schema-ignore-{safe_label}.json`",
     ]
     if report["items"]:
         summary.append("")
@@ -217,7 +284,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             fh.write(text + "\n")
 
     if args.mode == "suggest":
-        print("\nSuggested next step: review candidate contract/ignore changes manually.")
+        print("\nCandidate contract manifest:")
+        print(json.dumps(candidate_contract, indent=2))
+        print("\nCandidate ignore manifest:")
+        print(json.dumps(candidate_ignore, indent=2))
         return 0
     if args.mode in ("warn", "report"):
         return 0

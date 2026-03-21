@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from scripts.check_android_schema_drift import diff_contract, load_contract, load_ignores, parse_schema_tree
+from scripts.check_android_schema_drift import build_ignore_candidate, diff_contract, load_contract, load_ignores, parse_schema_tree
 
 FIXTURES = Path(__file__).parent / "fixtures" / "schema_contract"
 
@@ -136,3 +136,47 @@ def test_source_reordering_keeps_same_normalized_keys():
     reordered = parse_schema_tree(FIXTURES / "reordered")
 
     assert base == reordered
+
+
+def test_ignore_candidate_is_generated_from_report_items():
+    candidate = build_ignore_candidate(
+        {
+            "label": "sunnypilot",
+            "items": [
+                {
+                    "service": "CarEvent",
+                    "symbol": "CarEvent",
+                    "driftClass": "service-added",
+                    "file": "cereal/car.capnp",
+                },
+                {
+                    "service": "CarState",
+                    "symbol": "accEnabled",
+                    "driftClass": "field-added",
+                    "file": "cereal/car.capnp",
+                },
+            ],
+        }
+    )
+
+    assert candidate == {
+        "version": 1,
+        "generatedFrom": "sunnypilot",
+        "notes": "Candidate ignore manifest generated from drift report for review.",
+        "ignores": [
+            {
+                "upstream": "sunnypilot",
+                "service": "CarEvent",
+                "symbol": "CarEvent",
+                "driftClass": "service-added",
+                "reason": "bootstrap review candidate from drift report",
+            },
+            {
+                "upstream": "sunnypilot",
+                "service": "CarState",
+                "symbol": "accEnabled",
+                "driftClass": "field-added",
+                "reason": "bootstrap review candidate from drift report",
+            },
+        ],
+    }

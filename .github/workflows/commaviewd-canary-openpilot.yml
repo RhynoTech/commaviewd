@@ -142,7 +142,7 @@ jobs:
       - name: Android schema drift check
         run: |
           set -euxo pipefail
-          ./scripts/check-android-schema-drift.sh --upstream-root "${{ github.workspace }}/openpilot-src" --label "${{ matrix.upstream_ref }}" --mode warn
+          ./scripts/check-android-schema-drift.sh --upstream-root "${{ github.workspace }}/openpilot-src" --label "${{ matrix.upstream_ref }}" --mode fail
 
 
       - name: Run commaviewd verification pipeline
