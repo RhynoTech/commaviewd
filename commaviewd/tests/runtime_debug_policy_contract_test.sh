@@ -35,38 +35,78 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-subscribe_block = re.search(
-    r'if \(include_telemetry\) \{\s*for \(int i = 0; i < NUM_TELEM; i\+\+\) \{.*?\n\s*\}\n\s*\}',
-    src,
-    re.S,
-)
-if not subscribe_block:
-    fail("missing telemetry subscribe setup block")
+def extract_brace_block(text: str, brace_start: int) -> tuple[str, int]:
+    depth = 0
+    for idx in range(brace_start, len(text)):
+        ch = text[idx]
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return text[brace_start + 1:idx], idx + 1
+    fail("unterminated brace block while checking runtime contract")
 
-subscribe = subscribe_block.group(0)
-if re.search(r'const bool conflate\s*=\s*!\s*service_policy_samples\(telem_policies\[i\]\)\s*;', subscribe):
-    fail("carState SAMPLE subscribe path should not use generic-only conflate logic")
-if "conflate" not in subscribe:
+
+def extract_block_after(marker: str) -> str:
+    start = src.find(marker)
+    if start < 0:
+        fail(f"missing block marker: {marker}")
+    brace = src.find('{', start)
+    if brace < 0:
+        fail(f"missing opening brace after marker: {marker}")
+    body, _ = extract_brace_block(src, brace)
+    return body
+
+
+subscribe = extract_block_after('if (include_telemetry)')
+conflate_match = re.search(r'const bool conflate\s*=\s*(.*?);', subscribe, re.S)
+if not conflate_match:
     fail("missing telemetry subscribe conflate calculation")
-if not re.search(r'car_state|carState', subscribe):
-    fail("carState SAMPLE subscribe path should have a dedicated special-case condition")
+conflate_expr = ' '.join(conflate_match.group(1).split())
+if conflate_expr == '!service_policy_samples(telem_policies[i])':
+    fail("carState SAMPLE subscribe path should not use generic-only conflate logic")
+if '!service_policy_samples(telem_policies[i])' not in conflate_expr:
+    fail("non-carState SAMPLE subscribe path should preserve existing conflate behavior")
+if not re.search(r'car_state|carState', conflate_expr):
+    fail("carState SAMPLE subscribe path should special-case carState")
+if 'true' not in conflate_expr:
+    fail("carState SAMPLE subscribe path should force conflate=true")
+if 'SubSocket::create(ctx, TELEMETRY_SERVICES[i], "127.0.0.1", conflate' not in subscribe:
+    fail("telemetry subscribe setup should pass the computed conflate flag into SubSocket::create")
 
-poll_block = re.search(
-    r'for \(auto\* sock : telem_ready\) \{.*?std::unique_ptr<Message> raw_msg',
-    src,
-    re.S,
-)
-if not poll_block:
+telemetry_runtime = extract_block_after('if (include_telemetry && telemetry_poller != nullptr)')
+loop_start = telemetry_runtime.find('for (auto* sock : telem_ready)')
+if loop_start < 0:
     fail("missing telemetry drain/send poll loop")
+loop_brace = telemetry_runtime.find('{', loop_start)
+if loop_brace < 0:
+    fail("missing telemetry drain/send poll loop body")
+poll, _ = extract_brace_block(telemetry_runtime, loop_brace)
 
-poll = poll_block.group(0)
-if not re.search(
-    r'if\s*\((?=[^)]*service_policy_samples\(telem_policies\[telem_sock_idx\]\))(?=[^)]*(?:car_state|carState))[^)]*\)',
-    poll,
-):
+carstate_branch = None
+for match in re.finditer(r'if\s*\((.*?)\)\s*\{', poll, re.S):
+    cond = ' '.join(match.group(1).split())
+    if not re.search(r'car_state|carState', cond):
+        continue
+    if 'service_policy_samples(telem_policies[telem_sock_idx])' not in cond and 'sample' not in cond.lower():
+        continue
+    brace_start = poll.find('{', match.end() - 1)
+    body, block_end = extract_brace_block(poll, brace_start)
+    if 'receive(true)' in body and '.assign(' in body:
+        carstate_branch = (cond, body, block_end)
+        break
+
+if carstate_branch is None:
     fail("carState SAMPLE path should use a dedicated latest-only drain branch")
-if not re.search(r'while\s*\(\s*true\s*\)\s*\{(?s:.*?)receive\s*\(\s*true\s*\)(?s:.*?)\.assign\s*\(', poll):
-    fail("carState SAMPLE path should retain the latest drained payload")
+
+_, carstate_body, carstate_end = carstate_branch
+if 'continue;' not in carstate_body and not re.search(
+    r'\A\s*else\s+if\s*\([^)]*service_policy_samples\(telem_policies\[telem_sock_idx\]\)',
+    poll[carstate_end:],
+    re.S,
+):
+    fail("carState SAMPLE path should not fall through into the generic sampled handler")
 PY
 }
 
