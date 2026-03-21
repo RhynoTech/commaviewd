@@ -3,6 +3,7 @@
 #include "policy.h"
 #include "router.h"
 #include "telemetry_stats.h"
+#include "telemetry_policy.h"
 /**
  * CommaView Unified Bridge (C++)
  *
@@ -45,6 +46,10 @@
 #include "cereal/gen/cpp/log.capnp.h"
 #include "cereal/messaging/messaging.h"
 #include "cereal/services.h"
+using commaview::telemetry::ServicePolicy;
+using commaview::telemetry::default_service_policy_for_name;
+using commaview::telemetry::service_policy_subscribes;
+
 
 static constexpr uint8_t MSG_VIDEO = 0x01;
 static constexpr uint8_t MSG_CONTROL = 0x03;
@@ -54,14 +59,15 @@ static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;
 static constexpr int PORT_DRIVER = 8202;
 
-// Parity profile: onroad-critical telemetry set, emitted at coalesced 20 Hz.
+// Runtime policy defaults favor only the services we currently trust on-road.
 static const char* TELEMETRY_SERVICES[] = {
   "carState", "selfdriveState", "deviceState", "liveCalibration", "radarState", "modelV2",
   "carControl", "carOutput", "liveParameters", "driverMonitoringState",
-  "driverStateV2", "onroadEvents", "roadCameraState"
+  "driverStateV2", "onroadEvents", "roadCameraState",
+  "alertDebug", "modelDataV2SP", "longitudinalPlanSP"
 };
-static constexpr int NUM_TELEM = 13;
-static constexpr int TELEMETRY_EMIT_MS_DEFAULT = 50;  // 20 Hz parity target
+static constexpr int NUM_TELEM = 16;
+static constexpr int TELEMETRY_EMIT_MS_DEFAULT = 50;  // 20 Hz base poll for PASS and future SAMPLE modes
 static int g_telemetry_emit_ms = TELEMETRY_EMIT_MS_DEFAULT;
 
 static const char* VIDEO_SERVICES_PROD[] = {
@@ -248,12 +254,14 @@ static void handle_client(int client_fd, const char* video_service, int port) {
     const size_t video_segment_size = queue_size_for_service(video_service);
     video_sock = SubSocket::create(ctx, video_service, "127.0.0.1", true, true, video_segment_size);
   }
-
   const bool include_telemetry = (port == PORT_ROAD || port == PORT_WIDE);
   SubSocket* telem_socks[NUM_TELEM] = {};
+  ServicePolicy telem_policies[NUM_TELEM] = {};
 
   if (include_telemetry) {
     for (int i = 0; i < NUM_TELEM; i++) {
+      telem_policies[i] = default_service_policy_for_name(TELEMETRY_SERVICES[i]);
+      if (!service_policy_subscribes(telem_policies[i])) continue;
       const size_t segment_size = queue_size_for_service(TELEMETRY_SERVICES[i]);
       telem_socks[i] = SubSocket::create(ctx, TELEMETRY_SERVICES[i], "127.0.0.1", true, true, segment_size);
     }
