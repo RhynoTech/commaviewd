@@ -70,10 +70,15 @@ detect_flavor() {
     printf '%s\n' "$preferred"
     return 0
   fi
-  printf '%s\n' 'openpilot'
+  return 1
 }
 
-flavor="$(detect_flavor)"
+if flavor="$(detect_flavor)"; then
+  flavor_detected=1
+else
+  flavor=""
+  flavor_detected=0
+fi
 patch="$PATCH_ROOT/$flavor/0001-hud-lite-export.patch"
 state="stale"
 status_scope="patch-installation"
@@ -89,6 +94,8 @@ fingerprint=""
 
 if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   state="missing-repo"; reason="upstream repo not found at $OP_ROOT"
+elif [ "$flavor_detected" -ne 1 ]; then
+  state="unknown-flavor"; reason="unable to determine supported HUD-lite patch flavor for $OP_ROOT"
 elif [ ! -f "$patch" ]; then
   state="missing-patch"; reason="missing HUD-lite patch asset for $flavor"
 else
