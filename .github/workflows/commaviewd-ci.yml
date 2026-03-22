@@ -5,14 +5,14 @@ on:
     branches: [master]
     paths:
       - 'commaviewd/**'
-      - 'android-schema/**'
-      - 'scripts/check-android-schema-drift.sh'
+      - 'comma4/**'
+      - 'tools/**'
       - '.github/workflows/commaviewd-ci.yml'
   pull_request:
     paths:
       - 'commaviewd/**'
-      - 'android-schema/**'
-      - 'scripts/check-android-schema-drift.sh'
+      - 'comma4/**'
+      - 'tools/**'
       - '.github/workflows/commaviewd-ci.yml'
   workflow_dispatch:
 
@@ -156,10 +156,14 @@ jobs:
           ref: ${{ matrix.target.upstream_ref }}
           path: openpilot-src
           submodules: recursive
-      - name: Android schema drift check
+      - name: HUD-lite patch applicability check
         run: |
           set -euxo pipefail
-          ./scripts/check-android-schema-drift.sh --upstream-root "${{ github.workspace }}/openpilot-src" --label "${{ matrix.target.name }}" --mode fail
+          mkdir -p dist
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/apply_hud_lite_patch.sh
+          cp "${{ github.workspace }}/comma4/run/hud-lite-status.json" dist/hud-lite-status.json
+          git -C "${{ github.workspace }}/openpilot-src" reset --hard -q HEAD
+          git -C "${{ github.workspace }}/openpilot-src" clean -fdq
 
 
       - name: Run commaviewd verification pipeline
@@ -191,8 +195,8 @@ jobs:
             if [[ -f dist/release-smoke-manifest.json ]]; then
               echo "- Release smoke: dist/release-smoke-manifest.json"
             fi
-            if [[ -f dist/android-schema-drift.json ]]; then
-              echo "- Android schema drift: dist/android-schema-drift.json"
+            if [[ -f dist/hud-lite-status.json ]]; then
+              echo "- HUD-lite status: dist/hud-lite-status.json"
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -208,7 +212,7 @@ jobs:
             dist/upstream-interface-manifest.json
             dist/binary-contract.json
             dist/release-smoke-manifest.json
-            dist/android-schema-drift.json
+            dist/hud-lite-status.json
             release/*/commaview-comma4-*.tar.gz
             release/*/commaview-comma4-*.tar.gz.sha256
           if-no-files-found: warn
