@@ -1,0 +1,12 @@
+Subject: [PATCH] placeholder HUD-lite export patch
+
+# Placeholder only for Task 1 scaffolding.
+# Source-of-truth upstream target:
+#   repo: /home/pear/tmp/sunnypilot-staging-ui
+#   branch: staging
+#   rev: 33a8902
+# Planned anchor files:
+#   - cereal/services.py
+#   - cereal/log.capnp or cereal/custom.capnp
+#   - selfdrive/ui/ui_state.py
+# Real patch content lands in Task 2.
