@@ -20,7 +20,7 @@ if [ "$is_onroad" = "1" ]; then
   exit 42
 fi
 
-if [ ! -d "$OP_ROOT/.git" ]; then
+if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "ERROR: upstream repo not found at $OP_ROOT" >&2
   exit 1
 fi

@@ -19,7 +19,7 @@ done
 mkdir -p "$(dirname "$STATE_JSON")" "$(dirname "$STATE_ENV")"
 
 flavor="openpilot"
-if [ -d "$OP_ROOT/.git" ]; then
+if git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   remote="$(git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true)"
   if printf "%s" "$remote" | grep -qi "sunnypilot"; then flavor="sunnypilot"; fi
 fi
@@ -34,7 +34,7 @@ struct_present=false
 publisher_present=false
 fingerprint=""
 
-if [ ! -d "$OP_ROOT/.git" ]; then
+if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   state="missing-repo"; reason="upstream repo not found at $OP_ROOT"; healthy=false; repair_needed=true
 elif [ ! -f "$patch" ]; then
   state="missing-patch"; reason="missing HUD-lite patch asset for $flavor"; healthy=false; repair_needed=true
