@@ -246,7 +246,7 @@ std::string runtime_debug_state_json() {
 }
 
 std::string default_hud_lite_status_json() {
-  return "{\"healthy\":false,\"repairNeeded\":true,\"state\":\"missing\",\"reason\":\"hud-lite status unavailable\"}";
+  return "{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"missing\",\"reason\":\"hud-lite status unavailable\"}";
 }
 
 std::string load_hud_lite_status_json() {
@@ -969,15 +969,15 @@ std::string hud_lite_status_response() {
   if (!body.empty()) return body;
   if (rc == 0) return load_hud_lite_status_json();
   const std::string msg = trim_copy(err);
-  return std::string("{\"healthy\":false,\"repairNeeded\":true,\"state\":\"error\",\"reason\":\"") + json_escape(msg.empty() ? "hud-lite verify failed" : msg) + "\"}";
+  return std::string("{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"error\",\"reason\":\"") + json_escape(msg.empty() ? "hud-lite verify failed" : msg) + "\"}";
 }
 
 std::string hud_lite_repair_response() {
   if (is_onroad()) {
-    return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"repair blocked while onroad\",\"status\":{\"healthy\":false,\"repairNeeded\":true,\"state\":\"onroad-blocked\",\"reason\":\"repair blocked while onroad\"}}";
+    return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"repair blocked while onroad\",\"status\":{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"onroad-blocked\",\"reason\":\"repair blocked while onroad\"}}";
   }
   if (!file_executable(kHudLiteApplyScript)) {
-    return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"hud-lite repair helper missing\",\"status\":{\"healthy\":false,\"repairNeeded\":true,\"state\":\"missing-helper\",\"reason\":\"hud-lite repair helper missing\"}}";
+    return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"hud-lite repair helper missing\",\"status\":{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"missing-helper\",\"reason\":\"hud-lite repair helper missing\"}}";
   }
   int rc = 0;
   std::string out;

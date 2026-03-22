@@ -41,7 +41,9 @@ run_ref() {
   }
 
   printf '%s\n' "$output"
-  grep -Fq "\"healthy\":true" <<<"$output" || fail "expected healthy=true"
+  grep -Fq "\"healthy\":false" <<<"$output" || fail "expected healthy=false for marker-only verification"
+grep -Fq "\"patchVerified\":true" <<<"$output" || fail "expected patchVerified=true"
+grep -Fq "\"statusScope\":\"patch-installation\"" <<<"$output" || fail "expected statusScope=patch-installation"
   grep -Fq "\"servicePresent\":true" <<<"$output" || fail "expected servicePresent=true"
   grep -Fq "\"structPresent\":true" <<<"$output" || fail "expected structPresent=true"
   grep -Fq "\"publisherPresent\":true" <<<"$output" || fail "expected publisherPresent=true"

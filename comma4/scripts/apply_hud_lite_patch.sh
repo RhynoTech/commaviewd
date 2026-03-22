@@ -14,7 +14,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-is_onroad="$(tr -d "\000\r\n" < /data/params/d/IsOnroad 2>/dev/null || echo 0)"
+is_onroad="$(cat /data/params/d/IsOnroad 2>/dev/null | tr -d "\000\r\n" || echo 0)"
 if [ "$is_onroad" = "1" ]; then
   echo "ERROR: HUD-lite patch apply blocked while onroad" >&2
   exit 42
@@ -25,9 +25,62 @@ if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 1
 fi
 
-flavor="openpilot"
-remote="$(git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true)"
-if printf "%s" "$remote" | grep -qi "sunnypilot"; then flavor="sunnypilot"; fi
+detect_flavor() {
+  local preferred=""
+  local remote=""
+  local flavor=""
+  local patch=""
+  local matches=""
+
+  if [ -f "$STATE_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$STATE_ENV" || true
+    if [ "${HUD_LITE_OP_ROOT:-}" = "$OP_ROOT" ] && [ -n "${HUD_LITE_FLAVOR:-}" ] && [ -f "$PATCH_ROOT/$HUD_LITE_FLAVOR/0001-hud-lite-export.patch" ]; then
+      printf '%s\n' "$HUD_LITE_FLAVOR"
+      return 0
+    fi
+  fi
+
+  remote="$(git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true)"
+  if printf '%s' "$remote" | grep -qi 'sunnypilot'; then
+    preferred='sunnypilot'
+  elif printf '%s' "$remote" | grep -qi 'openpilot'; then
+    preferred='openpilot'
+  fi
+
+  for flavor in openpilot sunnypilot; do
+    patch="$PATCH_ROOT/$flavor/0001-hud-lite-export.patch"
+    [ -f "$patch" ] || continue
+    if git -C "$OP_ROOT" apply --reverse --check "$patch" >/dev/null 2>&1 || \
+       git -C "$OP_ROOT" apply --check "$patch" >/dev/null 2>&1; then
+      matches="$matches $flavor"
+    fi
+  done
+
+  set -- $matches
+  if [ "$#" -eq 1 ]; then
+    printf '%s\n' "$1"
+    return 0
+  fi
+  if [ "$#" -gt 1 ] && [ -n "$preferred" ]; then
+    for flavor in "$@"; do
+      if [ "$flavor" = "$preferred" ]; then
+        printf '%s\n' "$preferred"
+        return 0
+      fi
+    done
+  fi
+  if [ -n "$preferred" ] && [ -f "$PATCH_ROOT/$preferred/0001-hud-lite-export.patch" ]; then
+    printf '%s\n' "$preferred"
+    return 0
+  fi
+  return 1
+}
+
+flavor="$(detect_flavor)" || {
+  echo "ERROR: unable to determine supported HUD-lite patch flavor for $OP_ROOT" >&2
+  exit 1
+}
 patch="$PATCH_ROOT/$flavor/0001-hud-lite-export.patch"
 [ -f "$patch" ] || { echo "ERROR: missing HUD-lite patch asset: $patch" >&2; exit 1; }
 
@@ -40,7 +93,7 @@ if ! git -C "$OP_ROOT" apply --reverse --check "$patch" >/dev/null 2>&1; then
   git -C "$OP_ROOT" apply "$patch"
 fi
 
-fingerprint="$(sha256sum "$patch" | awk "{print \$1}")"
+fingerprint="$(sha256sum "$patch" | awk '{print $1}')"
 mkdir -p "$(dirname "$STATE_ENV")"
 printf "HUD_LITE_FLAVOR=%s\nHUD_LITE_PATCH_SHA=%s\nHUD_LITE_OP_ROOT=%s\n" "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
 

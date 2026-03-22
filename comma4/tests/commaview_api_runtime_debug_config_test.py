@@ -6,16 +6,14 @@ DEFAULTS = REPO_ROOT / "comma4" / "runtime-debug.defaults.json"
 START_SH = REPO_ROOT / "comma4" / "start.sh"
 CONTROL_CPP = REPO_ROOT / "commaviewd" / "src" / "control_mode.cpp"
 
+
 def test_runtime_debug_defaults_match_policy_contract():
     data = json.loads(DEFAULTS.read_text())
     assert data["configVersion"] == 1
     assert data["instrumentationLevel"] == "standard"
     services = data["services"]
-    assert services["carState"] == {"mode": "sample", "sampleHz": 2}
-    assert services["selfdriveState"] == {"mode": "pass"}
-    assert services["deviceState"] == {"mode": "pass"}
-    for name in ['alertDebug', 'modelDataV2SP', 'longitudinalPlanSP', 'carControl', 'carOutput', 'liveParameters', 'driverMonitoringState', 'driverStateV2', 'onroadEvents', 'roadCameraState']:
-        assert services[name] == {"mode": "off"}
+    assert services == {"commaViewHudLite": {"mode": "pass"}}
+
 
 def test_start_script_seeds_and_exports_runtime_debug_paths():
     text = START_SH.read_text()
@@ -28,6 +26,7 @@ def test_start_script_seeds_and_exports_runtime_debug_paths():
     assert "COMMAVIEWD_RUNTIME_DEBUG_EFFECTIVE" in text
     assert "COMMAVIEWD_RUNTIME_STATS" in text
     assert "invalid runtime debug config JSON" in text
+
 
 def test_control_mode_routes_present_for_runtime_debug_config():
     text = CONTROL_CPP.read_text()
