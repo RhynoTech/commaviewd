@@ -87,14 +87,15 @@ When a user updates openpilot/sunnypilot, the patch may be overwritten.
 
 Approved behavior:
 - `commaviewd` install/upgrade records a patch fingerprint/version stamp
-- on startup/offroad preflight, `commaviewd` verifies that HUD-lite service definition + publisher are present and healthy
+- install/upgrade verification plus explicit status checks confirm that HUD-lite service definition + publisher are present and healthy
 - if patch is missing/stale:
   - telemetry is disabled
   - no raw fallback is used
   - repair is required
 
 ### Repair model
-- **Offroad:** auto-verify and auto-reapply patch if missing/stale
+- **Offroad:** verify/report patch health and allow explicit repair action
+- **Install/upgrade:** apply + verify patch lifecycle automatically during commaviewd maintenance steps
 - **Onroad:** never patch
 - **App device list card:** show `Repair HUD Export` action when repair is needed and safe to perform
 

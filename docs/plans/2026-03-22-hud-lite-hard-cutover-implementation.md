@@ -4,7 +4,7 @@
 
 **Goal:** Replace all direct subscription-based telemetry in `commaviewd` with a single UI-owned HUD-lite Cap'n Proto export, delivered through a small install-time openpilot/sunnypilot patchset, with strict no-fallback behavior when the export is missing.
 
-**Architecture:** `commaviewd` stops subscribing to raw telemetry services (`carState`, `controlsState`, `deviceState`, etc.) and instead consumes one HUD-lite service published from the on-device UI process using values already present in the UI's shared `SubMaster`. `commaviewd` keeps a single binary but splits video and HUD-lite telemetry into separate internal loops/threads. Patch lifecycle is managed by install/upgrade verification plus offroad auto-repair and an explicit app-side repair action.
+**Architecture:** `commaviewd` stops subscribing to raw telemetry services (`carState`, `controlsState`, `deviceState`, etc.) and instead consumes one HUD-lite service published from the on-device UI process using values already present in the UI's shared `SubMaster`. `commaviewd` keeps a single binary but splits video and HUD-lite telemetry into separate internal loops/threads. Patch lifecycle is managed by install/upgrade verification, explicit offroad health reporting, and an explicit app-side repair action.
 
 **Tech Stack:** C++ (`commaviewd`), install/upgrade shell scripts, patch files for openpilot/sunnypilot UI code, Android Kotlin app (`/home/pear/CommaView`), Cap'n Proto schema, comma4 runtime verification.
 

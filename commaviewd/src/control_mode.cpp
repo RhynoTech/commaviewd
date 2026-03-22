@@ -153,7 +153,7 @@ std::string runtime_version() {
 }
 
 std::string telemetry_mode() {
-  return "raw-only";
+  return "hud-lite-only";
 }
 
 bool write_file(const std::string& path, const std::string& value, mode_t mode = 0644) {

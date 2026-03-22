@@ -1,6 +1,8 @@
+diff --git a/cereal/custom.capnp b/cereal/custom.capnp
+index 5398626..184db29 100644
 --- a/cereal/custom.capnp
 +++ b/cereal/custom.capnp
-@@ -299,3 +299,15 @@
+@@ -484,3 +484,15 @@ struct CustomReserved18 @0xc86a3d38d13eb3ef {
  
  struct CustomReserved19 @0xa4f1eb3323f5f582 {
  }
@@ -16,9 +18,11 @@
 +  isMetric @7 :Bool;
 +  started @8 :Bool;
 +}
+diff --git a/cereal/log.capnp b/cereal/log.capnp
+index d14e149..b8da6de 100644
 --- a/cereal/log.capnp
 +++ b/cereal/log.capnp
-@@ -2593,6 +2593,7 @@
+@@ -2604,6 +2604,7 @@ struct Event {
  
      # UI services
      uiDebug @102 :UIDebug;
@@ -26,19 +30,23 @@
  
      # driving feedback
      userBookmark @93 :UserBookmark;
+diff --git a/cereal/services.py b/cereal/services.py
+index a2fd5f7..d8bd9be 100755
 --- a/cereal/services.py
 +++ b/cereal/services.py
-@@ -92,6 +92,7 @@
+@@ -104,6 +104,7 @@ _services: dict[str, tuple] = {
  
    # debug
    "uiDebug": (True, 0., 1),
 +  "commaViewHudLite": (True, 20., 10),
    "testJoystick": (True, 0.),
    "alertDebug": (True, 20., 5),
-   "roadEncodeData": (False, 20.),
+   "livestreamWideRoadEncodeIdx": (False, 20.),
+diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
+index f7a5d44..806e125 100644
 --- a/selfdrive/ui/ui_state.py
 +++ b/selfdrive/ui/ui_state.py
-@@ -55,6 +55,7 @@
+@@ -64,6 +64,7 @@ class UIState(UIStateSP):
      )
  
      self.prime_state = PrimeState()
@@ -46,15 +54,15 @@
  
      # UI Status tracking
      self.status: UIStatus = UIStatus.DISENGAGED
-@@ -86,6 +87,7 @@
+@@ -113,6 +114,7 @@ class UIState(UIStateSP):
      self.sm.update(0)
      self._update_state()
      self._update_status()
 +    self._publish_commaview_hud_lite()
+     if time.monotonic() - self._param_update_time > 5.0:
+       self.update_params()
      device.update()
- 
-   def _update_state(self) -> None:
-@@ -137,6 +139,25 @@
+@@ -178,6 +180,25 @@ class UIState(UIStateSP):
  
        self._started_prev = self.started
  
@@ -77,6 +85,6 @@
 +      hud.steeringPressed = bool(car_state.steeringPressed)
 +    self._commaview_hud_pm.send("commaViewHudLite", msg)
 +
-   def _update_params(self) -> None:
-     try:
-       self.is_metric = self.params.get_bool("IsMetric")
+   def update_params(self) -> None:
+     # For slower operations
+     # Update longitudinal control state

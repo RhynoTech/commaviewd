@@ -1,6 +1,8 @@
+diff --git a/cereal/custom.capnp b/cereal/custom.capnp
+index 3348e859e..9bc0b8f95 100644
 --- a/cereal/custom.capnp
 +++ b/cereal/custom.capnp
-@@ -69,3 +69,15 @@
+@@ -69,3 +69,15 @@ struct CustomReserved18 @0xc86a3d38d13eb3ef {
  
  struct CustomReserved19 @0xa4f1eb3323f5f582 {
  }
@@ -16,9 +18,11 @@
 +  isMetric @7 :Bool;
 +  started @8 :Bool;
 +}
+diff --git a/cereal/log.capnp b/cereal/log.capnp
+index 510ffe372..b0c13e4e1 100644
 --- a/cereal/log.capnp
 +++ b/cereal/log.capnp
-@@ -2603,6 +2603,7 @@
+@@ -2604,6 +2604,7 @@ struct Event {
  
      # UI services
      uiDebug @102 :UIDebug;
@@ -26,9 +30,11 @@
  
      # driving feedback
      userBookmark @93 :UserBookmark;
+diff --git a/cereal/services.py b/cereal/services.py
+index e7350acea..12aa1c1f0 100755
 --- a/cereal/services.py
 +++ b/cereal/services.py
-@@ -91,6 +91,7 @@
+@@ -91,6 +91,7 @@ _services: dict[str, tuple] = {
  
    # debug
    "uiDebug": (True, 0., 1),
@@ -36,9 +42,11 @@
    "testJoystick": (True, 0.),
    "alertDebug": (True, 20., 5),
    "livestreamWideRoadEncodeIdx": (False, 20.),
+diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
+index 30a656509..64ffb521b 100644
 --- a/selfdrive/ui/ui_state.py
 +++ b/selfdrive/ui/ui_state.py
-@@ -59,6 +59,7 @@
+@@ -59,6 +59,7 @@ class UIState:
      )
  
      self.prime_state = PrimeState()
@@ -46,7 +54,7 @@
  
      # UI Status tracking
      self.status: UIStatus = UIStatus.DISENGAGED
-@@ -108,6 +109,7 @@
+@@ -108,6 +109,7 @@ class UIState:
      self.sm.update(0)
      self._update_state()
      self._update_status()
@@ -54,7 +62,7 @@
      if time.monotonic() - self._param_update_time > 5.0:
        self.update_params()
      device.update()
-@@ -170,6 +172,25 @@
+@@ -170,6 +172,25 @@ class UIState:
  
        self._started_prev = self.started
  

@@ -32,6 +32,7 @@ repair_needed=false
 service_present=false
 struct_present=false
 publisher_present=false
+log_event_present=false
 fingerprint=""
 
 if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -43,12 +44,13 @@ else
   grep -Fq "commaViewHudLite" "$OP_ROOT/cereal/services.py" && service_present=true || true
   grep -Fq "struct CommaViewHudLite" "$OP_ROOT/cereal/custom.capnp" && struct_present=true || true
   grep -Fq "COMMAVIEW HUD-LITE EXPORT" "$OP_ROOT/selfdrive/ui/ui_state.py" && publisher_present=true || true
-  if ! $service_present || ! $struct_present || ! $publisher_present; then
+  grep -Fq "commaViewHudLite" "$OP_ROOT/cereal/log.capnp" && log_event_present=true || true
+  if ! $service_present || ! $struct_present || ! $publisher_present || ! $log_event_present; then
     state="repair-needed"; reason="HUD-lite export markers missing from upstream UI tree"; healthy=false; repair_needed=true
   fi
 fi
 
-json=$(printf "{\"healthy\":%s,\"repairNeeded\":%s,\"state\":\"%s\",\"reason\":\"%s\",\"flavor\":\"%s\",\"opRoot\":\"%s\",\"patch\":\"%s\",\"patchFingerprint\":\"%s\",\"servicePresent\":%s,\"structPresent\":%s,\"publisherPresent\":%s}" "$healthy" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$service_present" "$struct_present" "$publisher_present")
+json=$(printf "{\"healthy\":%s,\"repairNeeded\":%s,\"state\":\"%s\",\"reason\":\"%s\",\"flavor\":\"%s\",\"opRoot\":\"%s\",\"patch\":\"%s\",\"patchFingerprint\":\"%s\",\"servicePresent\":%s,\"structPresent\":%s,\"publisherPresent\":%s,\"logEventPresent\":%s}" "$healthy" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$service_present" "$struct_present" "$publisher_present" "$log_event_present")
 printf "%s\n" "$json" > "$STATE_JSON"
 if [ -n "$fingerprint" ]; then
   printf "HUD_LITE_FLAVOR=%s\nHUD_LITE_PATCH_SHA=%s\nHUD_LITE_OP_ROOT=%s\n" "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"

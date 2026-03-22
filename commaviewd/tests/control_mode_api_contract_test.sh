@@ -13,6 +13,7 @@ DOC_DEEP="$ROOT/docs/ai/telemetry-raw-only-deep-dive.md"
 [ -f "$DOC_DEEP" ] || { echo "FAIL: missing $DOC_DEEP"; exit 1; }
 
 grep -Fq "telemetryMode" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose telemetryMode"; exit 1; }
+grep -Fq "return \"hud-lite-only\";" "$CONTROL_CPP" || { echo "FAIL: telemetryMode should report hud-lite-only"; exit 1; }
 grep -Fq "persistedConfig" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose persistedConfig"; exit 1; }
 grep -Fq "effectiveConfig" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose effectiveConfig"; exit 1; }
 grep -Fq "runtimeStats" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose runtimeStats"; exit 1; }
