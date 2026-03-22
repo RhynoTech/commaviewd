@@ -120,6 +120,10 @@ required_files=(
   "uninstall.sh"
   "install_tailscale_runtime.sh"
   "runtime-debug.defaults.json"
+  "scripts/verify_hud_lite_patch.sh"
+  "scripts/apply_hud_lite_patch.sh"
+  "patches/openpilot/0001-hud-lite-export.patch"
+  "patches/sunnypilot/0001-hud-lite-export.patch"
 )
 
 fetch_missing_required_files() {
@@ -177,6 +181,10 @@ deploy_required_scripts() {
   copy_required_file "upgrade.sh" "$INSTALL_DIR/upgrade.sh"
   copy_required_file "start.sh" "$INSTALL_DIR/start.sh"
   copy_required_file "runtime-debug.defaults.json" "$INSTALL_DIR/runtime-debug.defaults.json" 644
+  copy_required_file "scripts/verify_hud_lite_patch.sh" "$INSTALL_DIR/scripts/verify_hud_lite_patch.sh"
+  copy_required_file "scripts/apply_hud_lite_patch.sh" "$INSTALL_DIR/scripts/apply_hud_lite_patch.sh"
+  copy_required_file "patches/openpilot/0001-hud-lite-export.patch" "$INSTALL_DIR/patches/openpilot/0001-hud-lite-export.patch" 644
+  copy_required_file "patches/sunnypilot/0001-hud-lite-export.patch" "$INSTALL_DIR/patches/sunnypilot/0001-hud-lite-export.patch" 644
   copy_required_file "stop.sh" "$INSTALL_DIR/stop.sh"
   copy_required_file "uninstall.sh" "$INSTALL_DIR/uninstall.sh"
   copy_required_file "install_tailscale_runtime.sh" "$INSTALL_DIR/tailscale/install_tailscale_runtime.sh"
@@ -347,6 +355,13 @@ tar -xzf "$tmpdir/$ASSET_NAME" -C "$INSTALL_DIR" --strip-components=1
 deploy_required_scripts
 ensure_api_auth_token
 ensure_tailscale_runtime_best_effort
+echo "Applying hud-lite export patch lifecycle..."
+if [ -x "$INSTALL_DIR/scripts/apply_hud_lite_patch.sh" ]; then
+  COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/apply_hud_lite_patch.sh"
+else
+  echo "ERROR: missing hud-lite patch apply helper" >&2
+  exit 1
+fi
 
 if [ ! -f "$INSTALL_DIR/commaviewd" ]; then
   echo "ERROR: bundle missing $INSTALL_DIR/commaviewd" >&2
@@ -383,6 +398,7 @@ echo "=== CommaView ${VERSION} installed ==="
 echo "  Source:      ${BASE_URL}/${ASSET_NAME}"
 echo "  Binary:      $INSTALL_DIR/commaviewd ($BINARY_SIZE)"
 echo "  Runtime:     commaviewd dual-mode (bridge + control)"
+echo "  HUD-lite:    install-time patch lifecycle enforced"
 echo "  Policy:      tailscale forced down onroad"
 if [ "$ENABLE_TAILSCALE" = "1" ]; then
   echo "  Tailscale:   opt-in flow complete (see /data/params/d/CommaViewTailscaleEnabled)"

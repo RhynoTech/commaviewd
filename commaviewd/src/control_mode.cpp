@@ -41,6 +41,9 @@ constexpr int kDefaultApiPort = 5002;
 constexpr const char* kVersionFile = "/data/commaview/VERSION";
 constexpr const char* kPairingScheme = "commaview://pair";
 constexpr int kPairingCodeTtlSec = 300;
+constexpr const char* kHudLiteStatusFile = "/data/commaview/run/hud-lite-status.json";
+constexpr const char* kHudLiteApplyScript = "/data/commaview/scripts/apply_hud_lite_patch.sh";
+constexpr const char* kHudLiteVerifyScript = "/data/commaview/scripts/verify_hud_lite_patch.sh";
 
 struct TailscaleSnapshot {
   bool enabled = false;
@@ -242,6 +245,15 @@ std::string runtime_debug_state_json() {
   return out.str();
 }
 
+std::string default_hud_lite_status_json() {
+  return "{\"healthy\":false,\"repairNeeded\":true,\"state\":\"missing\",\"reason\":\"hud-lite status unavailable\"}";
+}
+
+std::string load_hud_lite_status_json() {
+  const std::string raw = trim_copy(read_file_raw(kHudLiteStatusFile));
+  return raw.empty() ? default_hud_lite_status_json() : raw;
+}
+
 std::string runtime_status_json() {
   const std::string version = runtime_version();
   const std::string telemetryMode = telemetry_mode();
@@ -253,6 +265,7 @@ std::string runtime_status_json() {
   out << "\"version\":\"" << json_escape(version) << "\",";
   out << "\"api_port\":" << kDefaultApiPort << ",";
   out << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\",";
+  out << "\"hudLite\":" << load_hud_lite_status_json() << ",";
   out << "\"tailscale\":" << tailscale_status() << ",";
   out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
   out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true) << ",";
@@ -942,6 +955,48 @@ commaview::api::HttpResponse make_json(int code, const std::string& body) {
 
 }  // namespace
 
+std::string hud_lite_status_response() {
+  if (!file_executable(kHudLiteVerifyScript)) {
+    return load_hud_lite_status_json();
+  }
+  int rc = 0;
+  std::string out;
+  std::string err;
+  if (!run_command({kHudLiteVerifyScript, "--json"}, &rc, &out, &err)) {
+    return load_hud_lite_status_json();
+  }
+  const std::string body = trim_copy(out);
+  if (!body.empty()) return body;
+  if (rc == 0) return load_hud_lite_status_json();
+  const std::string msg = trim_copy(err);
+  return std::string("{\"healthy\":false,\"repairNeeded\":true,\"state\":\"error\",\"reason\":\"") + json_escape(msg.empty() ? "hud-lite verify failed" : msg) + "\"}";
+}
+
+std::string hud_lite_repair_response() {
+  if (is_onroad()) {
+    return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"repair blocked while onroad\",\"status\":{\"healthy\":false,\"repairNeeded\":true,\"state\":\"onroad-blocked\",\"reason\":\"repair blocked while onroad\"}}";
+  }
+  if (!file_executable(kHudLiteApplyScript)) {
+    return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"hud-lite repair helper missing\",\"status\":{\"healthy\":false,\"repairNeeded\":true,\"state\":\"missing-helper\",\"reason\":\"hud-lite repair helper missing\"}}";
+  }
+  int rc = 0;
+  std::string out;
+  std::string err;
+  if (!run_command({kHudLiteApplyScript}, &rc, &out, &err)) {
+    const std::string msg = trim_copy(err);
+    return std::string("{\"ok\":false,\"repairNeeded\":true,\"error\":\"") + json_escape(msg.empty() ? "hud-lite repair failed" : msg) + "\",\"status\":" + load_hud_lite_status_json() + "}";
+  }
+  std::string status = trim_copy(out);
+  if (status.empty()) status = load_hud_lite_status_json();
+  std::ostringstream resp;
+  resp << "{\"ok\":" << (rc == 0 ? "true" : "false") << ",\"repairNeeded\":" << (rc == 0 ? "false" : "true") << ",\"status\":" << status;
+  if (rc != 0) {
+    resp << ",\"error\":\"" << json_escape(trim_copy(err).empty() ? "hud-lite repair failed" : trim_copy(err)) << "\"";
+  }
+  resp << "}";
+  return resp.str();
+}
+
 int run_control_mode(int argc, char* argv[]) {
   int port = kDefaultApiPort;
   for (int i = 2; i < argc; i++) {
@@ -977,6 +1032,9 @@ int run_control_mode(int argc, char* argv[]) {
       }
       if (req.path == "/commaview/status") {
         return make_json(200, runtime_status_json());
+      }
+      if (req.path == "/commaview/hud-lite/status") {
+        return make_json(200, hud_lite_status_response());
       }
       if (req.path == "/commaview/runtime-debug/config") {
         return make_json(200, runtime_debug_state_json());
@@ -1021,7 +1079,11 @@ int run_control_mode(int argc, char* argv[]) {
         int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
         return make_json(code, body);
       }
-
+      if (req.path == "/commaview/hud-lite/repair") {
+        std::string body = hud_lite_repair_response();
+        int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
+        return make_json(code, body);
+      }
       if (req.path == "/tailscale/enable") {
         std::string body = tailscale_set_enabled(true);
         int code = body.find("\"ok\":false") != std::string::npos ? 500 : 200;
