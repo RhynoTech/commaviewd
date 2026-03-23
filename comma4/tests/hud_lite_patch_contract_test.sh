@@ -2,19 +2,20 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+OPENPILOT_PATCH="$REPO_ROOT/comma4/patches/openpilot/0001-commaview-ui-export-v2.patch"
+SUNNYPILOT_PATCH="$REPO_ROOT/comma4/patches/sunnypilot/0001-commaview-ui-export-v2.patch"
 
 fail() {
   echo "FAIL: $1" >&2
   exit 1
 }
 
-[[ -f "$REPO_ROOT/comma4/patches/openpilot/0001-hud-lite-export.patch" ]] || fail "missing openpilot HUD-lite patch"
-[[ -f "$REPO_ROOT/comma4/patches/sunnypilot/0001-hud-lite-export.patch" ]] || fail "missing sunnypilot HUD-lite patch"
-grep -Fqi "hud-lite" "$REPO_ROOT/comma4/install.sh" || fail "install path should manage HUD-lite patch lifecycle"
-grep -Fqi "hud-lite" "$REPO_ROOT/comma4/upgrade.sh" || fail "upgrade path should manage HUD-lite patch lifecycle"
-grep -Fq "cereal/log.capnp" "$REPO_ROOT/comma4/scripts/verify_hud_lite_patch.sh" || fail "verify helper should check cereal/log.capnp HUD-lite event wiring"
-grep -Fq 'state="unknown-flavor"' "$REPO_ROOT/comma4/scripts/verify_hud_lite_patch.sh" || fail "verify helper should surface unknown flavor instead of guessing"
-grep -Fq "printf '%s\n' 'openpilot'" "$REPO_ROOT/comma4/scripts/verify_hud_lite_patch.sh" && fail "verify helper should not silently default to openpilot flavor"
-grep -Eqi "hud[-_ ]lite|hudLite" "$REPO_ROOT/commaviewd/src/control_mode.cpp" || fail "control mode should expose HUD-lite health or repair status"
+for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
+  [[ -f "$patch" ]] || fail "missing patch $patch"
+  grep -Fq 'commaViewControl' "$patch" || fail "$patch missing control service markers"
+  grep -Fq 'commaViewScene' "$patch" || fail "$patch missing scene service markers"
+  grep -Fq 'commaViewStatus' "$patch" || fail "$patch missing status service markers"
+  grep -Fq 'commaview.capnp' "$patch" || fail "$patch missing dedicated commaview schema wiring"
+done
 
-echo "PASS: HUD-lite patch lifecycle contract present"
+echo "PASS: direct v2 UI export patch contract present"
