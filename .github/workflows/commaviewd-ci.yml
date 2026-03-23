@@ -156,12 +156,13 @@ jobs:
           ref: ${{ matrix.target.upstream_ref }}
           path: openpilot-src
           submodules: recursive
-      - name: HUD-lite patch applicability check
+      - name: Direct v2 onroad UI export patch applicability check
         run: |
           set -euxo pipefail
           mkdir -p dist
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/apply_hud_lite_patch.sh
-          cp "${{ github.workspace }}/comma4/run/hud-lite-status.json" dist/hud-lite-status.json
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/apply_onroad_ui_export_patch.sh
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/verify_onroad_ui_export_patch.sh --json >/dev/null
+          cp "${{ github.workspace }}/comma4/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
           git -C "${{ github.workspace }}/openpilot-src" reset --hard -q HEAD
           git -C "${{ github.workspace }}/openpilot-src" clean -fdq
 
@@ -195,8 +196,8 @@ jobs:
             if [[ -f dist/release-smoke-manifest.json ]]; then
               echo "- Release smoke: dist/release-smoke-manifest.json"
             fi
-            if [[ -f dist/hud-lite-status.json ]]; then
-              echo "- HUD-lite status: dist/hud-lite-status.json"
+            if [[ -f dist/onroad-ui-export-status.json ]]; then
+              echo "- Onroad UI export status: dist/onroad-ui-export-status.json"
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -212,7 +213,7 @@ jobs:
             dist/upstream-interface-manifest.json
             dist/binary-contract.json
             dist/release-smoke-manifest.json
-            dist/hud-lite-status.json
+            dist/onroad-ui-export-status.json
             release/*/commaview-comma4-*.tar.gz
             release/*/commaview-comma4-*.tar.gz.sha256
           if-no-files-found: warn

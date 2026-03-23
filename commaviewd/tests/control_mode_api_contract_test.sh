@@ -13,7 +13,7 @@ DOC_DEEP="$ROOT/docs/ai/telemetry-raw-only-deep-dive.md"
 [ -f "$DOC_DEEP" ] || { echo "FAIL: missing $DOC_DEEP"; exit 1; }
 
 grep -Fq "telemetryMode" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose telemetryMode"; exit 1; }
-grep -Fq "return \"hud-lite-only\";" "$CONTROL_CPP" || { echo "FAIL: telemetryMode should report hud-lite-only"; exit 1; }
+grep -Fq "return \"direct-v2-ui-export\";" "$CONTROL_CPP" || { echo "FAIL: telemetryMode should report direct-v2-ui-export"; exit 1; }
 grep -Fq "persistedConfig" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose persistedConfig"; exit 1; }
 grep -Fq "effectiveConfig" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose effectiveConfig"; exit 1; }
 grep -Fq "runtimeStats" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose runtimeStats"; exit 1; }
@@ -21,6 +21,9 @@ grep -Fq "configVersion" "$CONTROL_CPP" || { echo "FAIL: /commaview/status shoul
 grep -Fq "configHash" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose configHash"; exit 1; }
 grep -Fq "warnings" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose warnings"; exit 1; }
 grep -Fq "safeFallback" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose safeFallback state"; exit 1; }
+grep -Fq '\"onroadUiExport\":' "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose onroadUiExport"; exit 1; }
+grep -Fq "/commaview/onroad-ui-export/status" "$CONTROL_CPP" || { echo "FAIL: missing /commaview/onroad-ui-export/status route"; exit 1; }
+grep -Fq "/commaview/onroad-ui-export/repair" "$CONTROL_CPP" || { echo "FAIL: missing /commaview/onroad-ui-export/repair route"; exit 1; }
 grep -Fq '/commaview/runtime-debug/config' "$CONTROL_CPP" || { echo "FAIL: missing /commaview/runtime-debug/config route"; exit 1; }
 grep -Fq '/commaview/runtime-debug/defaults' "$CONTROL_CPP" || { echo "FAIL: missing /commaview/runtime-debug/defaults route"; exit 1; }
 grep -Fq '/commaview/runtime-debug/apply' "$CONTROL_CPP" || { echo "FAIL: missing /commaview/runtime-debug/apply route"; exit 1; }

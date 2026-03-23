@@ -106,16 +106,16 @@ if ! curl -fL --retry 3 --retry-delay 1 -o "$install_script" "$INSTALL_SCRIPT_UR
 fi
 chmod +x "$install_script"
 
-HUD_LITE_VERIFY="/data/commaview/scripts/verify_hud_lite_patch.sh"
+ONROAD_UI_EXPORT_VERIFY="/data/commaview/scripts/verify_onroad_ui_export_patch.sh"
 echo "Running installer for ${TAG}"
 COMMAVIEWD_RELEASE_REPO="$GITHUB_REPO" \
 COMMAVIEWD_ASSET_NAME="$ASSET_NAME" \
 COMMAVIEWD_BASE_URL="$BASE_URL" \
 COMMAVIEWD_INSTALLER_REF="$TAG" \
 bash "$install_script"
-if [ -x "$HUD_LITE_VERIFY" ]; then
-  echo "Verifying hud-lite export patch..."
-  COMMAVIEWD_INSTALL_DIR="/data/commaview" "$HUD_LITE_VERIFY" --json
+if [ -x "$ONROAD_UI_EXPORT_VERIFY" ]; then
+  echo "Verifying direct v2 onroad UI export patch..."
+  COMMAVIEWD_INSTALL_DIR="/data/commaview" "$ONROAD_UI_EXPORT_VERIFY" --json
 fi
 
 if [ -x /data/commaview/start.sh ]; then

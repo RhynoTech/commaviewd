@@ -41,9 +41,9 @@ constexpr int kDefaultApiPort = 5002;
 constexpr const char* kVersionFile = "/data/commaview/VERSION";
 constexpr const char* kPairingScheme = "commaview://pair";
 constexpr int kPairingCodeTtlSec = 300;
-constexpr const char* kHudLiteStatusFile = "/data/commaview/run/hud-lite-status.json";
-constexpr const char* kHudLiteApplyScript = "/data/commaview/scripts/apply_hud_lite_patch.sh";
-constexpr const char* kHudLiteVerifyScript = "/data/commaview/scripts/verify_hud_lite_patch.sh";
+constexpr const char* kOnroadUiExportStatusFile = "/data/commaview/run/onroad-ui-export-status.json";
+constexpr const char* kOnroadUiExportApplyScript = "/data/commaview/scripts/apply_onroad_ui_export_patch.sh";
+constexpr const char* kOnroadUiExportVerifyScript = "/data/commaview/scripts/verify_onroad_ui_export_patch.sh";
 
 struct TailscaleSnapshot {
   bool enabled = false;
@@ -153,7 +153,7 @@ std::string runtime_version() {
 }
 
 std::string telemetry_mode() {
-  return "hud-lite-only";
+  return "direct-v2-ui-export";
 }
 
 bool write_file(const std::string& path, const std::string& value, mode_t mode = 0644) {
@@ -245,13 +245,13 @@ std::string runtime_debug_state_json() {
   return out.str();
 }
 
-std::string default_hud_lite_status_json() {
-  return "{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"missing\",\"reason\":\"hud-lite status unavailable\"}";
+std::string default_onroad_ui_export_status_json() {
+  return "{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"missing\",\"reason\":\"onroad UI export status unavailable\"}";
 }
 
-std::string load_hud_lite_status_json() {
-  const std::string raw = trim_copy(read_file_raw(kHudLiteStatusFile));
-  return raw.empty() ? default_hud_lite_status_json() : raw;
+std::string load_onroad_ui_export_status_json() {
+  const std::string raw = trim_copy(read_file_raw(kOnroadUiExportStatusFile));
+  return raw.empty() ? default_onroad_ui_export_status_json() : raw;
 }
 
 std::string runtime_status_json() {
@@ -265,7 +265,7 @@ std::string runtime_status_json() {
   out << "\"version\":\"" << json_escape(version) << "\",";
   out << "\"api_port\":" << kDefaultApiPort << ",";
   out << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\",";
-  out << "\"hudLite\":" << load_hud_lite_status_json() << ",";
+  out << "\"onroadUiExport\":" << load_onroad_ui_export_status_json() << ",";
   out << "\"tailscale\":" << tailscale_status() << ",";
   out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
   out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true) << ",";
@@ -955,43 +955,43 @@ commaview::api::HttpResponse make_json(int code, const std::string& body) {
 
 }  // namespace
 
-std::string hud_lite_status_response() {
-  if (!file_executable(kHudLiteVerifyScript)) {
-    return load_hud_lite_status_json();
+std::string onroad_ui_export_status_response() {
+  if (!file_executable(kOnroadUiExportVerifyScript)) {
+    return load_onroad_ui_export_status_json();
   }
   int rc = 0;
   std::string out;
   std::string err;
-  if (!run_command({kHudLiteVerifyScript, "--json"}, &rc, &out, &err)) {
-    return load_hud_lite_status_json();
+  if (!run_command({kOnroadUiExportVerifyScript, "--json"}, &rc, &out, &err)) {
+    return load_onroad_ui_export_status_json();
   }
   const std::string body = trim_copy(out);
   if (!body.empty()) return body;
-  if (rc == 0) return load_hud_lite_status_json();
+  if (rc == 0) return load_onroad_ui_export_status_json();
   const std::string msg = trim_copy(err);
-  return std::string("{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"error\",\"reason\":\"") + json_escape(msg.empty() ? "hud-lite verify failed" : msg) + "\"}";
+  return std::string("{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"error\",\"reason\":\"") + json_escape(msg.empty() ? "onroad UI export verify failed" : msg) + "\"}";
 }
 
-std::string hud_lite_repair_response() {
+std::string onroad_ui_export_repair_response() {
   if (is_onroad()) {
     return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"repair blocked while onroad\",\"status\":{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"onroad-blocked\",\"reason\":\"repair blocked while onroad\"}}";
   }
-  if (!file_executable(kHudLiteApplyScript)) {
-    return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"hud-lite repair helper missing\",\"status\":{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"missing-helper\",\"reason\":\"hud-lite repair helper missing\"}}";
+  if (!file_executable(kOnroadUiExportApplyScript)) {
+    return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"onroad UI export repair helper missing\",\"status\":{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"missing-helper\",\"reason\":\"onroad UI export repair helper missing\"}}";
   }
   int rc = 0;
   std::string out;
   std::string err;
-  if (!run_command({kHudLiteApplyScript}, &rc, &out, &err)) {
+  if (!run_command({kOnroadUiExportApplyScript}, &rc, &out, &err)) {
     const std::string msg = trim_copy(err);
-    return std::string("{\"ok\":false,\"repairNeeded\":true,\"error\":\"") + json_escape(msg.empty() ? "hud-lite repair failed" : msg) + "\",\"status\":" + load_hud_lite_status_json() + "}";
+    return std::string("{\"ok\":false,\"repairNeeded\":true,\"error\":\"") + json_escape(msg.empty() ? "onroad UI export repair failed" : msg) + "\",\"status\":" + load_onroad_ui_export_status_json() + "}";
   }
   std::string status = trim_copy(out);
-  if (status.empty()) status = load_hud_lite_status_json();
+  if (status.empty()) status = load_onroad_ui_export_status_json();
   std::ostringstream resp;
   resp << "{\"ok\":" << (rc == 0 ? "true" : "false") << ",\"repairNeeded\":" << (rc == 0 ? "false" : "true") << ",\"status\":" << status;
   if (rc != 0) {
-    resp << ",\"error\":\"" << json_escape(trim_copy(err).empty() ? "hud-lite repair failed" : trim_copy(err)) << "\"";
+    resp << ",\"error\":\"" << json_escape(trim_copy(err).empty() ? "onroad UI export repair failed" : trim_copy(err)) << "\"";
   }
   resp << "}";
   return resp.str();
@@ -1033,8 +1033,8 @@ int run_control_mode(int argc, char* argv[]) {
       if (req.path == "/commaview/status") {
         return make_json(200, runtime_status_json());
       }
-      if (req.path == "/commaview/hud-lite/status") {
-        return make_json(200, hud_lite_status_response());
+      if (req.path == "/commaview/onroad-ui-export/status") {
+        return make_json(200, onroad_ui_export_status_response());
       }
       if (req.path == "/commaview/runtime-debug/config") {
         return make_json(200, runtime_debug_state_json());
@@ -1079,8 +1079,8 @@ int run_control_mode(int argc, char* argv[]) {
         int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
         return make_json(code, body);
       }
-      if (req.path == "/commaview/hud-lite/repair") {
-        std::string body = hud_lite_repair_response();
+      if (req.path == "/commaview/onroad-ui-export/repair") {
+        std::string body = onroad_ui_export_repair_response();
         int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
         return make_json(code, body);
       }
