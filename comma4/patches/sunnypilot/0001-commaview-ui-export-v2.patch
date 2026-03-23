@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..c1c3930
 --- /dev/null
 +++ b/cereal/commaview.capnp
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,84 @@
 +using Cxx = import "./include/c++.capnp";
 +$Cxx.namespace("cereal");
 +
@@ -22,12 +22,71 @@ index 0000000..c1c3930
 +  started @9 :Bool;
 +}
 +
++struct CommaViewLead {
++  dRel @0 :Float32;
++  yRel @1 :Float32;
++  vRel @2 :Float32;
++  aRel @3 :Float32;
++  status @4 :Bool;
++}
++
++struct CommaViewPath3f {
++  x @0 :List(Float32);
++  y @1 :List(Float32);
++  z @2 :List(Float32);
++}
++
++struct CommaViewLaneLine {
++  points @0 :CommaViewPath3f;
++  prob @1 :Float32;
++  std @2 :Float32;
++}
++
++struct CommaViewRoadEdge {
++  points @0 :CommaViewPath3f;
++  std @1 :Float32;
++}
++
++struct CommaViewCalibration {
++  rpyCalib @0 :List(Float32);
++  height @1 :List(Float32);
++  calStatus @2 :UInt16;
++  calPerc @3 :UInt16;
++}
++
 +struct CommaViewScene {
 +  exportVersion @0 :UInt16;
++  frameId @1 :UInt32;
++  frameIdExtra @2 :UInt32;
++  frameAge @3 :UInt32;
++  frameDropPerc @4 :Float32;
++  timestampEof @5 :UInt64;
++  laneLines @6 :List(CommaViewLaneLine);
++  roadEdges @7 :List(CommaViewRoadEdge);
++  position @8 :CommaViewPath3f;
++  leadOne @9 :CommaViewLead;
++  leadTwo @10 :CommaViewLead;
++  calibration @11 :CommaViewCalibration;
 +}
 +
 +struct CommaViewStatus {
 +  exportVersion @0 :UInt16;
++  enabled @1 :Bool;
++  active @2 :Bool;
++  engageable @3 :Bool;
++  alertText1 @4 :Text;
++  alertText2 @5 :Text;
++  alertType @6 :Text;
++  alertStatus @7 :UInt16;
++  alertSize @8 :UInt16;
++  faceDetected @9 :Bool;
++  isDistracted @10 :Bool;
++  isRhd @11 :Bool;
++  poseYawOffset @12 :Float32;
++  posePitchOffset @13 :Float32;
++  poseYawValidCount @14 :UInt16;
++  posePitchValidCount @15 :UInt16;
++  isLowStd @16 :Bool;
 +}
 diff --git a/cereal/log.capnp b/cereal/log.capnp
 index d14e149..5e52057 100644
