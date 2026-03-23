@@ -16,6 +16,16 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   grep -Fq 'commaViewScene' "$patch" || fail "$patch missing scene service markers"
   grep -Fq 'commaViewStatus' "$patch" || fail "$patch missing status service markers"
   grep -Fq 'commaview.capnp' "$patch" || fail "$patch missing dedicated commaview schema wiring"
+  grep -Fq 'scene.frameId = int(model.frameId)' "$patch" || fail "$patch missing scene frameId export"
+  grep -Fq 'scene.frameDropPerc = float(model.frameDropPerc)' "$patch" || fail "$patch missing scene frameDropPerc export"
+  grep -Fq 'scene.timestampEof = int(model.timestampEof)' "$patch" || fail "$patch missing scene timestamp export"
+  grep -Fq 'scene.calibration.calPerc = int(live_calibration.calPerc)' "$patch" || fail "$patch missing scene calibration export"
+  grep -Fq 'status.engageable = bool(selfdrive_state.engageable)' "$patch" || fail "$patch missing status engageable export"
+  grep -Fq 'status.alertText1 = str(selfdrive_state.alertText1)' "$patch" || fail "$patch missing status alertText1 export"
+  grep -Fq 'status.alertType = str(selfdrive_state.alertType)' "$patch" || fail "$patch missing status alertType export"
+  grep -Fq 'status.isDistracted = bool(driver_monitoring.isDistracted)' "$patch" || fail "$patch missing DM distraction export"
+  grep -Fq 'status.poseYawValidCount = int(driver_monitoring.poseYawValidCount)' "$patch" || fail "$patch missing DM yaw count export"
+  grep -Fq 'status.isLowStd = bool(driver_monitoring.isLowStd)' "$patch" || fail "$patch missing DM low-std export"
 done
 
 echo "PASS: direct v2 UI export patch contract present"

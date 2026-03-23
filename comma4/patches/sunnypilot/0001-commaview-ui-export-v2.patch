@@ -150,10 +150,24 @@ index f7a5d44..c1db288 100644
      if time.monotonic() - self._param_update_time > 5.0:
        self.update_params()
      device.update()
-@@ -178,6 +186,36 @@ class UIState(UIStateSP):
+@@ -178,6 +186,101 @@ class UIState(UIStateSP):
  
        self._started_prev = self.started
  
++  @staticmethod
++  def _copy_commaview_path(target, source) -> None:
++    target.x = [float(v) for v in source.x]
++    target.y = [float(v) for v in source.y]
++    target.z = [float(v) for v in source.z]
++
++  @staticmethod
++  def _copy_commaview_lead(target, source) -> None:
++    target.dRel = float(source.dRel)
++    target.yRel = float(source.yRel)
++    target.vRel = float(source.vRel)
++    target.aRel = float(source.aRel)
++    target.status = bool(source.status)
++
 +  def _publish_commaview_control(self) -> None:
 +    # COMMAVIEW UI EXPORT V2
 +    msg = messaging.new_message("commaViewControl")
@@ -176,12 +190,63 @@ index f7a5d44..c1db288 100644
 +
 +  def _publish_commaview_scene(self) -> None:
 +    msg = messaging.new_message("commaViewScene")
-+    msg.commaViewScene.exportVersion = 2
++    scene = msg.commaViewScene
++    scene.exportVersion = 2
++    if self.sm.recv_frame["modelV2"] >= self.started_frame:
++      model = self.sm["modelV2"]
++      radar_state = self.sm["radarState"]
++      live_calibration = self.sm["liveCalibration"]
++      scene.frameId = int(model.frameId)
++      scene.frameIdExtra = int(model.frameIdExtra)
++      scene.frameAge = int(model.frameAge)
++      scene.frameDropPerc = float(model.frameDropPerc)
++      scene.timestampEof = int(model.timestampEof)
++      scene.init('laneLines', len(model.laneLines))
++      for idx, model_lane_line in enumerate(model.laneLines):
++        lane_line = scene.laneLines[idx]
++        self._copy_commaview_path(lane_line.points, model_lane_line)
++        lane_line.prob = float(model.laneLineProbs[idx] if idx < len(model.laneLineProbs) else 0.0)
++        lane_line.std = float(model.laneLineStds[idx] if idx < len(model.laneLineStds) else 0.0)
++      scene.init('roadEdges', len(model.roadEdges))
++      for idx, model_road_edge in enumerate(model.roadEdges):
++        road_edge = scene.roadEdges[idx]
++        self._copy_commaview_path(road_edge.points, model_road_edge)
++        road_edge.std = float(model.roadEdgeStds[idx] if idx < len(model.roadEdgeStds) else 0.0)
++      self._copy_commaview_path(scene.position, model.position)
++      self._copy_commaview_lead(scene.leadOne, radar_state.leadOne)
++      self._copy_commaview_lead(scene.leadTwo, radar_state.leadTwo)
++      scene.calibration.rpyCalib = [float(v) for v in live_calibration.rpyCalib]
++      scene.calibration.height = [float(v) for v in live_calibration.height]
++      cal_status = live_calibration.calStatus
++      scene.calibration.calStatus = int(cal_status.raw if hasattr(cal_status, "raw") else cal_status)
++      scene.calibration.calPerc = int(live_calibration.calPerc)
 +    self._commaview_pm.send("commaViewScene", msg)
 +
 +  def _publish_commaview_status(self) -> None:
 +    msg = messaging.new_message("commaViewStatus")
-+    msg.commaViewStatus.exportVersion = 2
++    status = msg.commaViewStatus
++    status.exportVersion = 2
++    if self.sm.recv_frame["selfdriveState"] >= self.started_frame:
++      selfdrive_state = self.sm["selfdriveState"]
++      driver_monitoring = self.sm["driverMonitoringState"]
++      status.enabled = bool(selfdrive_state.enabled)
++      status.active = bool(selfdrive_state.active)
++      status.engageable = bool(selfdrive_state.engageable)
++      status.alertText1 = str(selfdrive_state.alertText1)
++      status.alertText2 = str(selfdrive_state.alertText2)
++      status.alertType = str(selfdrive_state.alertType)
++      alert_status = selfdrive_state.alertStatus
++      alert_size = selfdrive_state.alertSize
++      status.alertStatus = int(alert_status.raw if hasattr(alert_status, "raw") else alert_status)
++      status.alertSize = int(alert_size.raw if hasattr(alert_size, "raw") else alert_size)
++      status.faceDetected = bool(driver_monitoring.faceDetected)
++      status.isDistracted = bool(driver_monitoring.isDistracted)
++      status.isRhd = bool(driver_monitoring.isRHD)
++      status.poseYawOffset = float(driver_monitoring.poseYawOffset)
++      status.posePitchOffset = float(driver_monitoring.posePitchOffset)
++      status.poseYawValidCount = int(driver_monitoring.poseYawValidCount)
++      status.posePitchValidCount = int(driver_monitoring.posePitchValidCount)
++      status.isLowStd = bool(driver_monitoring.isLowStd)
 +    self._commaview_pm.send("commaViewStatus", msg)
 +
    def update_params(self) -> None:
