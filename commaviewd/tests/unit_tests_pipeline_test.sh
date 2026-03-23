@@ -7,8 +7,8 @@ RUNNER="$ROOT/scripts/run-unit-tests.sh"
 PIPELINE="$ROOT/scripts/run-verification.sh"
 INTERFACE_GUARD="$ROOT/scripts/upstream-interface-guard.sh"
 BINARY_CONTRACT="$ROOT/scripts/binary-contract-check.sh"
-HUD_LITE_CI_CONTRACT="$ROOT/tests/hud_lite_ci_contract_test.sh"
-HUD_LITE_PATCH_CONTRACT="$REPO_ROOT/comma4/tests/hud_lite_patch_contract_test.sh"
+HUD_LITE_CI_CONTRACT="$ROOT/tests/onroad_ui_export_ci_contract_test.sh"
+HUD_LITE_PATCH_CONTRACT="$REPO_ROOT/comma4/tests/onroad_ui_export_patch_contract_test.sh"
 BUNDLE="$REPO_ROOT/tools/release/comma4-build-bundle.sh"
 
 for script in "$RUNNER" "$PIPELINE" "$INTERFACE_GUARD" "$BINARY_CONTRACT" "$HUD_LITE_CI_CONTRACT" "$HUD_LITE_PATCH_CONTRACT" "$BUNDLE"; do
