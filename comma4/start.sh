@@ -18,7 +18,7 @@ if [ ! -s "$RUNTIME_DEBUG_CONFIG" ]; then
   if [ -s "$DEFAULTS_FILE" ]; then
     cp "$DEFAULTS_FILE" "$RUNTIME_DEBUG_CONFIG"
   else
-    printf "%s\n" '{"configVersion":1,"instrumentationLevel":"standard","services":{"carState":{"mode":"sample","sampleHz":2},"selfdriveState":{"mode":"pass"},"deviceState":{"mode":"pass"},"liveCalibration":{"mode":"pass"},"radarState":{"mode":"pass"},"modelV2":{"mode":"pass"},"alertDebug":{"mode":"off"},"modelDataV2SP":{"mode":"off"},"longitudinalPlanSP":{"mode":"off"},"carControl":{"mode":"off"},"carOutput":{"mode":"off"},"liveParameters":{"mode":"off"},"driverMonitoringState":{"mode":"off"},"driverStateV2":{"mode":"off"},"onroadEvents":{"mode":"off"},"roadCameraState":{"mode":"off"}}}' > "$RUNTIME_DEBUG_CONFIG"
+    printf "%s\n" '{"configVersion":1,"instrumentationLevel":"standard","services":{"commaViewControl":{"mode":"pass"},"commaViewScene":{"mode":"pass"},"commaViewStatus":{"mode":"pass"}}}' > "$RUNTIME_DEBUG_CONFIG"
   fi
 fi
 

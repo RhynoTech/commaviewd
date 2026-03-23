@@ -2,6 +2,8 @@
   "configVersion": 1,
   "instrumentationLevel": "standard",
   "services": {
-    "commaViewHudLite": {"mode": "pass"}
+    "commaViewControl": {"mode": "pass"},
+    "commaViewScene": {"mode": "pass"},
+    "commaViewStatus": {"mode": "pass"}
   }
 }

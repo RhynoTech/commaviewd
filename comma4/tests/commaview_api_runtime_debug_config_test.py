@@ -12,10 +12,14 @@ def test_runtime_debug_defaults_match_policy_contract():
     assert data["configVersion"] == 1
     assert data["instrumentationLevel"] == "standard"
     services = data["services"]
-    assert services == {"commaViewHudLite": {"mode": "pass"}}
+    assert services == {
+        "commaViewControl": {"mode": "pass"},
+        "commaViewScene": {"mode": "pass"},
+        "commaViewStatus": {"mode": "pass"},
+    }
 
 
-def test_start_script_seeds_and_exports_runtime_debug_paths():
+def test_start_script_seeds_direct_v2_runtime_debug_defaults_and_exports_paths():
     text = START_SH.read_text()
     assert "runtime-debug.defaults.json" in text
     assert "RUNTIME_DEBUG_CONFIG" in text
@@ -26,6 +30,21 @@ def test_start_script_seeds_and_exports_runtime_debug_paths():
     assert "COMMAVIEWD_RUNTIME_DEBUG_EFFECTIVE" in text
     assert "COMMAVIEWD_RUNTIME_STATS" in text
     assert "invalid runtime debug config JSON" in text
+    assert '"commaViewControl":{"mode":"pass"}' in text
+    assert '"commaViewScene":{"mode":"pass"}' in text
+    assert '"commaViewStatus":{"mode":"pass"}' in text
+
+    for forbidden in (
+        '"commaViewHudLite"',
+        '"carState"',
+        '"selfdriveState"',
+        '"liveCalibration"',
+        '"radarState"',
+        '"modelV2"',
+        '"driverMonitoringState"',
+        '"roadCameraState"',
+    ):
+        assert forbidden not in text
 
 
 def test_control_mode_routes_present_for_runtime_debug_config():
