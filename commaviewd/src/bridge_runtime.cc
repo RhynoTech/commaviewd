@@ -69,10 +69,12 @@ static constexpr int PORT_WIDE = 8201;
 static constexpr int PORT_DRIVER = 8202;
 
 // Runtime policy defaults favor only the services we currently trust on-road.
-static const char* TELEMETRY_SERVICES[] = {
-  "commaViewHudLite"
+static constexpr std::array<const char*, 3> kTelemetryServices = {
+  "commaViewControl",
+  "commaViewScene",
+  "commaViewStatus",
 };
-static constexpr int NUM_TELEM = 1;
+static constexpr int NUM_TELEM = static_cast<int>(kTelemetryServices.size());
 static constexpr int TELEMETRY_EMIT_MS_DEFAULT = 50;  // 20 Hz base poll for PASS and future SAMPLE modes
 static int g_telemetry_emit_ms = TELEMETRY_EMIT_MS_DEFAULT;
 
@@ -242,7 +244,7 @@ static std::string build_runtime_stats_json_locked() {
   out << "\"services\":{";
   for (int i = 0; i < NUM_TELEM; ++i) {
     if (i > 0) out << ",";
-    const char* service_name = TELEMETRY_SERVICES[i];
+    const char* service_name = kTelemetryServices[static_cast<size_t>(i)];
     const ServicePolicy policy = policy_for_service(g_runtime_state.effective_config, service_name);
     const RuntimeServiceStats& stats = g_runtime_state.services[static_cast<size_t>(i)];
     out << "\"" << service_name << "\":{";
@@ -289,8 +291,8 @@ static void initialize_runtime_state_once() {
 static ServicePolicy runtime_policy_for_index(int idx) {
   if (idx < 0 || idx >= NUM_TELEM) return {};
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  if (!g_runtime_state.initialized) return default_service_policy_for_name(TELEMETRY_SERVICES[idx]);
-  return policy_for_service(g_runtime_state.effective_config, TELEMETRY_SERVICES[idx]);
+  if (!g_runtime_state.initialized) return default_service_policy_for_name(kTelemetryServices[static_cast<size_t>(idx)]);
+  return policy_for_service(g_runtime_state.effective_config, kTelemetryServices[static_cast<size_t>(idx)]);
 }
 
 static void note_runtime_subscriber_delta(int idx, int delta) {
@@ -436,8 +438,9 @@ static void handle_client(int client_fd, const char* video_service, int port) {
     for (int i = 0; i < NUM_TELEM; i++) {
       telem_policies[i] = runtime_policy_for_index(i);
       if (!service_policy_subscribes(telem_policies[i])) continue;
-      const size_t segment_size = queue_size_for_service(TELEMETRY_SERVICES[i]);
-      telem_socks[i] = SubSocket::create(ctx, TELEMETRY_SERVICES[i], "127.0.0.1", true, true, segment_size);
+      const char* service_name = kTelemetryServices[static_cast<size_t>(i)];
+      const size_t segment_size = queue_size_for_service(service_name);
+      telem_socks[i] = SubSocket::create(ctx, service_name, "127.0.0.1", true, true, segment_size);
       if (telem_socks[i] != nullptr) note_runtime_subscriber_delta(i, 1);
     }
   }
@@ -690,7 +693,7 @@ static void telemetry_loop(int client_fd,
     }
 
     if (telem_raw_count > 0 && (telem_raw_count <= 3 || (telem_raw_count % 200) == 0)) {
-      printf("[%s] telem_raw=%llu [HUD_LITE_ONLY] (read+send throttled %dms)\n",
+      printf("[%s] telem_raw=%llu [DIRECT_V2_UI_EXPORT] (read+send throttled %dms)\n",
              video_service,
              static_cast<unsigned long long>(telem_raw_count),
              g_telemetry_emit_ms);
@@ -733,7 +736,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
   initialize_runtime_state_once();
 
   const char** video_services = VIDEO_SERVICES_PROD;
-  printf("CommaView Bridge v3.3.8-safe-bundle (C++) [VIDEO+TELEMETRY][RAW_ONLY_DEFAULT][HUD_LITE_ONLY_DEFAULT][META_MODE=raw-only][EMIT_MS=%d]\n",
+  printf("CommaView Bridge v3.3.8-safe-bundle (C++) [VIDEO+TELEMETRY][RAW_ONLY_DEFAULT][DIRECT_V2_UI_EXPORT_DEFAULT][META_MODE=raw-only][EMIT_MS=%d]\n",
          g_telemetry_emit_ms);
   fflush(stdout);
 

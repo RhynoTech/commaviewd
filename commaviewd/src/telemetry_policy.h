@@ -18,7 +18,9 @@ struct NamedServicePolicy {
 };
 
 inline constexpr NamedServicePolicy kDefaultServicePolicies[] = {
-  {"commaViewHudLite", {ServiceMode::Pass, 0}},
+  {"commaViewControl", {ServiceMode::Pass, 0}},
+  {"commaViewScene", {ServiceMode::Pass, 0}},
+  {"commaViewStatus", {ServiceMode::Pass, 0}},
 };
 
 inline constexpr size_t kDefaultServicePolicyCount = sizeof(kDefaultServicePolicies) / sizeof(kDefaultServicePolicies[0]);
