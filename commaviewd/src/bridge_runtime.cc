@@ -712,7 +712,6 @@ static void telemetry_loop(int client_fd,
         std::chrono::steady_clock::now() - telemetry_started);
     note_runtime_loop_sample(true, static_cast<uint64_t>(telemetry_elapsed.count()));
   }
-  }
 }
 
 static void accept_loop(int server_fd, const char* service_name, int port) {
