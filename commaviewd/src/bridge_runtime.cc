@@ -170,6 +170,7 @@ struct RuntimeServiceStats {
   uint64_t last_emit_ms = 0;
   uint64_t send_failure_count = 0;
   uint64_t max_send_stall_micros = 0;
+  uint64_t send_backpressure_count = 0;
 };
 
 struct RuntimeLoopStats {
@@ -263,7 +264,8 @@ static std::string build_runtime_stats_json_locked() {
     out << "\"lastReceiveMs\":" << stats.last_receive_ms << ",";
     out << "\"lastEmitMs\":" << stats.last_emit_ms << ",";
     out << "\"sendFailureCount\":" << stats.send_failure_count << ",";
-    out << "\"maxSendStallMicros\":" << stats.max_send_stall_micros;
+    out << "\"maxSendStallMicros\":" << stats.max_send_stall_micros << ",";
+    out << "\"sendBackpressureCount\":" << stats.send_backpressure_count;
     out << "}";
   }
   out << "}}";
@@ -325,6 +327,8 @@ static void note_runtime_receive(int idx, size_t bytes) {
   stats.last_receive_ms = runtime_now_ms();
 }
 
+static constexpr uint64_t kTelemetryEmitBackpressureThresholdMicros = 5000ULL;
+
 static void note_runtime_drain(int idx, uint64_t discarded, uint64_t burst) {
   if (idx < 0 || idx >= NUM_TELEM) return;
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
@@ -338,6 +342,9 @@ static void note_runtime_emit(int idx, size_t bytes, bool sampled, bool ok, uint
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
   RuntimeServiceStats& stats = g_runtime_state.services[static_cast<size_t>(idx)];
   stats.max_send_stall_micros = std::max(stats.max_send_stall_micros, stall_micros);
+  if (stall_micros > kTelemetryEmitBackpressureThresholdMicros) {
+    stats.send_backpressure_count += 1;
+  }
   if (!ok) {
     stats.send_failure_count += 1;
     return;
@@ -686,13 +693,6 @@ static void telemetry_loop(int client_fd,
       telem_raw_count++;
     }
 
-    now = std::chrono::steady_clock::now();
-    if (now >= next_stats_flush) {
-      next_stats_flush = now + std::chrono::milliseconds(1000);
-      std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-      flush_runtime_state_locked();
-    }
-
     if (telem_raw_count > 0 && (telem_raw_count <= 3 || (telem_raw_count % 200) == 0)) {
       printf("[%s] telem_raw=%llu [DIRECT_V2_UI_EXPORT] (read+send throttled %dms)\n",
              video_service,
@@ -701,9 +701,17 @@ static void telemetry_loop(int client_fd,
       fflush(stdout);
     }
 
+    now = std::chrono::steady_clock::now();
+    if (now >= next_stats_flush) {
+      next_stats_flush = now + std::chrono::milliseconds(1000);
+      std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+      flush_runtime_state_locked();
+    }
+
     const auto telemetry_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - telemetry_started);
     note_runtime_loop_sample(true, static_cast<uint64_t>(telemetry_elapsed.count()));
+  }
   }
 }
 
