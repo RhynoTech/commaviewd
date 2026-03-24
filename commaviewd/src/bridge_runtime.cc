@@ -40,6 +40,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <algorithm>
+#include <array>
 #include <sstream>
 #include <fstream>
 
