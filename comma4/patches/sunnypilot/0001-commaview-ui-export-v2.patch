@@ -20,6 +20,10 @@ index 0000000..c1c3930
 +  engaged @7 :Bool;
 +  isMetric @8 :Bool;
 +  started @9 :Bool;
++  leftBlinker @10 :Bool;
++  rightBlinker @11 :Bool;
++  leftBlindspot @12 :Bool;
++  rightBlindspot @13 :Bool;
 +}
 +
 +struct CommaViewLead {
@@ -87,6 +91,7 @@ index 0000000..c1c3930
 +  poseYawValidCount @14 :UInt16;
 +  posePitchValidCount @15 :UInt16;
 +  isLowStd @16 :Bool;
++  driverMonitoringActive @17 :Bool;
 +}
 diff --git a/cereal/log.capnp b/cereal/log.capnp
 index d14e149..5e52057 100644
@@ -169,10 +174,10 @@ index f7a5d44..c1db288 100644
 +    target.status = bool(source.status)
 +
 +  def _publish_commaview_control(self) -> None:
-+    # COMMAVIEW UI EXPORT V2
++    # COMMAVIEW UI EXPORT V3
 +    msg = messaging.new_message("commaViewControl")
 +    control = msg.commaViewControl
-+    control.exportVersion = 2
++    control.exportVersion = 3
 +    control.started = bool(self.started)
 +    control.isMetric = bool(self.is_metric)
 +    control.engaged = bool(self.engaged)
@@ -186,6 +191,10 @@ index f7a5d44..c1db288 100644
 +      control.standstill = bool(car_state.standstill)
 +      control.steeringAngleDeg = float(car_state.steeringAngleDeg)
 +      control.steeringPressed = bool(car_state.steeringPressed)
++      control.leftBlinker = bool(car_state.leftBlinker)
++      control.rightBlinker = bool(car_state.rightBlinker)
++      control.leftBlindspot = bool(car_state.leftBlindspot)
++      control.rightBlindspot = bool(car_state.rightBlindspot)
 +    self._commaview_pm.send("commaViewControl", msg)
 +
 +  def _publish_commaview_scene(self) -> None:
@@ -225,7 +234,7 @@ index f7a5d44..c1db288 100644
 +  def _publish_commaview_status(self) -> None:
 +    msg = messaging.new_message("commaViewStatus")
 +    status = msg.commaViewStatus
-+    status.exportVersion = 2
++    status.exportVersion = 3
 +    if self.sm.recv_frame["selfdriveState"] >= self.started_frame:
 +      selfdrive_state = self.sm["selfdriveState"]
 +      driver_monitoring = self.sm["driverMonitoringState"]
@@ -247,6 +256,7 @@ index f7a5d44..c1db288 100644
 +      status.poseYawValidCount = int(driver_monitoring.poseYawValidCount)
 +      status.posePitchValidCount = int(driver_monitoring.posePitchValidCount)
 +      status.isLowStd = bool(driver_monitoring.isLowStd)
++      status.driverMonitoringActive = bool(driver_monitoring.isActiveMode)
 +    self._commaview_pm.send("commaViewStatus", msg)
 +
    def update_params(self) -> None:
