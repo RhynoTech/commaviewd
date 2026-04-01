@@ -31,6 +31,10 @@ assert_contains_fixed 'payload[0] = 0x04;' "$BRIDGE_CPP" 'raw envelope should se
 assert_contains_fixed 'payload[1] = service_index;' "$BRIDGE_CPP" 'raw envelope should store service index after version byte'
 assert_contains_fixed 'put_be32(&payload[2], raw_len);' "$BRIDGE_CPP" 'raw envelope should write length after version and service index'
 assert_contains_fixed 'std::thread telemetry_thread' "$BRIDGE_CPP" 'telemetry should run in a dedicated thread'
+assert_contains_fixed "std::mutex send_mutex;" "$BRIDGE_CPP" "per-client send mutex missing"
+assert_contains_fixed "send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex)" "$BRIDGE_CPP" "video path must use locked send helper"
+assert_contains_fixed "std::lock_guard<std::mutex> send_lock(*send_mutex);" "$BRIDGE_CPP" "socket writes should be serialized via send mutex"
+assert_contains_fixed "&send_mutex);" "$BRIDGE_CPP" "telemetry loop should receive per-client send mutex"
 assert_contains_fixed 'telemetry_loop' "$BRIDGE_CPP" 'direct v2 telemetry loop helper missing'
 assert_not_contains_fixed 'build_telemetry_json' "$BRIDGE_CPP" 'legacy telemetry JSON builder should be removed from bridge runtime'
 assert_not_contains_fixed 'encode_car_state_typed' "$BRIDGE_CPP" 'legacy typed telemetry encoder helpers should be removed'

@@ -139,12 +139,14 @@ static void telemetry_loop(int client_fd,
                            Poller* telemetry_poller,
                            SubSocket* telem_socks[],
                            ServicePolicy telem_policies[],
-                           std::atomic<bool>* disconnect_requested);
+                           std::atomic<bool>* disconnect_requested,
+                           std::mutex* send_mutex);
 
 static bool send_meta_raw_frame(int fd,
                                 uint8_t service_index,
                                 const uint8_t* raw_data,
-                                size_t raw_size) {
+                                size_t raw_size,
+                                std::mutex* send_mutex) {
   if (raw_data == nullptr || raw_size == 0) return true;
   const uint32_t raw_len = static_cast<uint32_t>(raw_size);
   std::vector<uint8_t> payload(1 + 1 + 4 + raw_len);
@@ -152,6 +154,10 @@ static bool send_meta_raw_frame(int fd,
   payload[1] = service_index;
   put_be32(&payload[2], raw_len);
   memcpy(&payload[6], raw_data, raw_len);
+  if (send_mutex != nullptr) {
+    std::lock_guard<std::mutex> send_lock(*send_mutex);
+    return commaview::net::send_meta_bytes(fd, payload.data(), payload.size(), MSG_META_RAW);
+  }
   return commaview::net::send_meta_bytes(fd, payload.data(), payload.size(), MSG_META_RAW);
 }
 
@@ -391,6 +397,14 @@ static bool send_frame(int fd, const uint8_t* payload, size_t payload_len) {
   return commaview::net::send_frame(fd, payload, payload_len);
 }
 
+static bool send_frame_locked(int fd, const uint8_t* payload, size_t payload_len, std::mutex* send_mutex) {
+  if (send_mutex != nullptr) {
+    std::lock_guard<std::mutex> send_lock(*send_mutex);
+    return send_frame(fd, payload, payload_len);
+  }
+  return send_frame(fd, payload, payload_len);
+}
+
 static bool client_socket_alive(int fd) {
   return commaview::net::client_socket_alive(fd);
 }
@@ -466,6 +480,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
   std::atomic<bool> telemetry_disconnect_requested{false};
   std::thread telemetry_thread;
+  std::mutex send_mutex;
   if (include_telemetry && telemetry_poller != nullptr) {
     telemetry_thread = std::thread(telemetry_loop,
                                    client_fd,
@@ -473,7 +488,8 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                                    telemetry_poller,
                                    telem_socks,
                                    telem_policies,
-                                   &telemetry_disconnect_requested);
+                                   &telemetry_disconnect_requested,
+                                   &send_mutex);
   }
 
   uint64_t frame_count = 0;
@@ -559,7 +575,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
           if (header_len > 0) memcpy(&payload[5], header.begin(), header_len);
           memcpy(&payload[5 + header_len], data.begin(), data_len);
 
-          if (!send_frame(client_fd, payload.data(), payload.size())) goto disconnect;
+          if (!send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex)) goto disconnect;
 
           frame_count++;
           if (frame_count <= 5 || (frame_count % 200) == 0) {
@@ -628,7 +644,8 @@ static void telemetry_loop(int client_fd,
                            Poller* telemetry_poller,
                            SubSocket* telem_socks[],
                            ServicePolicy telem_policies[],
-                           std::atomic<bool>* disconnect_requested) {
+                           std::atomic<bool>* disconnect_requested,
+                           std::mutex* send_mutex) {
   if (telemetry_poller == nullptr || disconnect_requested == nullptr) return;
   uint64_t telem_raw_count = 0;
   auto next_telem_poll = std::chrono::steady_clock::now();
@@ -677,7 +694,8 @@ static void telemetry_loop(int client_fd,
       const bool sent = send_meta_raw_frame(client_fd,
                                             static_cast<uint8_t>(telem_sock_idx),
                                             raw_ptr,
-                                            raw_size);
+                                            raw_size,
+                                            send_mutex);
       const auto send_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - send_started);
       note_runtime_emit(telem_sock_idx,
