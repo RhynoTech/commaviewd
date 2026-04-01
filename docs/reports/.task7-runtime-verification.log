@@ -1,0 +1,21 @@
+PASS: upstream interface guard
+manifest: /home/pear/commaviewd/dist/upstream-interface-manifest.json
+PASS: reproducible build verified
+host sha256: dd44252dd3de01ebf9730be6d3213d30ff96afdb9afc289e8d8b7f3ca47e9a4c
+arm  sha256: 56aa4096b56bec04e3f8f49401c326f7daba613ac0de4b1391e957f94ca0e5f8
+manifest: /home/pear/commaviewd/dist/reproducible-build-manifest.json
+PASS: binary contract check
+manifest: /home/pear/commaviewd/dist/binary-contract.json
+[test] control update session=session-test-123 suppress=true
+PASS: control mode API contract routes present
+PASS: raw-only runtime contract checks passed
+PASS: commaviewd unit tests passed
+[1/3] Skipping build (using existing dist artifacts)...
+[2/3] Staging bundle files...
+[3/3] Packing release asset...
+-rw-rw-r-- 1 pear pear 612K Mar 26 16:53 /home/pear/commaviewd/release/ci-smoke/commaview-comma4-ci-smoke.tar.gz
+-rw-rw-r-- 1 pear pear  138 Mar 26 16:53 /home/pear/commaviewd/release/ci-smoke/commaview-comma4-ci-smoke.tar.gz.sha256
+6f96ec56182b8e77779c0893d47e62c6fe0e4fb13d4f3d7f8cd7f83cf3464edd  /home/pear/commaviewd/release/ci-smoke/commaview-comma4-ci-smoke.tar.gz
+Bundle ready: /home/pear/commaviewd/release/ci-smoke/commaview-comma4-ci-smoke.tar.gz
+PASS: commaviewd verification pipeline complete
+release smoke manifest: /home/pear/commaviewd/dist/release-smoke-manifest.json
