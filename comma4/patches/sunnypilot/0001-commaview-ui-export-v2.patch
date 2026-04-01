@@ -51,11 +51,19 @@ index 0000000..c1c3930
 +  std @1 :Float32;
 +}
 +
++enum CommaViewCameraSource {
++  road @0;
++  wideRoad @1;
++}
++
 +struct CommaViewCalibration {
 +  rpyCalib @0 :List(Float32);
 +  height @1 :List(Float32);
 +  calStatus @2 :UInt16;
 +  calPerc @3 :UInt16;
++  cameraIntrinsics @4 :List(Float32);
++  cameraOffset @5 :List(Float32);
++  cameraRpyOffset @6 :List(Float32);
 +}
 +
 +struct CommaViewScene {
@@ -71,6 +79,7 @@ index 0000000..c1c3930
 +  leadOne @9 :CommaViewLead;
 +  leadTwo @10 :CommaViewLead;
 +  calibration @11 :CommaViewCalibration;
++  activeCamera @12 :CommaViewCameraSource;
 +}
 +
 +struct CommaViewStatus {
@@ -133,6 +142,11 @@ diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
 index f7a5d44..c1db288 100644
 --- a/selfdrive/ui/ui_state.py
 +++ b/selfdrive/ui/ui_state.py
+@@ -8,6 +8,7 @@ from cereal import messaging, car, log
+ from openpilot.common.filter_simple import FirstOrderFilter
+ from openpilot.common.params import Params
++from openpilot.common.transformations.camera import DEVICE_CAMERAS
+ from openpilot.common.swaglog import cloudlog
 @@ -64,6 +64,11 @@ class UIState(UIStateSP):
      )
  
@@ -142,6 +156,7 @@ index f7a5d44..c1db288 100644
 +      "commaViewScene",
 +      "commaViewStatus",
 +    ])
++    self._commaview_active_camera = "road"
  
      # UI Status tracking
      self.status: UIStatus = UIStatus.DISENGAGED
@@ -173,6 +188,37 @@ index f7a5d44..c1db288 100644
 +    target.aRel = float(source.aRel)
 +    target.status = bool(source.status)
 +
++  def _commaview_camera_offset(self) -> float:
++    try:
++      return float(self.params.get("CameraOffset", return_default=True) or 0.0)
++    except (TypeError, ValueError):
++      return 0.0
++
++  def _resolve_commaview_camera(self):
++    default_device_camera = DEVICE_CAMERAS[("tici", "ar0231")]
++    device_camera = default_device_camera
++    have_real_camera_key = self.sm.seen["roadCameraState"] and self.sm.seen["deviceState"]
++    if have_real_camera_key:
++      camera_key = (str(self.sm["deviceState"].deviceType), str(self.sm["roadCameraState"].sensor))
++      device_camera = DEVICE_CAMERAS.get(camera_key)
++
++    wide_camera_ready = (
++      self.sm.seen["wideRoadCameraState"] and
++      self.sm.alive["wideRoadCameraState"] and
++      self.sm.valid["wideRoadCameraState"]
++    )
++    experimental_mode = bool(self.sm["selfdriveState"].experimentalMode)
++    if not experimental_mode or not wide_camera_ready:
++      self._commaview_active_camera = "road"
++    else:
++      v_ego = float(self.sm["carState"].vEgo)
++      if v_ego < 5.0:
++        self._commaview_active_camera = "wideRoad"
++      elif v_ego > 10.0:
++        self._commaview_active_camera = "road"
++
++    return self._commaview_active_camera, device_camera
++
 +  def _publish_commaview_control(self) -> None:
 +    # COMMAVIEW UI EXPORT V3
 +    msg = messaging.new_message("commaViewControl")
@@ -201,6 +247,18 @@ index f7a5d44..c1db288 100644
 +    msg = messaging.new_message("commaViewScene")
 +    scene = msg.commaViewScene
 +    scene.exportVersion = 2
++    active_camera, device_camera = self._resolve_commaview_camera()
++    scene.activeCamera = active_camera
++    if device_camera is not None:
++      intrinsics = device_camera.ecam.intrinsics if active_camera == "wideRoad" else device_camera.fcam.intrinsics
++      scene.calibration.cameraIntrinsics = [
++        float(intrinsics[0, 0]),
++        float(intrinsics[1, 1]),
++        float(intrinsics[0, 2]),
++        float(intrinsics[1, 2]),
++      ]
++    scene.calibration.cameraOffset = [0.0, float(self._commaview_camera_offset()), 0.0]
++    scene.calibration.cameraRpyOffset = [0.0, 0.0, 0.0]
 +    if self.sm.recv_frame["modelV2"] >= self.started_frame:
 +      model = self.sm["modelV2"]
 +      radar_state = self.sm["radarState"]
@@ -226,6 +284,8 @@ index f7a5d44..c1db288 100644
 +      self._copy_commaview_lead(scene.leadTwo, radar_state.leadTwo)
 +      scene.calibration.rpyCalib = [float(v) for v in live_calibration.rpyCalib]
 +      scene.calibration.height = [float(v) for v in live_calibration.height]
++      if active_camera == "wideRoad" and hasattr(live_calibration, "wideFromDeviceEuler") and len(live_calibration.wideFromDeviceEuler) == 3:
++        scene.calibration.cameraRpyOffset = [float(v) for v in live_calibration.wideFromDeviceEuler]
 +      cal_status = live_calibration.calStatus
 +      scene.calibration.calStatus = int(cal_status.raw if hasattr(cal_status, "raw") else cal_status)
 +      scene.calibration.calPerc = int(live_calibration.calPerc)
