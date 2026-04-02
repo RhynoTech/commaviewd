@@ -1,9 +1,9 @@
 diff --git a/cereal/commaview.capnp b/cereal/commaview.capnp
 new file mode 100644
-index 0000000..c1c3930
+index 0000000..420f624
 --- /dev/null
 +++ b/cereal/commaview.capnp
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,101 @@
 +using Cxx = import "./include/c++.capnp";
 +$Cxx.namespace("cereal");
 +
@@ -24,6 +24,8 @@ index 0000000..c1c3930
 +  rightBlinker @11 :Bool;
 +  leftBlindspot @12 :Bool;
 +  rightBlindspot @13 :Bool;
++  latActive @14 :Bool;
++  longActive @15 :Bool;
 +}
 +
 +struct CommaViewLead {
@@ -101,6 +103,7 @@ index 0000000..c1c3930
 +  posePitchValidCount @15 :UInt16;
 +  isLowStd @16 :Bool;
 +  driverMonitoringActive @17 :Bool;
++  runtimeFlavor @18 :Text;
 +}
 diff --git a/cereal/log.capnp b/cereal/log.capnp
 index d14e149..5e52057 100644
@@ -139,15 +142,23 @@ index a2fd5f7..210d613 100755
    "alertDebug": (True, 20., 5),
    "livestreamWideRoadEncodeIdx": (False, 20.),
 diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
-index f7a5d44..c1db288 100644
+index f7a5d44..7132300 100644
 --- a/selfdrive/ui/ui_state.py
 +++ b/selfdrive/ui/ui_state.py
-@@ -8,6 +8,7 @@ from cereal import messaging, car, log
+@@ -7,8 +7,12 @@ from enum import Enum
+ from cereal import messaging, car, log
  from openpilot.common.filter_simple import FirstOrderFilter
  from openpilot.common.params import Params
 +from openpilot.common.transformations.camera import DEVICE_CAMERAS
  from openpilot.common.swaglog import cloudlog
-@@ -64,6 +64,11 @@ class UIState(UIStateSP):
+ from openpilot.selfdrive.ui.lib.prime_state import PrimeState
++
++COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"
++COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN = "UNKNOWN"
+ from openpilot.system.ui.lib.application import gui_app
+ from openpilot.system.hardware import HARDWARE, PC
+ 
+@@ -64,6 +68,12 @@ class UIState(UIStateSP):
      )
  
      self.prime_state = PrimeState()
@@ -160,7 +171,7 @@ index f7a5d44..c1db288 100644
  
      # UI Status tracking
      self.status: UIStatus = UIStatus.DISENGAGED
-@@ -113,6 +118,9 @@ class UIState(UIStateSP):
+@@ -113,6 +123,9 @@ class UIState(UIStateSP):
      self.sm.update(0)
      self._update_state()
      self._update_status()
@@ -170,7 +181,7 @@ index f7a5d44..c1db288 100644
      if time.monotonic() - self._param_update_time > 5.0:
        self.update_params()
      device.update()
-@@ -178,6 +186,101 @@ class UIState(UIStateSP):
+@@ -178,6 +191,156 @@ class UIState(UIStateSP):
  
        self._started_prev = self.started
  
@@ -220,10 +231,10 @@ index f7a5d44..c1db288 100644
 +    return self._commaview_active_camera, device_camera
 +
 +  def _publish_commaview_control(self) -> None:
-+    # COMMAVIEW UI EXPORT V3
++    # COMMAVIEW UI EXPORT V4
 +    msg = messaging.new_message("commaViewControl")
 +    control = msg.commaViewControl
-+    control.exportVersion = 3
++    control.exportVersion = 4
 +    control.started = bool(self.started)
 +    control.isMetric = bool(self.is_metric)
 +    control.engaged = bool(self.engaged)
@@ -241,6 +252,10 @@ index f7a5d44..c1db288 100644
 +      control.rightBlinker = bool(car_state.rightBlinker)
 +      control.leftBlindspot = bool(car_state.leftBlindspot)
 +      control.rightBlindspot = bool(car_state.rightBlindspot)
++    if self.sm.recv_frame["carControl"] >= self.started_frame:
++      car_control = self.sm["carControl"]
++      control.latActive = bool(car_control.latActive)
++      control.longActive = bool(car_control.longActive)
 +    self._commaview_pm.send("commaViewControl", msg)
 +
 +  def _publish_commaview_scene(self) -> None:
@@ -294,7 +309,8 @@ index f7a5d44..c1db288 100644
 +  def _publish_commaview_status(self) -> None:
 +    msg = messaging.new_message("commaViewStatus")
 +    status = msg.commaViewStatus
-+    status.exportVersion = 3
++    status.exportVersion = 4
++    status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN
 +    if self.sm.recv_frame["selfdriveState"] >= self.started_frame:
 +      selfdrive_state = self.sm["selfdriveState"]
 +      driver_monitoring = self.sm["driverMonitoringState"]

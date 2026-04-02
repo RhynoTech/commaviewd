@@ -4,6 +4,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OPENPILOT_PATCH="$REPO_ROOT/comma4/patches/openpilot/0001-commaview-ui-export-v2.patch"
 SUNNYPILOT_PATCH="$REPO_ROOT/comma4/patches/sunnypilot/0001-commaview-ui-export-v2.patch"
+CACHE_ROOT="${COMMAVIEWD_CANARY_CACHE_ROOT:-$HOME/.cache/ci-ref-checkouts}"
+OPENPILOT_REPO="${COMMAVIEWD_OPENPILOT_REPO:-https://github.com/commaai/openpilot.git}"
+SUNNYPILOT_REPO="${COMMAVIEWD_SUNNYPILOT_REPO:-https://github.com/sunnyhaibin/sunnypilot.git}"
 
 fail() {
   echo "FAIL: $1" >&2
@@ -12,11 +15,20 @@ fail() {
 
 run_ref() {
   local label="$1"
-  local checkout="$2"
-  local patch="$3"
+  local repo="$2"
+  local ref="$3"
+  local checkout="$4"
+  local patch="$5"
+  local expected_runtime_flavor="$6"
 
   echo "=== ${label} ==="
-  [[ -e "$checkout/.git" ]] || fail "missing cached checkout $checkout"
+  mkdir -p "$(dirname "$checkout")"
+  if [[ -e "$checkout/.git" ]]; then
+    git -C "$checkout" fetch --depth 1 origin "$ref"
+    git -C "$checkout" checkout -q FETCH_HEAD
+  else
+    git clone --depth 1 --branch "$ref" "$repo" "$checkout"
+  fi
 
   git -C "$checkout" reset --hard -q HEAD
   git -C "$checkout" clean -fdq
@@ -27,23 +39,29 @@ run_ref() {
   grep -Fq 'commaViewScene' "$checkout/cereal/services.py" || fail "scene service missing for ${label}"
   grep -Fq 'commaViewStatus' "$checkout/cereal/services.py" || fail "status service missing for ${label}"
   grep -Fq 'struct CommaViewControl' "$checkout/cereal/commaview.capnp" || fail "schema missing for ${label}"
+  grep -Fq 'latActive @14 :Bool;' "$checkout/cereal/commaview.capnp" || fail "latActive field missing for ${label}"
+  grep -Fq 'longActive @15 :Bool;' "$checkout/cereal/commaview.capnp" || fail "longActive field missing for ${label}"
+  grep -Fq 'runtimeFlavor @18 :Text;' "$checkout/cereal/commaview.capnp" || fail "runtimeFlavor field missing for ${label}"
   grep -Fq 'commaViewControl @150' "$checkout/cereal/log.capnp" || fail "control event missing for ${label}"
   grep -Fq 'commaViewScene @151' "$checkout/cereal/log.capnp" || fail "scene event missing for ${label}"
   grep -Fq 'commaViewStatus @152' "$checkout/cereal/log.capnp" || fail "status event missing for ${label}"
   grep -Fq '_publish_commaview_control' "$checkout/selfdrive/ui/ui_state.py" || fail "control publisher missing for ${label}"
   grep -Fq '_publish_commaview_scene' "$checkout/selfdrive/ui/ui_state.py" || fail "scene publisher missing for ${label}"
   grep -Fq '_publish_commaview_status' "$checkout/selfdrive/ui/ui_state.py" || fail "status publisher missing for ${label}"
+  grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$checkout/selfdrive/ui/ui_state.py" || fail "runtime flavor constant missing for ${label}"
+  grep -Fq 'control.latActive = bool(car_control.latActive)' "$checkout/selfdrive/ui/ui_state.py" || fail "latActive export missing for ${label}"
+  grep -Fq 'control.longActive = bool(car_control.longActive)' "$checkout/selfdrive/ui/ui_state.py" || fail "longActive export missing for ${label}"
+  grep -Fq 'status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN' "$checkout/selfdrive/ui/ui_state.py" || fail "runtime flavor export missing for ${label}"
 
-  printf '%s
-' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","controlServicePresent":true,"sceneServicePresent":true,"statusServicePresent":true,"schemaPresent":true,"controlPublisherPresent":true,"scenePublisherPresent":true,"statusPublisherPresent":true,"controlEventPresent":true,"sceneEventPresent":true,"statusEventPresent":true}'
+  printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","controlServicePresent":true,"sceneServicePresent":true,"statusServicePresent":true,"schemaPresent":true,"runtimeFlavorFieldPresent":true,"latActiveFieldPresent":true,"longActiveFieldPresent":true,"controlPublisherPresent":true,"scenePublisherPresent":true,"statusPublisherPresent":true,"runtimeFlavorConstantPresent":true,"runtimeFlavorPublisherPresent":true,"latLongPublisherPresent":true,"controlEventPresent":true,"sceneEventPresent":true,"statusEventPresent":true}'
 
   git -C "$checkout" reset --hard -q HEAD
   git -C "$checkout" clean -fdq
 }
 
-run_ref 'openpilot release-mici-staging' '/home/pear/.cache/ci-ref-checkouts/openpilot-release-mici-staging' "$OPENPILOT_PATCH"
-run_ref 'openpilot nightly' '/home/pear/.cache/ci-ref-checkouts/openpilot-nightly' "$OPENPILOT_PATCH"
-run_ref 'sunnypilot staging' '/home/pear/.cache/ci-ref-checkouts/sunnypilot-staging' "$SUNNYPILOT_PATCH"
-run_ref 'sunnypilot dev' '/home/pear/.cache/ci-ref-checkouts/sunnypilot-dev' "$SUNNYPILOT_PATCH"
+run_ref 'openpilot release-mici-staging' "$OPENPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/openpilot-release-mici-staging" "$OPENPILOT_PATCH" 'OPENPILOT'
+run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-nightly" "$OPENPILOT_PATCH" 'OPENPILOT'
+run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" "$SUNNYPILOT_PATCH" 'SUNNYPILOT'
+run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" "$SUNNYPILOT_PATCH" 'SUNNYPILOT'
 
 echo 'PASS: direct v2 UI export patch applies and verifies on real canary refs'

@@ -12,10 +12,18 @@ fail() {
 
 for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   [[ -f "$patch" ]] || fail "missing patch $patch"
+  expected_runtime_flavor='OPENPILOT'
+  if [[ "$patch" == *'/sunnypilot/'* ]]; then
+    expected_runtime_flavor='SUNNYPILOT'
+  fi
+
   grep -Fq 'commaViewControl' "$patch" || fail "$patch missing control service markers"
   grep -Fq 'commaViewScene' "$patch" || fail "$patch missing scene service markers"
   grep -Fq 'commaViewStatus' "$patch" || fail "$patch missing status service markers"
   grep -Fq 'commaview.capnp' "$patch" || fail "$patch missing dedicated commaview schema wiring"
+  grep -Fq 'latActive @14 :Bool;' "$patch" || fail "$patch missing latActive field"
+  grep -Fq 'longActive @15 :Bool;' "$patch" || fail "$patch missing longActive field"
+  grep -Fq 'runtimeFlavor @18 :Text;' "$patch" || fail "$patch missing runtimeFlavor field"
   grep -Fq 'scene.frameId = int(model.frameId)' "$patch" || fail "$patch missing scene frameId export"
   grep -Fq 'scene.frameDropPerc = float(model.frameDropPerc)' "$patch" || fail "$patch missing scene frameDropPerc export"
   grep -Fq 'scene.timestampEof = int(model.timestampEof)' "$patch" || fail "$patch missing scene timestamp export"
@@ -31,12 +39,20 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   grep -Fq 'scene.calibration.cameraIntrinsics = [' "$patch" || fail "$patch missing camera intrinsics export"
   grep -Fq 'scene.calibration.cameraOffset = [0.0, float(self._commaview_camera_offset()), 0.0]' "$patch" || fail "$patch missing camera offset export"
   grep -Fq 'scene.calibration.cameraRpyOffset = [float(v) for v in live_calibration.wideFromDeviceEuler]' "$patch" || fail "$patch missing wide camera rpy offset export"
+  grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$patch" || fail "$patch missing runtime flavor constant"
+  grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN = "UNKNOWN"' "$patch" || fail "$patch missing runtime flavor unknown fallback"
+  grep -Fq 'control.exportVersion = 4' "$patch" || fail "$patch missing control export version bump"
+  grep -Fq 'if self.sm.recv_frame["carControl"] >= self.started_frame:' "$patch" || fail "$patch missing carControl recv guard"
+  grep -Fq 'control.latActive = bool(car_control.latActive)' "$patch" || fail "$patch missing latActive export"
+  grep -Fq 'control.longActive = bool(car_control.longActive)' "$patch" || fail "$patch missing longActive export"
   grep -Fq 'status.engageable = bool(selfdrive_state.engageable)' "$patch" || fail "$patch missing status engageable export"
   grep -Fq 'status.alertText1 = str(selfdrive_state.alertText1)' "$patch" || fail "$patch missing status alertText1 export"
   grep -Fq 'status.alertType = str(selfdrive_state.alertType)' "$patch" || fail "$patch missing status alertType export"
   grep -Fq 'status.isDistracted = bool(driver_monitoring.isDistracted)' "$patch" || fail "$patch missing DM distraction export"
   grep -Fq 'status.poseYawValidCount = int(driver_monitoring.poseYawValidCount)' "$patch" || fail "$patch missing DM yaw count export"
   grep -Fq 'status.isLowStd = bool(driver_monitoring.isLowStd)' "$patch" || fail "$patch missing DM low-std export"
+  grep -Fq 'status.exportVersion = 4' "$patch" || fail "$patch missing status export version bump"
+  grep -Fq 'status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN' "$patch" || fail "$patch missing runtime flavor export"
 done
 
 echo "PASS: direct v2 UI export patch contract present"

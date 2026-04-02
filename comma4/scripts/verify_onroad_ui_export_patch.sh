@@ -29,8 +29,7 @@ detect_flavor() {
     # shellcheck disable=SC1090
     . "$STATE_ENV" || true
     if [ "${ONROAD_UI_EXPORT_OP_ROOT:-}" = "$OP_ROOT" ] && [ -n "${ONROAD_UI_EXPORT_FLAVOR:-}" ] && [ -f "$PATCH_ROOT/$ONROAD_UI_EXPORT_FLAVOR/0001-commaview-ui-export-v2.patch" ]; then
-      printf '%s
-' "$ONROAD_UI_EXPORT_FLAVOR"
+      printf '%s\n' "$ONROAD_UI_EXPORT_FLAVOR"
       return 0
     fi
   fi
@@ -47,22 +46,22 @@ detect_flavor() {
   for flavor in openpilot sunnypilot; do
     patch="$PATCH_ROOT/$flavor/0001-commaview-ui-export-v2.patch"
     [ -f "$patch" ] || continue
-    if git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&        (git -C "$OP_ROOT" apply --reverse --check "$patch" >/dev/null 2>&1 ||         git -C "$OP_ROOT" apply --check "$patch" >/dev/null 2>&1); then
+    if git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && \
+       (git -C "$OP_ROOT" apply --reverse --check "$patch" >/dev/null 2>&1 || \
+        git -C "$OP_ROOT" apply --check "$patch" >/dev/null 2>&1); then
       matches="$matches $flavor"
     fi
   done
 
   set -- $matches
   if [ "$#" -eq 1 ]; then
-    printf '%s
-' "$1"
+    printf '%s\n' "$1"
     return 0
   fi
   if [ "$#" -gt 1 ] && [ -n "$preferred" ]; then
     for flavor in "$@"; do
       if [ "$flavor" = "$preferred" ]; then
-        printf '%s
-' "$preferred"
+        printf '%s\n' "$preferred"
         return 0
       fi
     done
@@ -87,9 +86,15 @@ control_service_present=false
 scene_service_present=false
 status_service_present=false
 schema_present=false
+runtime_flavor_field_present=false
+lat_active_field_present=false
+long_active_field_present=false
 control_publisher_present=false
 scene_publisher_present=false
 status_publisher_present=false
+runtime_flavor_constant_present=false
+runtime_flavor_publisher_present=false
+lat_long_publisher_present=false
 control_event_present=false
 scene_event_present=false
 status_event_present=false
@@ -103,17 +108,34 @@ elif [ ! -f "$patch" ]; then
   state="missing-patch"; reason="missing direct v2 patch asset for $flavor"
 else
   fingerprint="$(sha256sum "$patch" | awk '{print $1}')"
+  expected_runtime_flavor="UNKNOWN"
+  case "$flavor" in
+    openpilot) expected_runtime_flavor="OPENPILOT" ;;
+    sunnypilot) expected_runtime_flavor="SUNNYPILOT" ;;
+  esac
   grep -Fq '"commaViewControl"' "$OP_ROOT/cereal/services.py" && control_service_present=true || true
   grep -Fq '"commaViewScene"' "$OP_ROOT/cereal/services.py" && scene_service_present=true || true
   grep -Fq '"commaViewStatus"' "$OP_ROOT/cereal/services.py" && status_service_present=true || true
   grep -Fq 'struct CommaViewControl' "$OP_ROOT/cereal/commaview.capnp" && schema_present=true || true
+  grep -Fq 'runtimeFlavor @18 :Text;' "$OP_ROOT/cereal/commaview.capnp" && runtime_flavor_field_present=true || true
+  grep -Fq 'latActive @14 :Bool;' "$OP_ROOT/cereal/commaview.capnp" && lat_active_field_present=true || true
+  grep -Fq 'longActive @15 :Bool;' "$OP_ROOT/cereal/commaview.capnp" && long_active_field_present=true || true
   grep -Fq '_publish_commaview_control' "$OP_ROOT/selfdrive/ui/ui_state.py" && control_publisher_present=true || true
   grep -Fq '_publish_commaview_scene' "$OP_ROOT/selfdrive/ui/ui_state.py" && scene_publisher_present=true || true
   grep -Fq '_publish_commaview_status' "$OP_ROOT/selfdrive/ui/ui_state.py" && status_publisher_present=true || true
+  grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$OP_ROOT/selfdrive/ui/ui_state.py" && runtime_flavor_constant_present=true || true
+  grep -Fq 'status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN' "$OP_ROOT/selfdrive/ui/ui_state.py" && runtime_flavor_publisher_present=true || true
+  if grep -Fq 'control.latActive = bool(car_control.latActive)' "$OP_ROOT/selfdrive/ui/ui_state.py" && grep -Fq 'control.longActive = bool(car_control.longActive)' "$OP_ROOT/selfdrive/ui/ui_state.py"; then
+    lat_long_publisher_present=true
+  fi
   grep -Fq 'commaViewControl @150' "$OP_ROOT/cereal/log.capnp" && control_event_present=true || true
   grep -Fq 'commaViewScene @151' "$OP_ROOT/cereal/log.capnp" && scene_event_present=true || true
   grep -Fq 'commaViewStatus @152' "$OP_ROOT/cereal/log.capnp" && status_event_present=true || true
-  if $control_service_present && $scene_service_present && $status_service_present && $schema_present &&      $control_publisher_present && $scene_publisher_present && $status_publisher_present &&      $control_event_present && $scene_event_present && $status_event_present; then
+  if $control_service_present && $scene_service_present && $status_service_present && $schema_present && \
+     $runtime_flavor_field_present && $lat_active_field_present && $long_active_field_present && \
+     $control_publisher_present && $scene_publisher_present && $status_publisher_present && \
+     $runtime_flavor_constant_present && $runtime_flavor_publisher_present && $lat_long_publisher_present && \
+     $control_event_present && $scene_event_present && $status_event_present; then
     state="patch-verified"
     reason="static direct v2 patch markers verified; runtime telemetry not proven"
     patch_verified=true
@@ -124,16 +146,11 @@ else
   fi
 fi
 
-json=$(printf '{"healthy":%s,"patchVerified":%s,"statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","patch":"%s","patchFingerprint":"%s","controlServicePresent":%s,"sceneServicePresent":%s,"statusServicePresent":%s,"schemaPresent":%s,"controlPublisherPresent":%s,"scenePublisherPresent":%s,"statusPublisherPresent":%s,"controlEventPresent":%s,"sceneEventPresent":%s,"statusEventPresent":%s}' "$healthy" "$patch_verified" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$control_service_present" "$scene_service_present" "$status_service_present" "$schema_present" "$control_publisher_present" "$scene_publisher_present" "$status_publisher_present" "$control_event_present" "$scene_event_present" "$status_event_present")
-printf '%s
-' "$json" > "$STATE_JSON"
+json=$(printf '{"healthy":%s,"patchVerified":%s,"statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","patch":"%s","patchFingerprint":"%s","controlServicePresent":%s,"sceneServicePresent":%s,"statusServicePresent":%s,"schemaPresent":%s,"runtimeFlavorFieldPresent":%s,"latActiveFieldPresent":%s,"longActiveFieldPresent":%s,"controlPublisherPresent":%s,"scenePublisherPresent":%s,"statusPublisherPresent":%s,"runtimeFlavorConstantPresent":%s,"runtimeFlavorPublisherPresent":%s,"latLongPublisherPresent":%s,"controlEventPresent":%s,"sceneEventPresent":%s,"statusEventPresent":%s}' "$healthy" "$patch_verified" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$control_service_present" "$scene_service_present" "$status_service_present" "$schema_present" "$runtime_flavor_field_present" "$lat_active_field_present" "$long_active_field_present" "$control_publisher_present" "$scene_publisher_present" "$status_publisher_present" "$runtime_flavor_constant_present" "$runtime_flavor_publisher_present" "$lat_long_publisher_present" "$control_event_present" "$scene_event_present" "$status_event_present")
+printf '%s\n' "$json" > "$STATE_JSON"
 if [ -n "$fingerprint" ]; then
-  printf 'ONROAD_UI_EXPORT_FLAVOR=%s
-ONROAD_UI_EXPORT_PATCH_SHA=%s
-ONROAD_UI_EXPORT_OP_ROOT=%s
-' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
+  printf 'ONROAD_UI_EXPORT_FLAVOR=%s\nONROAD_UI_EXPORT_PATCH_SHA=%s\nONROAD_UI_EXPORT_OP_ROOT=%s\n' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
 fi
-printf '%s
-' "$json"
+printf '%s\n' "$json"
 if $patch_verified; then exit 0; fi
 exit 1
