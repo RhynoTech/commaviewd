@@ -89,6 +89,9 @@ schema_present=false
 runtime_flavor_field_present=false
 status_mode_enum_present=false
 status_mode_field_present=false
+speed_limit_icon_enum_present=false
+speed_limit_pre_active_field_present=false
+speed_limit_pre_active_icon_field_present=false
 lat_active_field_present=false
 long_active_field_present=false
 control_publisher_present=false
@@ -98,6 +101,8 @@ runtime_flavor_constant_present=false
 runtime_flavor_publisher_present=false
 status_mode_helper_present=false
 status_mode_publisher_present=false
+speed_limit_defaults_present=false
+speed_limit_flavor_markers_present=false
 lat_long_publisher_present=false
 control_event_present=false
 scene_event_present=false
@@ -124,6 +129,9 @@ else
   grep -Fq 'runtimeFlavor @18 :Text;' "$OP_ROOT/cereal/commaview.capnp" && runtime_flavor_field_present=true || true
   grep -Fq 'enum CommaViewStatusMode {' "$OP_ROOT/cereal/commaview.capnp" && status_mode_enum_present=true || true
   grep -Fq 'statusMode @19 :CommaViewStatusMode;' "$OP_ROOT/cereal/commaview.capnp" && status_mode_field_present=true || true
+  grep -Fq 'enum CommaViewSpeedLimitPreActiveIcon {' "$OP_ROOT/cereal/commaview.capnp" && speed_limit_icon_enum_present=true || true
+  grep -Fq 'speedLimitPreActive @20 :Bool;' "$OP_ROOT/cereal/commaview.capnp" && speed_limit_pre_active_field_present=true || true
+  grep -Fq 'speedLimitPreActiveIcon @21 :CommaViewSpeedLimitPreActiveIcon;' "$OP_ROOT/cereal/commaview.capnp" && speed_limit_pre_active_icon_field_present=true || true
   grep -Fq 'latActive @14 :Bool;' "$OP_ROOT/cereal/commaview.capnp" && lat_active_field_present=true || true
   grep -Fq 'longActive @15 :Bool;' "$OP_ROOT/cereal/commaview.capnp" && long_active_field_present=true || true
   grep -Fq '_publish_commaview_control' "$OP_ROOT/selfdrive/ui/ui_state.py" && control_publisher_present=true || true
@@ -133,6 +141,19 @@ else
   grep -Fq 'status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN' "$OP_ROOT/selfdrive/ui/ui_state.py" && runtime_flavor_publisher_present=true || true
   grep -Fq 'def _commaview_status_mode_name(status) -> str:' "$OP_ROOT/selfdrive/ui/ui_state.py" && status_mode_helper_present=true || true
   grep -Fq 'status.statusMode = self._commaview_status_mode_name(self.status)' "$OP_ROOT/selfdrive/ui/ui_state.py" && status_mode_publisher_present=true || true
+  if grep -Fq 'status.speedLimitPreActive = False' "$OP_ROOT/selfdrive/ui/ui_state.py" && grep -Fq 'status.speedLimitPreActiveIcon = "NONE"' "$OP_ROOT/selfdrive/ui/ui_state.py"; then
+    speed_limit_defaults_present=true
+  fi
+  if [ "$flavor" = "sunnypilot" ]; then
+    if grep -Fq 'from cereal import messaging, car, log, custom' "$OP_ROOT/selfdrive/ui/ui_state.py" && \
+       grep -Fq 'def _commaview_speed_limit_pre_active_icon(self) -> str:' "$OP_ROOT/selfdrive/ui/ui_state.py" && \
+       grep -Fq 'status.speedLimitPreActive = speed_limit_assist.state == custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$OP_ROOT/selfdrive/ui/ui_state.py" && \
+       grep -Fq 'status.speedLimitPreActiveIcon = self._commaview_speed_limit_pre_active_icon()' "$OP_ROOT/selfdrive/ui/ui_state.py"; then
+      speed_limit_flavor_markers_present=true
+    fi
+  else
+    speed_limit_flavor_markers_present=true
+  fi
   if grep -Fq 'control.latActive = bool(car_control.latActive)' "$OP_ROOT/selfdrive/ui/ui_state.py" && grep -Fq 'control.longActive = bool(car_control.longActive)' "$OP_ROOT/selfdrive/ui/ui_state.py"; then
     lat_long_publisher_present=true
   fi
@@ -140,9 +161,9 @@ else
   grep -Fq 'commaViewScene @151' "$OP_ROOT/cereal/log.capnp" && scene_event_present=true || true
   grep -Fq 'commaViewStatus @152' "$OP_ROOT/cereal/log.capnp" && status_event_present=true || true
   if $control_service_present && $scene_service_present && $status_service_present && $schema_present && \
-     $runtime_flavor_field_present && $status_mode_enum_present && $status_mode_field_present && $lat_active_field_present && $long_active_field_present && \
+     $runtime_flavor_field_present && $status_mode_enum_present && $status_mode_field_present && $speed_limit_icon_enum_present && $speed_limit_pre_active_field_present && $speed_limit_pre_active_icon_field_present && $lat_active_field_present && $long_active_field_present && \
      $control_publisher_present && $scene_publisher_present && $status_publisher_present && \
-     $runtime_flavor_constant_present && $runtime_flavor_publisher_present && $status_mode_helper_present && $status_mode_publisher_present && $lat_long_publisher_present && \
+     $runtime_flavor_constant_present && $runtime_flavor_publisher_present && $status_mode_helper_present && $status_mode_publisher_present && $speed_limit_defaults_present && $speed_limit_flavor_markers_present && $lat_long_publisher_present && \
      $control_event_present && $scene_event_present && $status_event_present; then
     state="patch-verified"
     reason="static direct v2 patch markers verified; runtime telemetry not proven"
@@ -154,7 +175,7 @@ else
   fi
 fi
 
-json=$(printf '{"healthy":%s,"patchVerified":%s,"statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","patch":"%s","patchFingerprint":"%s","controlServicePresent":%s,"sceneServicePresent":%s,"statusServicePresent":%s,"schemaPresent":%s,"runtimeFlavorFieldPresent":%s,"statusModeEnumPresent":%s,"statusModeFieldPresent":%s,"latActiveFieldPresent":%s,"longActiveFieldPresent":%s,"controlPublisherPresent":%s,"scenePublisherPresent":%s,"statusPublisherPresent":%s,"runtimeFlavorConstantPresent":%s,"runtimeFlavorPublisherPresent":%s,"statusModeHelperPresent":%s,"statusModePublisherPresent":%s,"latLongPublisherPresent":%s,"controlEventPresent":%s,"sceneEventPresent":%s,"statusEventPresent":%s}' "$healthy" "$patch_verified" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$control_service_present" "$scene_service_present" "$status_service_present" "$schema_present" "$runtime_flavor_field_present" "$status_mode_enum_present" "$status_mode_field_present" "$lat_active_field_present" "$long_active_field_present" "$control_publisher_present" "$scene_publisher_present" "$status_publisher_present" "$runtime_flavor_constant_present" "$runtime_flavor_publisher_present" "$status_mode_helper_present" "$status_mode_publisher_present" "$lat_long_publisher_present" "$control_event_present" "$scene_event_present" "$status_event_present")
+json=$(printf '{"healthy":%s,"patchVerified":%s,"statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","patch":"%s","patchFingerprint":"%s","controlServicePresent":%s,"sceneServicePresent":%s,"statusServicePresent":%s,"schemaPresent":%s,"runtimeFlavorFieldPresent":%s,"statusModeEnumPresent":%s,"statusModeFieldPresent":%s,"speedLimitIconEnumPresent":%s,"speedLimitPreActiveFieldPresent":%s,"speedLimitPreActiveIconFieldPresent":%s,"latActiveFieldPresent":%s,"longActiveFieldPresent":%s,"controlPublisherPresent":%s,"scenePublisherPresent":%s,"statusPublisherPresent":%s,"runtimeFlavorConstantPresent":%s,"runtimeFlavorPublisherPresent":%s,"statusModeHelperPresent":%s,"statusModePublisherPresent":%s,"speedLimitDefaultsPresent":%s,"speedLimitFlavorMarkersPresent":%s,"latLongPublisherPresent":%s,"controlEventPresent":%s,"sceneEventPresent":%s,"statusEventPresent":%s}' "$healthy" "$patch_verified" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$control_service_present" "$scene_service_present" "$status_service_present" "$schema_present" "$runtime_flavor_field_present" "$status_mode_enum_present" "$status_mode_field_present" "$speed_limit_icon_enum_present" "$speed_limit_pre_active_field_present" "$speed_limit_pre_active_icon_field_present" "$lat_active_field_present" "$long_active_field_present" "$control_publisher_present" "$scene_publisher_present" "$status_publisher_present" "$runtime_flavor_constant_present" "$runtime_flavor_publisher_present" "$status_mode_helper_present" "$status_mode_publisher_present" "$speed_limit_defaults_present" "$speed_limit_flavor_markers_present" "$lat_long_publisher_present" "$control_event_present" "$scene_event_present" "$status_event_present")
 printf '%s\n' "$json" > "$STATE_JSON"
 if [ -n "$fingerprint" ]; then
   printf 'ONROAD_UI_EXPORT_FLAVOR=%s\nONROAD_UI_EXPORT_PATCH_SHA=%s\nONROAD_UI_EXPORT_OP_ROOT=%s\n' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"

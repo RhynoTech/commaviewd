@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..f4623ad
 --- /dev/null
 +++ b/cereal/commaview.capnp
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,119 @@
 +using Cxx = import "./include/c++.capnp";
 +$Cxx.namespace("cereal");
 +
@@ -67,6 +67,12 @@ index 0000000..f4623ad
 +  LONG_ONLY @5;
 +}
 +
++enum CommaViewSpeedLimitPreActiveIcon {
++  NONE @0;
++  UP @1;
++  DOWN @2;
++}
++
 +struct CommaViewCalibration {
 +  rpyCalib @0 :List(Float32);
 +  height @1 :List(Float32);
@@ -114,6 +120,8 @@ index 0000000..f4623ad
 +  driverMonitoringActive @17 :Bool;
 +  runtimeFlavor @18 :Text;
 +  statusMode @19 :CommaViewStatusMode;
++  speedLimitPreActive @20 :Bool;
++  speedLimitPreActiveIcon @21 :CommaViewSpeedLimitPreActiveIcon;
 +}
 diff --git a/cereal/log.capnp b/cereal/log.capnp
 index d14e149..5e52057 100644
@@ -156,7 +164,8 @@ index f7a5d44..fd3cea7 100644
 --- a/selfdrive/ui/ui_state.py
 +++ b/selfdrive/ui/ui_state.py
 @@ -7,8 +7,12 @@ from enum import Enum
- from cereal import messaging, car, log
+-from cereal import messaging, car, log
++from cereal import messaging, car, log, custom
  from openpilot.common.filter_simple import FirstOrderFilter
  from openpilot.common.params import Params
 +from openpilot.common.transformations.camera import DEVICE_CAMERAS
@@ -191,7 +200,7 @@ index f7a5d44..fd3cea7 100644
      if time.monotonic() - self._param_update_time > 5.0:
        self.update_params()
      device.update()
-@@ -178,6 +191,169 @@ class UIState(UIStateSP):
+@@ -178,6 +191,198 @@ class UIState(UIStateSP):
  
        self._started_prev = self.started
  
@@ -250,6 +259,28 @@ index f7a5d44..fd3cea7 100644
 +      "lat_only": "LAT_ONLY",
 +      "long_only": "LONG_ONLY",
 +    }.get(status_value, "UNKNOWN")
++
++  def _commaview_speed_limit_pre_active_icon(self) -> str:
++    if self.sm.recv_frame["longitudinalPlanSP"] < self.started_frame:
++      return "NONE"
++    speed_limit = self.sm["longitudinalPlanSP"].speedLimit.resolver.speedLimitFinalLast
++    if speed_limit <= 0.0:
++      return "NONE"
++    car_state = self.sm["carState"]
++    controls_state = self.sm["controlsState"]
++    v_cruise_cluster = car_state.vCruiseCluster
++    set_speed = float(controls_state.vCruiseDEPRECATED if v_cruise_cluster == 0.0 else v_cruise_cluster)
++    speed_conv = 3.6 if self.is_metric else 2.2369362920544
++    if not self.is_metric:
++      set_speed *= 0.621371
++    speed_limit_display = float(speed_limit) * speed_conv
++    set_speed_round = round(set_speed)
++    speed_limit_round = round(speed_limit_display)
++    if set_speed_round < speed_limit_round:
++      return "UP"
++    if set_speed_round > speed_limit_round:
++      return "DOWN"
++    return "NONE"
 +
 +  def _publish_commaview_control(self) -> None:
 +    # COMMAVIEW UI EXPORT V4
@@ -333,6 +364,8 @@ index f7a5d44..fd3cea7 100644
 +    status.exportVersion = 5
 +    status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN
 +    status.statusMode = "DISENGAGED" if not self.started else "UNKNOWN"
++    status.speedLimitPreActive = False
++    status.speedLimitPreActiveIcon = "NONE"
 +    if self.sm.recv_frame["selfdriveState"] >= self.started_frame:
 +      selfdrive_state = self.sm["selfdriveState"]
 +      driver_monitoring = self.sm["driverMonitoringState"]
@@ -356,6 +389,11 @@ index f7a5d44..fd3cea7 100644
 +      status.isLowStd = bool(driver_monitoring.isLowStd)
 +      status.driverMonitoringActive = bool(driver_monitoring.isActiveMode)
 +      status.statusMode = self._commaview_status_mode_name(self.status)
++      if self.sm.recv_frame["longitudinalPlanSP"] >= self.started_frame:
++        speed_limit_assist = self.sm["longitudinalPlanSP"].speedLimit.assist
++        status.speedLimitPreActive = speed_limit_assist.state == custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive
++        if status.speedLimitPreActive:
++          status.speedLimitPreActiveIcon = self._commaview_speed_limit_pre_active_icon()
 +    self._commaview_pm.send("commaViewStatus", msg)
 +
    def update_params(self) -> None:

@@ -25,6 +25,10 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   grep -Fq 'longActive @15 :Bool;' "$patch" || fail "$patch missing longActive field"
   grep -Fq 'runtimeFlavor @18 :Text;' "$patch" || fail "$patch missing runtimeFlavor field"
   grep -Fq 'enum CommaViewStatusMode {' "$patch" || fail "$patch missing status mode enum"
+  grep -Fq 'enum CommaViewSpeedLimitPreActiveIcon {' "$patch" || fail "$patch missing speed-limit icon enum"
+  grep -Fq 'NONE @0;' "$patch" || fail "$patch missing speed-limit icon NONE"
+  grep -Fq 'UP @1;' "$patch" || fail "$patch missing speed-limit icon UP"
+  grep -Fq 'DOWN @2;' "$patch" || fail "$patch missing speed-limit icon DOWN"
   grep -Fq 'UNKNOWN @0;' "$patch" || fail "$patch missing UNKNOWN status mode"
   grep -Fq 'DISENGAGED @1;' "$patch" || fail "$patch missing DISENGAGED status mode"
   grep -Fq 'ENGAGED @2;' "$patch" || fail "$patch missing ENGAGED status mode"
@@ -32,6 +36,8 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   grep -Fq 'LAT_ONLY @4;' "$patch" || fail "$patch missing LAT_ONLY status mode"
   grep -Fq 'LONG_ONLY @5;' "$patch" || fail "$patch missing LONG_ONLY status mode"
   grep -Fq 'statusMode @19 :CommaViewStatusMode;' "$patch" || fail "$patch missing statusMode field"
+  grep -Fq 'speedLimitPreActive @20 :Bool;' "$patch" || fail "$patch missing speedLimitPreActive field"
+  grep -Fq 'speedLimitPreActiveIcon @21 :CommaViewSpeedLimitPreActiveIcon;' "$patch" || fail "$patch missing speedLimitPreActiveIcon field"
   grep -Fq 'scene.frameId = int(model.frameId)' "$patch" || fail "$patch missing scene frameId export"
   grep -Fq 'scene.frameDropPerc = float(model.frameDropPerc)' "$patch" || fail "$patch missing scene frameDropPerc export"
   grep -Fq 'scene.timestampEof = int(model.timestampEof)' "$patch" || fail "$patch missing scene timestamp export"
@@ -68,7 +74,15 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   grep -Fq 'status.exportVersion = 5' "$patch" || fail "$patch missing status export version bump"
   grep -Fq 'status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN' "$patch" || fail "$patch missing runtime flavor export"
   grep -Fq 'status.statusMode = "DISENGAGED" if not self.started else "UNKNOWN"' "$patch" || fail "$patch missing honest default status mode export"
+  grep -Fq 'status.speedLimitPreActive = False' "$patch" || fail "$patch missing default speed-limit pre-active export"
+  grep -Fq 'status.speedLimitPreActiveIcon = "NONE"' "$patch" || fail "$patch missing default speed-limit icon export"
   grep -Fq 'status.statusMode = self._commaview_status_mode_name(self.status)' "$patch" || fail "$patch missing normalized status mode export"
+  if [[ "$patch" == *'/sunnypilot/'* ]]; then
+    grep -Fq 'from cereal import messaging, car, log, custom' "$patch" || fail "$patch missing sunnypilot custom import"
+    grep -Fq 'def _commaview_speed_limit_pre_active_icon(self) -> str:' "$patch" || fail "$patch missing speed-limit icon helper"
+    grep -Fq 'status.speedLimitPreActive = speed_limit_assist.state == custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$patch" || fail "$patch missing speed-limit pre-active export"
+    grep -Fq 'status.speedLimitPreActiveIcon = self._commaview_speed_limit_pre_active_icon()' "$patch" || fail "$patch missing speed-limit icon publisher"
+  fi
 done
 
 echo "PASS: direct v2 UI export patch contract present"

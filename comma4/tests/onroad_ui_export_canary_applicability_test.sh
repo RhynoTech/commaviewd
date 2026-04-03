@@ -43,7 +43,10 @@ run_ref() {
   grep -Fq 'longActive @15 :Bool;' "$checkout/cereal/commaview.capnp" || fail "longActive field missing for ${label}"
   grep -Fq 'runtimeFlavor @18 :Text;' "$checkout/cereal/commaview.capnp" || fail "runtimeFlavor field missing for ${label}"
   grep -Fq 'enum CommaViewStatusMode {' "$checkout/cereal/commaview.capnp" || fail "status mode enum missing for ${label}"
+  grep -Fq 'enum CommaViewSpeedLimitPreActiveIcon {' "$checkout/cereal/commaview.capnp" || fail "speed-limit icon enum missing for ${label}"
   grep -Fq 'statusMode @19 :CommaViewStatusMode;' "$checkout/cereal/commaview.capnp" || fail "statusMode field missing for ${label}"
+  grep -Fq 'speedLimitPreActive @20 :Bool;' "$checkout/cereal/commaview.capnp" || fail "speed-limit pre-active field missing for ${label}"
+  grep -Fq 'speedLimitPreActiveIcon @21 :CommaViewSpeedLimitPreActiveIcon;' "$checkout/cereal/commaview.capnp" || fail "speed-limit icon field missing for ${label}"
   grep -Fq 'commaViewControl @150' "$checkout/cereal/log.capnp" || fail "control event missing for ${label}"
   grep -Fq 'commaViewScene @151' "$checkout/cereal/log.capnp" || fail "scene event missing for ${label}"
   grep -Fq 'commaViewStatus @152' "$checkout/cereal/log.capnp" || fail "status event missing for ${label}"
@@ -56,8 +59,16 @@ run_ref() {
   grep -Fq 'status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN' "$checkout/selfdrive/ui/ui_state.py" || fail "runtime flavor export missing for ${label}"
   grep -Fq 'def _commaview_status_mode_name(status) -> str:' "$checkout/selfdrive/ui/ui_state.py" || fail "status mode helper missing for ${label}"
   grep -Fq 'status.statusMode = self._commaview_status_mode_name(self.status)' "$checkout/selfdrive/ui/ui_state.py" || fail "status mode export missing for ${label}"
+  grep -Fq 'status.speedLimitPreActive = False' "$checkout/selfdrive/ui/ui_state.py" || fail "speed-limit pre-active default missing for ${label}"
+  grep -Fq 'status.speedLimitPreActiveIcon = "NONE"' "$checkout/selfdrive/ui/ui_state.py" || fail "speed-limit icon default missing for ${label}"
+  if [[ "$label" == sunnypilot* ]]; then
+    grep -Fq 'from cereal import messaging, car, log, custom' "$checkout/selfdrive/ui/ui_state.py" || fail "custom import missing for ${label}"
+    grep -Fq 'def _commaview_speed_limit_pre_active_icon(self) -> str:' "$checkout/selfdrive/ui/ui_state.py" || fail "speed-limit icon helper missing for ${label}"
+    grep -Fq 'status.speedLimitPreActive = speed_limit_assist.state == custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$checkout/selfdrive/ui/ui_state.py" || fail "speed-limit pre-active export missing for ${label}"
+    grep -Fq 'status.speedLimitPreActiveIcon = self._commaview_speed_limit_pre_active_icon()' "$checkout/selfdrive/ui/ui_state.py" || fail "speed-limit icon export missing for ${label}"
+  fi
 
-  printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","controlServicePresent":true,"sceneServicePresent":true,"statusServicePresent":true,"schemaPresent":true,"runtimeFlavorFieldPresent":true,"statusModeEnumPresent":true,"statusModeFieldPresent":true,"latActiveFieldPresent":true,"longActiveFieldPresent":true,"controlPublisherPresent":true,"scenePublisherPresent":true,"statusPublisherPresent":true,"runtimeFlavorConstantPresent":true,"runtimeFlavorPublisherPresent":true,"statusModeHelperPresent":true,"statusModePublisherPresent":true,"latLongPublisherPresent":true,"controlEventPresent":true,"sceneEventPresent":true,"statusEventPresent":true}'
+  printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","controlServicePresent":true,"sceneServicePresent":true,"statusServicePresent":true,"schemaPresent":true,"runtimeFlavorFieldPresent":true,"statusModeEnumPresent":true,"statusModeFieldPresent":true,"speedLimitIconEnumPresent":true,"speedLimitPreActiveFieldPresent":true,"speedLimitPreActiveIconFieldPresent":true,"latActiveFieldPresent":true,"longActiveFieldPresent":true,"controlPublisherPresent":true,"scenePublisherPresent":true,"statusPublisherPresent":true,"runtimeFlavorConstantPresent":true,"runtimeFlavorPublisherPresent":true,"statusModeHelperPresent":true,"statusModePublisherPresent":true,"speedLimitDefaultsPresent":true,"speedLimitFlavorMarkersPresent":true,"latLongPublisherPresent":true,"controlEventPresent":true,"sceneEventPresent":true,"statusEventPresent":true}'
 
   git -C "$checkout" reset --hard -q HEAD
   git -C "$checkout" clean -fdq
