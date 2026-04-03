@@ -1,9 +1,9 @@
 diff --git a/cereal/commaview.capnp b/cereal/commaview.capnp
 new file mode 100644
-index 0000000..420f624
+index 0000000..f4623ad
 --- /dev/null
 +++ b/cereal/commaview.capnp
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,111 @@
 +using Cxx = import "./include/c++.capnp";
 +$Cxx.namespace("cereal");
 +
@@ -58,6 +58,15 @@ index 0000000..420f624
 +  wideRoad @1;
 +}
 +
++enum CommaViewStatusMode {
++  UNKNOWN @0;
++  DISENGAGED @1;
++  ENGAGED @2;
++  OVERRIDE @3;
++  LAT_ONLY @4;
++  LONG_ONLY @5;
++}
++
 +struct CommaViewCalibration {
 +  rpyCalib @0 :List(Float32);
 +  height @1 :List(Float32);
@@ -104,6 +113,7 @@ index 0000000..420f624
 +  isLowStd @16 :Bool;
 +  driverMonitoringActive @17 :Bool;
 +  runtimeFlavor @18 :Text;
++  statusMode @19 :CommaViewStatusMode;
 +}
 diff --git a/cereal/log.capnp b/cereal/log.capnp
 index d14e149..5e52057 100644
@@ -142,7 +152,7 @@ index a2fd5f7..210d613 100755
    "alertDebug": (True, 20., 5),
    "livestreamWideRoadEncodeIdx": (False, 20.),
 diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
-index f7a5d44..7132300 100644
+index f7a5d44..fd3cea7 100644
 --- a/selfdrive/ui/ui_state.py
 +++ b/selfdrive/ui/ui_state.py
 @@ -7,8 +7,12 @@ from enum import Enum
@@ -181,7 +191,7 @@ index f7a5d44..7132300 100644
      if time.monotonic() - self._param_update_time > 5.0:
        self.update_params()
      device.update()
-@@ -178,6 +191,156 @@ class UIState(UIStateSP):
+@@ -178,6 +191,169 @@ class UIState(UIStateSP):
  
        self._started_prev = self.started
  
@@ -229,6 +239,17 @@ index f7a5d44..7132300 100644
 +        self._commaview_active_camera = "road"
 +
 +    return self._commaview_active_camera, device_camera
++
++  @staticmethod
++  def _commaview_status_mode_name(status) -> str:
++    status_value = str(status.value if hasattr(status, "value") else status)
++    return {
++      "disengaged": "DISENGAGED",
++      "engaged": "ENGAGED",
++      "override": "OVERRIDE",
++      "lat_only": "LAT_ONLY",
++      "long_only": "LONG_ONLY",
++    }.get(status_value, "UNKNOWN")
 +
 +  def _publish_commaview_control(self) -> None:
 +    # COMMAVIEW UI EXPORT V4
@@ -309,8 +330,9 @@ index f7a5d44..7132300 100644
 +  def _publish_commaview_status(self) -> None:
 +    msg = messaging.new_message("commaViewStatus")
 +    status = msg.commaViewStatus
-+    status.exportVersion = 4
++    status.exportVersion = 5
 +    status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN
++    status.statusMode = "DISENGAGED" if not self.started else "UNKNOWN"
 +    if self.sm.recv_frame["selfdriveState"] >= self.started_frame:
 +      selfdrive_state = self.sm["selfdriveState"]
 +      driver_monitoring = self.sm["driverMonitoringState"]
@@ -333,6 +355,7 @@ index f7a5d44..7132300 100644
 +      status.posePitchValidCount = int(driver_monitoring.posePitchValidCount)
 +      status.isLowStd = bool(driver_monitoring.isLowStd)
 +      status.driverMonitoringActive = bool(driver_monitoring.isActiveMode)
++      status.statusMode = self._commaview_status_mode_name(self.status)
 +    self._commaview_pm.send("commaViewStatus", msg)
 +
    def update_params(self) -> None:

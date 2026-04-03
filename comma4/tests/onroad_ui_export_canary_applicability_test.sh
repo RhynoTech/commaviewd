@@ -42,6 +42,8 @@ run_ref() {
   grep -Fq 'latActive @14 :Bool;' "$checkout/cereal/commaview.capnp" || fail "latActive field missing for ${label}"
   grep -Fq 'longActive @15 :Bool;' "$checkout/cereal/commaview.capnp" || fail "longActive field missing for ${label}"
   grep -Fq 'runtimeFlavor @18 :Text;' "$checkout/cereal/commaview.capnp" || fail "runtimeFlavor field missing for ${label}"
+  grep -Fq 'enum CommaViewStatusMode {' "$checkout/cereal/commaview.capnp" || fail "status mode enum missing for ${label}"
+  grep -Fq 'statusMode @19 :CommaViewStatusMode;' "$checkout/cereal/commaview.capnp" || fail "statusMode field missing for ${label}"
   grep -Fq 'commaViewControl @150' "$checkout/cereal/log.capnp" || fail "control event missing for ${label}"
   grep -Fq 'commaViewScene @151' "$checkout/cereal/log.capnp" || fail "scene event missing for ${label}"
   grep -Fq 'commaViewStatus @152' "$checkout/cereal/log.capnp" || fail "status event missing for ${label}"
@@ -52,8 +54,10 @@ run_ref() {
   grep -Fq 'control.latActive = bool(car_control.latActive)' "$checkout/selfdrive/ui/ui_state.py" || fail "latActive export missing for ${label}"
   grep -Fq 'control.longActive = bool(car_control.longActive)' "$checkout/selfdrive/ui/ui_state.py" || fail "longActive export missing for ${label}"
   grep -Fq 'status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN' "$checkout/selfdrive/ui/ui_state.py" || fail "runtime flavor export missing for ${label}"
+  grep -Fq 'def _commaview_status_mode_name(status) -> str:' "$checkout/selfdrive/ui/ui_state.py" || fail "status mode helper missing for ${label}"
+  grep -Fq 'status.statusMode = self._commaview_status_mode_name(self.status)' "$checkout/selfdrive/ui/ui_state.py" || fail "status mode export missing for ${label}"
 
-  printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","controlServicePresent":true,"sceneServicePresent":true,"statusServicePresent":true,"schemaPresent":true,"runtimeFlavorFieldPresent":true,"latActiveFieldPresent":true,"longActiveFieldPresent":true,"controlPublisherPresent":true,"scenePublisherPresent":true,"statusPublisherPresent":true,"runtimeFlavorConstantPresent":true,"runtimeFlavorPublisherPresent":true,"latLongPublisherPresent":true,"controlEventPresent":true,"sceneEventPresent":true,"statusEventPresent":true}'
+  printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","controlServicePresent":true,"sceneServicePresent":true,"statusServicePresent":true,"schemaPresent":true,"runtimeFlavorFieldPresent":true,"statusModeEnumPresent":true,"statusModeFieldPresent":true,"latActiveFieldPresent":true,"longActiveFieldPresent":true,"controlPublisherPresent":true,"scenePublisherPresent":true,"statusPublisherPresent":true,"runtimeFlavorConstantPresent":true,"runtimeFlavorPublisherPresent":true,"statusModeHelperPresent":true,"statusModePublisherPresent":true,"latLongPublisherPresent":true,"controlEventPresent":true,"sceneEventPresent":true,"statusEventPresent":true}'
 
   git -C "$checkout" reset --hard -q HEAD
   git -C "$checkout" clean -fdq
