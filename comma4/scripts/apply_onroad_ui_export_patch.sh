@@ -52,7 +52,7 @@ detect_flavor() {
   for flavor in openpilot sunnypilot; do
     patch="$PATCH_ROOT/$flavor/0001-commaview-ui-export-v2.patch"
     [ -f "$patch" ] || continue
-    if git -C "$OP_ROOT" apply --reverse --check "$patch" >/dev/null 2>&1 ||        git -C "$OP_ROOT" apply --check "$patch" >/dev/null 2>&1; then
+    if git -C "$OP_ROOT" apply --recount --reverse --check "$patch" >/dev/null 2>&1 ||        git -C "$OP_ROOT" apply --recount --check "$patch" >/dev/null 2>&1; then
       matches="$matches $flavor"
     fi
   done
@@ -86,9 +86,9 @@ if [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then
   exit 0
 fi
 
-if ! git -C "$OP_ROOT" apply --reverse --check "$patch" >/dev/null 2>&1; then
-  git -C "$OP_ROOT" apply --check "$patch"
-  git -C "$OP_ROOT" apply "$patch"
+if ! git -C "$OP_ROOT" apply --recount --reverse --check "$patch" >/dev/null 2>&1; then
+  git -C "$OP_ROOT" apply --recount --check "$patch"
+  git -C "$OP_ROOT" apply --recount "$patch"
 fi
 
 fingerprint="$(sha256sum "$patch" | awk '{print $1}')"

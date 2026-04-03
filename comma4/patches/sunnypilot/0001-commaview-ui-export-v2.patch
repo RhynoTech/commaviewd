@@ -59,18 +59,18 @@ index 0000000..f4623ad
 +}
 +
 +enum CommaViewStatusMode {
-+  UNKNOWN @0;
-+  DISENGAGED @1;
-+  ENGAGED @2;
-+  OVERRIDE @3;
-+  LAT_ONLY @4;
-+  LONG_ONLY @5;
++  unknown @0;
++  disengaged @1;
++  engaged @2;
++  override @3;
++  latOnly @4;
++  longOnly @5;
 +}
 +
 +enum CommaViewSpeedLimitPreActiveIcon {
-+  NONE @0;
-+  UP @1;
-+  DOWN @2;
++  none @0;
++  up @1;
++  down @2;
 +}
 +
 +struct CommaViewCalibration {
@@ -118,10 +118,13 @@ index 0000000..f4623ad
 +  posePitchValidCount @15 :UInt16;
 +  isLowStd @16 :Bool;
 +  driverMonitoringActive @17 :Bool;
-+  runtimeFlavor @18 :Text;
-+  statusMode @19 :CommaViewStatusMode;
-+  speedLimitPreActive @20 :Bool;
-+  speedLimitPreActiveIcon @21 :CommaViewSpeedLimitPreActiveIcon;
++  experimentalMode @18 :Bool;
++  runtimeFlavor @19 :Text;
++  statusMode @20 :CommaViewStatusMode;
++  speedLimitPreActive @21 :Bool;
++  speedLimitPreActiveIcon @22 :CommaViewSpeedLimitPreActiveIcon;
++  blindspotIndicatorsEnabled @23 :Bool;
++  rainbowPathEnabled @24 :Bool;
 +}
 diff --git a/cereal/log.capnp b/cereal/log.capnp
 index d14e149..5e52057 100644
@@ -253,19 +256,19 @@ index f7a5d44..fd3cea7 100644
 +  def _commaview_status_mode_name(status) -> str:
 +    status_value = str(status.value if hasattr(status, "value") else status)
 +    return {
-+      "disengaged": "DISENGAGED",
-+      "engaged": "ENGAGED",
-+      "override": "OVERRIDE",
-+      "lat_only": "LAT_ONLY",
-+      "long_only": "LONG_ONLY",
-+    }.get(status_value, "UNKNOWN")
++      "disengaged": "disengaged",
++      "engaged": "engaged",
++      "override": "override",
++      "lat_only": "latOnly",
++      "long_only": "longOnly",
++    }.get(status_value, "unknown")
 +
 +  def _commaview_speed_limit_pre_active_icon(self) -> str:
 +    if self.sm.recv_frame["longitudinalPlanSP"] < self.started_frame:
-+      return "NONE"
++      return "none"
 +    speed_limit = self.sm["longitudinalPlanSP"].speedLimit.resolver.speedLimitFinalLast
 +    if speed_limit <= 0.0:
-+      return "NONE"
++      return "none"
 +    car_state = self.sm["carState"]
 +    controls_state = self.sm["controlsState"]
 +    v_cruise_cluster = car_state.vCruiseCluster
@@ -277,10 +280,10 @@ index f7a5d44..fd3cea7 100644
 +    set_speed_round = round(set_speed)
 +    speed_limit_round = round(speed_limit_display)
 +    if set_speed_round < speed_limit_round:
-+      return "UP"
++      return "up"
 +    if set_speed_round > speed_limit_round:
-+      return "DOWN"
-+    return "NONE"
++      return "down"
++    return "none"
 +
 +  def _publish_commaview_control(self) -> None:
 +    # COMMAVIEW UI EXPORT V4
@@ -361,11 +364,14 @@ index f7a5d44..fd3cea7 100644
 +  def _publish_commaview_status(self) -> None:
 +    msg = messaging.new_message("commaViewStatus")
 +    status = msg.commaViewStatus
-+    status.exportVersion = 5
++    status.exportVersion = 6
++    status.experimentalMode = False
 +    status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN
-+    status.statusMode = "DISENGAGED" if not self.started else "UNKNOWN"
++    status.statusMode = "disengaged" if not self.started else "unknown"
 +    status.speedLimitPreActive = False
-+    status.speedLimitPreActiveIcon = "NONE"
++    status.speedLimitPreActiveIcon = "none"
++    status.blindspotIndicatorsEnabled = bool(self.params.get_bool("BlindSpot"))
++    status.rainbowPathEnabled = bool(self.params.get_bool("RainbowMode"))
 +    if self.sm.recv_frame["selfdriveState"] >= self.started_frame:
 +      selfdrive_state = self.sm["selfdriveState"]
 +      driver_monitoring = self.sm["driverMonitoringState"]
@@ -388,6 +394,7 @@ index f7a5d44..fd3cea7 100644
 +      status.posePitchValidCount = int(driver_monitoring.posePitchValidCount)
 +      status.isLowStd = bool(driver_monitoring.isLowStd)
 +      status.driverMonitoringActive = bool(driver_monitoring.isActiveMode)
++      status.experimentalMode = bool(selfdrive_state.experimentalMode)
 +      status.statusMode = self._commaview_status_mode_name(self.status)
 +      if self.sm.recv_frame["longitudinalPlanSP"] >= self.started_frame:
 +        speed_limit_assist = self.sm["longitudinalPlanSP"].speedLimit.assist
