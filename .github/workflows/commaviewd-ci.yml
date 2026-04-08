@@ -201,19 +201,16 @@ jobs:
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload dist artifacts (debug)
-        if: always()
+      - name: Upload verification manifests on failure
+        if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: commaviewd-dist-${{ matrix.target.name }}-${{ github.sha }}
           path: |
-            dist/commaviewd-host
-            dist/commaviewd-aarch64
             dist/reproducible-build-manifest.json
             dist/upstream-interface-manifest.json
             dist/binary-contract.json
             dist/release-smoke-manifest.json
             dist/onroad-ui-export-status.json
-            release/*/commaview-comma4-*.tar.gz
-            release/*/commaview-comma4-*.tar.gz.sha256
           if-no-files-found: warn
+          retention-days: 3
