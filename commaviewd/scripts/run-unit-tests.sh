@@ -22,26 +22,38 @@ trap "rm -rf \"$TMP\"" EXIT
 
 OP_ROOT="$OP_ROOT" "$ROOT/scripts/build-ubuntu.sh" >/dev/null
 
-CXX="${CXX:-clang++}"
+if [[ -n "${CXX:-}" ]]; then
+  CXX_BIN="$CXX"
+elif command -v clang++ >/dev/null 2>&1; then
+  CXX_BIN="clang++"
+else
+  CXX_BIN="c++"
+fi
 INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/msgq_repo" )
 
-$CXX -O2 -std=c++17 "${INC[@]}" \
+"$CXX_BIN" --version >/dev/null 2>&1 || {
+  echo "[ERR] C++ compiler not found: $CXX_BIN" >&2
+  exit 2
+}
+
+
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_net_framing.cpp" \
   "$ROOT/src/framing.cpp" \
   -o "$TMP/test_net_framing"
 
-$CXX -O2 -std=c++17 "${INC[@]}" \
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_runtime_mode.cpp" \
   "$ROOT/src/mode.cpp" \
   -o "$TMP/test_runtime_mode"
 
-$CXX -O2 -std=c++17 "${INC[@]}" \
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_control_policy.cpp" \
   "$ROOT/src/policy.cpp" \
   "$ROOT/src/framing.cpp" \
   -o "$TMP/test_control_policy"
 
-$CXX -O2 -std=c++17 "${INC[@]}" \
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_telemetry_json.cpp" \
   "$ROOT/src/json_builder.cpp" \
   "$OP_ROOT/cereal/gen/cpp/log.capnp.c++" \
@@ -51,15 +63,20 @@ $CXX -O2 -std=c++17 "${INC[@]}" \
   -lcapnp -lkj -lpthread \
   -o "$TMP/test_telemetry_json"
 
-$CXX -O2 -std=c++17 "${INC[@]}" \
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_telemetry_stats.cpp" \
   "$ROOT/src/telemetry_stats.cpp" \
   -o "$TMP/test_telemetry_stats"
 
-$CXX -O2 -std=c++17 "${INC[@]}" \
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_http_server_cloexec.cpp" \
   "$ROOT/src/http_server.cpp" \
   -o "$TMP/test_http_server_cloexec"
+
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
+  "$ROOT/tests/test_ui_export_socket.cpp" \
+  "$ROOT/src/ui_export_socket.cpp" \
+  -o "$TMP/test_ui_export_socket"
 
 "$TMP/test_net_framing"
 "$TMP/test_runtime_mode"
@@ -67,6 +84,7 @@ $CXX -O2 -std=c++17 "${INC[@]}" \
 "$TMP/test_telemetry_json"
 "$TMP/test_telemetry_stats"
 "$TMP/test_http_server_cloexec"
+"$TMP/test_ui_export_socket"
 
 "$ROOT/tests/control_mode_api_contract_test.sh"
 "$ROOT/tests/raw_only_runtime_contract_test.sh"
