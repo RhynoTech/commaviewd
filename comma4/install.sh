@@ -36,7 +36,9 @@ VERSION="${COMMAVIEWD_VERSION:-${VERSION:-${RELEASE_TAG#v}}}"
 ASSET_NAME="${COMMAVIEWD_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
 ASSET_SHA_NAME="${ASSET_NAME}.sha256"
 BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
-INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-master}"
+# Keep installer companions pinned to the same resolved release by default.
+# Falling back to master here mixes release assets with moving scripts/patches.
+INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-$RELEASE_TAG}"
 INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma4}"
 
 INSTALL_DIR="/data/commaview"

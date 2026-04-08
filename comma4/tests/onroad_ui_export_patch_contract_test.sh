@@ -59,6 +59,7 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$patch" || fail "$patch missing runtime flavor constant"
   grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN = "UNKNOWN"' "$patch" || fail "$patch missing runtime flavor unknown fallback"
   grep -Fq 'control.exportVersion = 4' "$patch" || fail "$patch missing control export version bump"
+  grep -Fq 'scene.exportVersion = 2' "$patch" || fail "$patch missing scene export version pin"
   grep -Fq 'if self.sm.recv_frame["carControl"] >= self.started_frame:' "$patch" || fail "$patch missing carControl recv guard"
   grep -Fq 'control.latActive = bool(car_control.latActive)' "$patch" || fail "$patch missing latActive export"
   grep -Fq 'control.longActive = bool(car_control.longActive)' "$patch" || fail "$patch missing longActive export"

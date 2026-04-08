@@ -105,6 +105,9 @@ status_mode_publisher_present=false
 speed_limit_defaults_present=false
 speed_limit_flavor_markers_present=false
 lat_long_publisher_present=false
+control_export_version_present=false
+scene_export_version_present=false
+status_export_version_present=false
 control_event_present=false
 scene_event_present=false
 status_event_present=false
@@ -159,6 +162,9 @@ else
   if grep -Fq 'control.latActive = bool(car_control.latActive)' "$OP_ROOT/selfdrive/ui/ui_state.py" && grep -Fq 'control.longActive = bool(car_control.longActive)' "$OP_ROOT/selfdrive/ui/ui_state.py"; then
     lat_long_publisher_present=true
   fi
+  grep -Fq 'control.exportVersion = 4' "$OP_ROOT/selfdrive/ui/ui_state.py" && control_export_version_present=true || true
+  grep -Fq 'scene.exportVersion = 2' "$OP_ROOT/selfdrive/ui/ui_state.py" && scene_export_version_present=true || true
+  grep -Fq 'status.exportVersion = 6' "$OP_ROOT/selfdrive/ui/ui_state.py" && status_export_version_present=true || true
   grep -Fq 'commaViewControl @150' "$OP_ROOT/cereal/log.capnp" && control_event_present=true || true
   grep -Fq 'commaViewScene @151' "$OP_ROOT/cereal/log.capnp" && scene_event_present=true || true
   grep -Fq 'commaViewStatus @152' "$OP_ROOT/cereal/log.capnp" && status_event_present=true || true
@@ -166,6 +172,7 @@ else
      $experimental_mode_field_present && $runtime_flavor_field_present && $status_mode_enum_present && $status_mode_field_present && $speed_limit_icon_enum_present && $speed_limit_pre_active_field_present && $speed_limit_pre_active_icon_field_present && $lat_active_field_present && $long_active_field_present && \
      $control_publisher_present && $scene_publisher_present && $status_publisher_present && \
      $runtime_flavor_constant_present && $runtime_flavor_publisher_present && $status_mode_helper_present && $status_mode_publisher_present && $speed_limit_defaults_present && $speed_limit_flavor_markers_present && $lat_long_publisher_present && \
+     $control_export_version_present && $scene_export_version_present && $status_export_version_present && \
      $control_event_present && $scene_event_present && $status_event_present; then
     state="patch-verified"
     reason="static direct v2 patch markers verified; runtime telemetry not proven"

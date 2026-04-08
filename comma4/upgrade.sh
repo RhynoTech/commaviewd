@@ -99,11 +99,7 @@ if [ -x /data/commaview/stop.sh ]; then
 fi
 
 install_script="$tmpdir/install.sh"
-if ! curl -fL --retry 3 --retry-delay 1 -o "$install_script" "$INSTALL_SCRIPT_URL"; then
-  fallback_url="https://raw.githubusercontent.com/${GITHUB_REPO}/master/comma4/install.sh"
-  echo "WARN: failed to fetch install script at ${INSTALL_SCRIPT_URL}; falling back to ${fallback_url}" >&2
-  curl -fL --retry 3 --retry-delay 1 -o "$install_script" "$fallback_url"
-fi
+curl -fL --retry 3 --retry-delay 1 -o "$install_script" "$INSTALL_SCRIPT_URL"
 chmod +x "$install_script"
 
 ONROAD_UI_EXPORT_VERIFY="/data/commaview/scripts/verify_onroad_ui_export_patch.sh"
