@@ -89,11 +89,6 @@ bool parse_set_policy_control(const std::string& json,
 }  // namespace
 
 
-TailscalePolicyAction decide_tailscale_action(bool onroad, bool desired_enabled) {
-  if (onroad) return TailscalePolicyAction::kForceDown;
-  return desired_enabled ? TailscalePolicyAction::kEnsureUp : TailscalePolicyAction::kStayDown;
-}
-
 void set_session_policy(const std::string& session_id, bool suppress_video) {
   std::lock_guard<std::mutex> lock(g_session_policy_mu);
   g_session_policy[session_id] = suppress_video;

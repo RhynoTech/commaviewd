@@ -4,9 +4,6 @@ echo "Stopping services..."
 bash /data/commaview/stop.sh 2>/dev/null || true
 echo "Removing boot hook..."
 sed -i '/# commaview-hook/d; /commaview\/start.sh/d' /data/continue.sh 2>/dev/null || true
-echo "Disabling CommaView tailscale flag..."
-echo -n 0 > /data/params/d/CommaViewTailscaleEnabled 2>/dev/null || true
 echo "Removing files..."
-rm -rf /data/commaview/tailscale
 rm -rf /data/commaview
 echo "CommaView uninstalled"

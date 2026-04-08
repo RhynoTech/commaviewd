@@ -21,12 +21,5 @@ void consume_client_control_frames(int client_fd,
                                    const char* video_service,
                                    uint8_t msg_control_type);
 
-enum class TailscalePolicyAction {
-  kForceDown,
-  kEnsureUp,
-  kStayDown,
-};
-
-TailscalePolicyAction decide_tailscale_action(bool onroad, bool desired_enabled);
 
 }  // namespace commaview::control

@@ -8,7 +8,7 @@
 
 - Runtime binary with explicit modes:
   - `commaviewd bridge` (video + telemetry streaming)
-  - `commaviewd control` (local control API + tailscale policy)
+  - `commaviewd control` (local control API for pairing, status, and runtime debug)
 - Installer lifecycle scripts for comma4 (`comma4/`)
 - CI + canary coverage against upstream openpilot/sunnypilot branches
 
@@ -33,14 +33,6 @@ Install/update:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/install.sh | ssh comma@<comma-ip> bash
-```
-
-Optional tailscale onboarding:
-
-```bash
-COMMAVIEWD_TAILSCALE_AUTHKEY="tskey-auth-..." \
-  curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/install.sh \
-  | ssh comma@<comma-ip> 'bash -s -- --enable-tailscale'
 ```
 
 Upgrade / uninstall:

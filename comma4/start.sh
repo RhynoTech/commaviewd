@@ -43,7 +43,7 @@ COMMAVIEWD_RESTART_REASON="$RESTART_REASON" \
 nohup nice -n 19 /data/commaview/commaviewd bridge >> "$LOG_DIR/commaviewd-bridge.log" 2>&1 &
 echo $! > "$RUN_DIR/bridge.pid"
 
-# Launch control mode (API + tailscale policy)
+# Launch control mode (API + pairing/runtime status)
 COMMAVIEWD_API_TOKEN_FILE=/data/commaview/api/auth.token \
 COMMAVIEWD_RUNTIME_DEBUG_CONFIG="$RUNTIME_DEBUG_CONFIG" \
 COMMAVIEWD_RUNTIME_DEBUG_DEFAULTS="$DEFAULTS_FILE" \

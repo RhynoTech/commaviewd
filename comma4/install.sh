@@ -45,41 +45,20 @@ INSTALL_DIR="/data/commaview"
 CONTINUE_SH="/data/continue.sh"
 MARKER="# commaview-hook"
 
-ENABLE_TAILSCALE=0
-TAILSCALE_AUTHKEY="${COMMAVIEWD_TAILSCALE_AUTHKEY:-}"
-
 usage() {
   cat <<USAGE
 CommaView installer ${VERSION}
 
 Usage:
-  install.sh [--enable-tailscale] [--tailscale-auth-key <key>] [--help]
+  install.sh [--help]
 
 Options:
-  --enable-tailscale             Enable optional Tailscale setup.
-  --tailscale-auth-key <key>     One-time auth key used during initial join.
-                                 You can also set COMMAVIEWD_TAILSCALE_AUTHKEY.
   -h, --help                     Show this help and exit.
-
-Default behavior:
-  If --enable-tailscale is not set, install path is unchanged.
 USAGE
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --enable-tailscale)
-      ENABLE_TAILSCALE=1
-      shift
-      ;;
-    --tailscale-auth-key)
-      if [ "$#" -lt 2 ]; then
-        echo "ERROR: --tailscale-auth-key requires a value" >&2
-        exit 1
-      fi
-      TAILSCALE_AUTHKEY="$2"
-      shift 2
-      ;;
     -h|--help)
       usage
       exit 0
@@ -120,7 +99,6 @@ required_files=(
   "start.sh"
   "stop.sh"
   "uninstall.sh"
-  "install_tailscale_runtime.sh"
   "runtime-debug.defaults.json"
   "scripts/verify_onroad_ui_export_patch.sh"
   "scripts/apply_onroad_ui_export_patch.sh"
@@ -189,7 +167,6 @@ deploy_required_scripts() {
   copy_required_file "patches/sunnypilot/0001-commaview-ui-export-v2.patch" "$INSTALL_DIR/patches/sunnypilot/0001-commaview-ui-export-v2.patch" 644
   copy_required_file "stop.sh" "$INSTALL_DIR/stop.sh"
   copy_required_file "uninstall.sh" "$INSTALL_DIR/uninstall.sh"
-  copy_required_file "install_tailscale_runtime.sh" "$INSTALL_DIR/tailscale/install_tailscale_runtime.sh"
 
   cat > "$INSTALL_DIR/version.env" <<EOF
 VERSION="${VERSION}"
@@ -225,110 +202,12 @@ validate_required_files
 echo "=== CommaView ${VERSION} Installer ==="
 echo "Release: ${RELEASE_TAG}"
 echo "Repo:    ${GITHUB_REPO}"
-if [ "$ENABLE_TAILSCALE" = "1" ]; then
-  echo "Tailscale opt-in: enabled"
-fi
 
 tmpdir="$(mktemp -d /tmp/commaview-install.XXXXXX)"
 cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT
 
-mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/run" "$INSTALL_DIR/lib" "$INSTALL_DIR/tailscale" "$INSTALL_DIR/api"
-
-prompt_retry_or_continue() {
-  if [ ! -t 0 ]; then
-    echo "Non-interactive install; continuing without Tailscale." >&2
-    return 1
-  fi
-
-  while true; do
-    echo "Tailscale setup failed. Choose: [r]etry or [c]ontinue without Tailscale"
-    read -r choice
-    case "${choice:-}" in
-      r|R|retry|Retry) return 0 ;;
-      c|C|continue|Continue) return 1 ;;
-      *) echo "Please enter r or c." ;;
-    esac
-  done
-}
-
-ensure_tailscale_runtime_best_effort() {
-  local runtime="$INSTALL_DIR/tailscale/install_tailscale_runtime.sh"
-  local runtime_log="$INSTALL_DIR/logs/tailscale-install.log"
-
-  if [ ! -x "$runtime" ]; then
-    echo "WARN: tailscale runtime helper missing at $runtime" >&2
-    return 0
-  fi
-
-  if ! "$runtime" >> "$runtime_log" 2>&1; then
-    echo "WARN: tailscale runtime install failed (continuing without remote access setup)" >&2
-    return 0
-  fi
-
-  return 0
-}
-
-maybe_configure_tailscale_opt_in() {
-  [ "$ENABLE_TAILSCALE" = "1" ] || return 0
-
-  local runtime="$INSTALL_DIR/tailscale/install_tailscale_runtime.sh"
-  local tailscale_bin="$INSTALL_DIR/tailscale/bin/tailscale"
-  local tailscaled_bin="$INSTALL_DIR/tailscale/bin/tailscaled"
-  local socket="$INSTALL_DIR/tailscale/state/tailscaled.sock"
-  local statefile="$INSTALL_DIR/tailscale/state/tailscaled.state"
-
-  mkdir -p "$INSTALL_DIR/tailscale/state" /data/params/d
-
-  while true; do
-    if ! "$runtime"; then
-      echo "WARN: failed to install/check tailscale runtime" >&2
-      if prompt_retry_or_continue; then
-        continue
-      fi
-      printf "0" > /data/params/d/CommaViewTailscaleEnabled
-      return 0
-    fi
-
-    if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
-      if [ -t 0 ]; then
-        echo "Enter one-time Tailscale auth key (or leave blank to continue without Tailscale):"
-        read -r TAILSCALE_AUTHKEY
-      fi
-    fi
-
-    if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
-      echo "No auth key provided. Continuing without Tailscale setup."
-      printf "0" > /data/params/d/CommaViewTailscaleEnabled
-      return 0
-    fi
-
-    nohup nice -n 19 "$tailscaled_bin" --state="$statefile" --socket="$socket" >> "$INSTALL_DIR/logs/tailscale-install.log" 2>&1 &
-    local tsd_pid=$!
-    sleep 1
-
-    if "$tailscale_bin" --socket "$socket" up --authkey "$TAILSCALE_AUTHKEY" --accept-routes --reset >> "$INSTALL_DIR/logs/tailscale-install.log" 2>&1; then
-      "$tailscale_bin" --socket "$socket" down >> "$INSTALL_DIR/logs/tailscale-install.log" 2>&1 || true
-      kill "$tsd_pid" 2>/dev/null || true
-      wait "$tsd_pid" 2>/dev/null || true
-      printf "1" > /data/params/d/CommaViewTailscaleEnabled
-      unset TAILSCALE_AUTHKEY
-      echo "Tailscale onboarding complete (auth key consumed once)."
-      return 0
-    fi
-
-    kill "$tsd_pid" 2>/dev/null || true
-    wait "$tsd_pid" 2>/dev/null || true
-
-    if prompt_retry_or_continue; then
-      continue
-    fi
-
-    printf "0" > /data/params/d/CommaViewTailscaleEnabled
-    unset TAILSCALE_AUTHKEY
-    return 0
-  done
-}
+mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/run" "$INSTALL_DIR/lib" "$INSTALL_DIR/api"
 
 echo "Stopping existing CommaView processes..."
 pkill -f "/data/commaview/commaviewd" 2>/dev/null || true
@@ -356,7 +235,6 @@ tar -xzf "$tmpdir/$ASSET_NAME" -C "$INSTALL_DIR" --strip-components=1
 
 deploy_required_scripts
 ensure_api_auth_token
-ensure_tailscale_runtime_best_effort
 echo "Applying direct v2 onroad UI export patch lifecycle..."
 if [ -x "$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh" ]; then
   COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh"
@@ -389,8 +267,6 @@ elif grep -q "$MARKER" "$CONTINUE_SH" 2>/dev/null; then
   echo "Boot hook already present"
 fi
 
-maybe_configure_tailscale_opt_in
-
 echo "Starting CommaView runtime..."
 bash "$INSTALL_DIR/start.sh"
 sleep 1
@@ -401,9 +277,5 @@ echo "  Source:      ${BASE_URL}/${ASSET_NAME}"
 echo "  Binary:      $INSTALL_DIR/commaviewd ($BINARY_SIZE)"
 echo "  Runtime:     commaviewd dual-mode (bridge + control)"
 echo "  Direct v2 onroad UI export: install-time patch lifecycle enforced"
-echo "  Policy:      tailscale forced down onroad"
-if [ "$ENABLE_TAILSCALE" = "1" ]; then
-  echo "  Tailscale:   opt-in flow complete (see /data/params/d/CommaViewTailscaleEnabled)"
-fi
 echo "  Upgrade:     bash $INSTALL_DIR/upgrade.sh"
 echo "  Uninstall:   bash $INSTALL_DIR/uninstall.sh"

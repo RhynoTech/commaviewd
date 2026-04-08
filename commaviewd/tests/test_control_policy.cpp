@@ -31,13 +31,6 @@ int main() {
   assert(commaview::control::get_session_policy(sid, &suppress));
   assert(suppress == true);
 
-
-  using commaview::control::TailscalePolicyAction;
-  assert(commaview::control::decide_tailscale_action(true, true) == TailscalePolicyAction::kForceDown);
-  assert(commaview::control::decide_tailscale_action(true, false) == TailscalePolicyAction::kForceDown);
-  assert(commaview::control::decide_tailscale_action(false, true) == TailscalePolicyAction::kEnsureUp);
-  assert(commaview::control::decide_tailscale_action(false, false) == TailscalePolicyAction::kStayDown);
-
   close(fds[0]);
   close(fds[1]);
   return 0;

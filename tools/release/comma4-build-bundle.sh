@@ -58,7 +58,6 @@ required_stage_files=(
   "start.sh"
   "stop.sh"
   "uninstall.sh"
-  "tailscale/install_tailscale_runtime.sh"
 )
 
 validate_stage_contents() {
@@ -88,7 +87,7 @@ validate_stage_contents() {
 
 mkdir -p "$OUT_DIR"
 rm -rf "$STAGE_DIR"
-mkdir -p "$STAGE_DIR/lib" "$STAGE_DIR/tailscale"
+mkdir -p "$STAGE_DIR/lib"
 
 if [[ "$SKIP_BUILD" -eq 1 ]]; then
   echo "[1/3] Skipping build (using existing dist artifacts)..."
@@ -122,7 +121,6 @@ install -m 755 "${ROOT}/comma4/upgrade.sh" "${STAGE_DIR}/upgrade.sh"
 install -m 755 "${ROOT}/comma4/start.sh" "${STAGE_DIR}/start.sh"
 install -m 755 "${ROOT}/comma4/stop.sh" "${STAGE_DIR}/stop.sh"
 install -m 755 "${ROOT}/comma4/uninstall.sh" "${STAGE_DIR}/uninstall.sh"
-install -m 755 "${ROOT}/comma4/install_tailscale_runtime.sh" "${STAGE_DIR}/tailscale/install_tailscale_runtime.sh"
 
 cat > "${STAGE_DIR}/VERSION" <<VER
 ${TAG}
