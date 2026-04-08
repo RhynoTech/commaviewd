@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <ctime>
 #include <type_traits>
+#include <utility>
 
 namespace commaview::telemetry {
 namespace {
@@ -78,6 +79,76 @@ std::string json_float_array(T list, int max_count = -1) {
   }
   s += "]";
   return s;
+}
+
+template <typename T, typename = void>
+struct has_left_eye_prob : std::false_type {};
+template <typename T>
+struct has_left_eye_prob<T, std::void_t<decltype(std::declval<T>().getLeftEyeProb())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_right_eye_prob : std::false_type {};
+template <typename T>
+struct has_right_eye_prob<T, std::void_t<decltype(std::declval<T>().getRightEyeProb())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_left_blink_prob : std::false_type {};
+template <typename T>
+struct has_left_blink_prob<T, std::void_t<decltype(std::declval<T>().getLeftBlinkProb())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_right_blink_prob : std::false_type {};
+template <typename T>
+struct has_right_blink_prob<T, std::void_t<decltype(std::declval<T>().getRightBlinkProb())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_sunglasses_prob : std::false_type {};
+template <typename T>
+struct has_sunglasses_prob<T, std::void_t<decltype(std::declval<T>().getSunglassesProb())>> : std::true_type {};
+
+template <typename DriverDataReader>
+auto driver_data_left_eye_prob(const DriverDataReader& d) {
+  if constexpr (has_left_eye_prob<const DriverDataReader&>::value) {
+    return d.getLeftEyeProb();
+  } else {
+    return d.getLeftEyeProbDEPRECATED();
+  }
+}
+
+template <typename DriverDataReader>
+auto driver_data_right_eye_prob(const DriverDataReader& d) {
+  if constexpr (has_right_eye_prob<const DriverDataReader&>::value) {
+    return d.getRightEyeProb();
+  } else {
+    return d.getRightEyeProbDEPRECATED();
+  }
+}
+
+template <typename DriverDataReader>
+auto driver_data_left_blink_prob(const DriverDataReader& d) {
+  if constexpr (has_left_blink_prob<const DriverDataReader&>::value) {
+    return d.getLeftBlinkProb();
+  } else {
+    return d.getLeftBlinkProbDEPRECATED();
+  }
+}
+
+template <typename DriverDataReader>
+auto driver_data_right_blink_prob(const DriverDataReader& d) {
+  if constexpr (has_right_blink_prob<const DriverDataReader&>::value) {
+    return d.getRightBlinkProb();
+  } else {
+    return d.getRightBlinkProbDEPRECATED();
+  }
+}
+
+template <typename DriverDataReader>
+auto driver_data_sunglasses_prob(const DriverDataReader& d) {
+  if constexpr (has_sunglasses_prob<const DriverDataReader&>::value) {
+    return d.getSunglassesProb();
+  } else {
+    return d.getSunglassesProbDEPRECATED();
+  }
 }
 
 std::string build_car_state_json(cereal::CarState::Reader cs, uint64_t log_mono_time) {
@@ -466,11 +537,11 @@ std::string build_driver_data_json(cereal::DriverStateV2::DriverData::Reader d) 
   s += "\"facePosition\":" + json_float_array(d.getFacePosition()) + ",";
   s += "\"facePositionStd\":" + json_float_array(d.getFacePositionStd()) + ",";
   s += "\"faceProb\":" + json_num(d.getFaceProb()) + ",";
-  s += "\"leftEyeProb\":" + json_num(d.getLeftEyeProb()) + ",";
-  s += "\"rightEyeProb\":" + json_num(d.getRightEyeProb()) + ",";
-  s += "\"leftBlinkProb\":" + json_num(d.getLeftBlinkProb()) + ",";
-  s += "\"rightBlinkProb\":" + json_num(d.getRightBlinkProb()) + ",";
-  s += "\"sunglassesProb\":" + json_num(d.getSunglassesProb()) + ",";
+  s += "\"leftEyeProb\":" + json_num(driver_data_left_eye_prob(d)) + ",";
+  s += "\"rightEyeProb\":" + json_num(driver_data_right_eye_prob(d)) + ",";
+  s += "\"leftBlinkProb\":" + json_num(driver_data_left_blink_prob(d)) + ",";
+  s += "\"rightBlinkProb\":" + json_num(driver_data_right_blink_prob(d)) + ",";
+  s += "\"sunglassesProb\":" + json_num(driver_data_sunglasses_prob(d)) + ",";
   s += "\"phoneProb\":" + json_num(d.getPhoneProb());
   s += "}";
   return s;

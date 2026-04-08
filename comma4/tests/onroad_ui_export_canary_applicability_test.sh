@@ -35,49 +35,38 @@ run_ref() {
   git -C "$checkout" apply --recount --check "$patch" || fail "patch does not apply cleanly for ${label}"
   git -C "$checkout" apply --recount "$patch"
 
-  grep -Fq 'commaViewControl' "$checkout/cereal/services.py" || fail "control service missing for ${label}"
-  grep -Fq 'commaViewScene' "$checkout/cereal/services.py" || fail "scene service missing for ${label}"
-  grep -Fq 'commaViewStatus' "$checkout/cereal/services.py" || fail "status service missing for ${label}"
-  grep -Fq 'struct CommaViewControl' "$checkout/cereal/commaview.capnp" || fail "schema missing for ${label}"
-  grep -Fq 'latActive @14 :Bool;' "$checkout/cereal/commaview.capnp" || fail "latActive field missing for ${label}"
-  grep -Fq 'longActive @15 :Bool;' "$checkout/cereal/commaview.capnp" || fail "longActive field missing for ${label}"
-  grep -Fq 'experimentalMode @18 :Bool;' "$checkout/cereal/commaview.capnp" || fail "experimentalMode field missing for ${label}"
-  grep -Fq 'runtimeFlavor @19 :Text;' "$checkout/cereal/commaview.capnp" || fail "runtimeFlavor field missing for ${label}"
-  grep -Fq 'enum CommaViewStatusMode {' "$checkout/cereal/commaview.capnp" || fail "status mode enum missing for ${label}"
-  grep -Fq 'enum CommaViewSpeedLimitPreActiveIcon {' "$checkout/cereal/commaview.capnp" || fail "speed-limit icon enum missing for ${label}"
-  grep -Fq 'statusMode @20 :CommaViewStatusMode;' "$checkout/cereal/commaview.capnp" || fail "statusMode field missing for ${label}"
-  grep -Fq 'speedLimitPreActive @21 :Bool;' "$checkout/cereal/commaview.capnp" || fail "speed-limit pre-active field missing for ${label}"
-  grep -Fq 'speedLimitPreActiveIcon @22 :CommaViewSpeedLimitPreActiveIcon;' "$checkout/cereal/commaview.capnp" || fail "speed-limit icon field missing for ${label}"
-  grep -Fq 'blindspotIndicatorsEnabled @23 :Bool;' "$checkout/cereal/commaview.capnp" || fail "blindspotIndicatorsEnabled field missing for ${label}"
-  grep -Fq 'rainbowPathEnabled @24 :Bool;' "$checkout/cereal/commaview.capnp" || fail "rainbowPathEnabled field missing for ${label}"
-  grep -Fq 'commaViewControl @150' "$checkout/cereal/log.capnp" || fail "control event missing for ${label}"
-  grep -Fq 'commaViewScene @151' "$checkout/cereal/log.capnp" || fail "scene event missing for ${label}"
-  grep -Fq 'commaViewStatus @152' "$checkout/cereal/log.capnp" || fail "status event missing for ${label}"
-  grep -Fq '_publish_commaview_control' "$checkout/selfdrive/ui/ui_state.py" || fail "control publisher missing for ${label}"
-  grep -Fq '_publish_commaview_scene' "$checkout/selfdrive/ui/ui_state.py" || fail "scene publisher missing for ${label}"
-  grep -Fq '_publish_commaview_status' "$checkout/selfdrive/ui/ui_state.py" || fail "status publisher missing for ${label}"
-  grep -Fq 'control.exportVersion = 4' "$checkout/selfdrive/ui/ui_state.py" || fail "control export version pin missing for ${label}"
-  grep -Fq 'scene.exportVersion = 2' "$checkout/selfdrive/ui/ui_state.py" || fail "scene export version pin missing for ${label}"
-  grep -Fq 'status.exportVersion = 6' "$checkout/selfdrive/ui/ui_state.py" || fail "status export version pin missing for ${label}"
-  grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$checkout/selfdrive/ui/ui_state.py" || fail "runtime flavor constant missing for ${label}"
-  grep -Fq 'control.latActive = bool(car_control.latActive)' "$checkout/selfdrive/ui/ui_state.py" || fail "latActive export missing for ${label}"
-  grep -Fq 'control.longActive = bool(car_control.longActive)' "$checkout/selfdrive/ui/ui_state.py" || fail "longActive export missing for ${label}"
-  grep -Fq 'status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN' "$checkout/selfdrive/ui/ui_state.py" || fail "runtime flavor export missing for ${label}"
-  grep -Fq 'status.experimentalMode = bool(selfdrive_state.experimentalMode)' "$checkout/selfdrive/ui/ui_state.py" || fail "experimentalMode export missing for ${label}"
-  grep -Fq 'status.blindspotIndicatorsEnabled = bool(self.params.get_bool("BlindSpot"))' "$checkout/selfdrive/ui/ui_state.py" || fail "BlindSpot param export missing for ${label}"
-  grep -Fq 'status.rainbowPathEnabled = bool(self.params.get_bool("RainbowMode"))' "$checkout/selfdrive/ui/ui_state.py" || fail "RainbowMode param export missing for ${label}"
-  grep -Fq 'def _commaview_status_mode_name(status) -> str:' "$checkout/selfdrive/ui/ui_state.py" || fail "status mode helper missing for ${label}"
-  grep -Fq 'status.statusMode = self._commaview_status_mode_name(self.status)' "$checkout/selfdrive/ui/ui_state.py" || fail "status mode export missing for ${label}"
-  grep -Fq 'status.speedLimitPreActive = False' "$checkout/selfdrive/ui/ui_state.py" || fail "speed-limit pre-active default missing for ${label}"
-  grep -Fq 'status.speedLimitPreActiveIcon = "none"' "$checkout/selfdrive/ui/ui_state.py" || fail "speed-limit icon default missing for ${label}"
+  helper_path="$checkout/selfdrive/ui/commaview_export.py"
+  ui_state_path="$checkout/selfdrive/ui/ui_state.py"
+
+  grep -Fq 'install_commaview_ui_export(UIState)' "$ui_state_path" || fail "ui_state install hook missing for ${label}"
+  grep -Fq 'from openpilot.selfdrive.ui.commaview_export import install_commaview_ui_export' "$ui_state_path" || fail "ui_state import hook missing for ${label}"
+  grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$helper_path" || fail "runtime flavor constant missing for ${label}"
+  grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$helper_path" || fail "frame version missing for ${label}"
+  grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$helper_path" || fail "socket path missing for ${label}"
+  grep -Fq 'os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT' "$helper_path" || fail "socket env override missing for ${label}"
+  grep -Fq 'socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' "$helper_path" || fail "unix socket client missing for ${label}"
+  grep -Fq 'struct.pack(">I", len(frame)) + frame' "$helper_path" || fail "frame packing missing for ${label}"
+  grep -Fq 'def _control_payload(self, ui_state) -> dict:' "$helper_path" || fail "control payload helper missing for ${label}"
+  grep -Fq 'def _scene_payload(self, ui_state) -> dict:' "$helper_path" || fail "scene payload helper missing for ${label}"
+  grep -Fq 'def _status_payload(self, ui_state) -> dict:' "$helper_path" || fail "status payload helper missing for ${label}"
+  grep -Fq 'self._send_json(COMMAVIEW_CONTROL_SERVICE_INDEX, self._control_payload(ui_state))' "$helper_path" || fail "control publish path missing for ${label}"
+  grep -Fq 'self._send_json(COMMAVIEW_SCENE_SERVICE_INDEX, self._scene_payload(ui_state))' "$helper_path" || fail "scene publish path missing for ${label}"
+  grep -Fq 'self._send_json(COMMAVIEW_STATUS_SERVICE_INDEX, self._status_payload(ui_state))' "$helper_path" || fail "status publish path missing for ${label}"
+  grep -Fq '"cruiseSetSpeedMps":' "$helper_path" || fail "cruiseSetSpeedMps export missing for ${label}"
+  grep -Fq '"driverMonitoring": {' "$helper_path" || fail "nested driverMonitoring export missing for ${label}"
+  grep -Fq '"activeCamera": active_camera' "$helper_path" || fail "active camera export missing for ${label}"
+  grep -Fq '"runtimeFlavor": self._flavor' "$helper_path" || fail "runtime flavor export missing for ${label}"
+  grep -Fq '"statusMode": _status_mode_name(ui_state.status)' "$helper_path" || fail "status mode export missing for ${label}"
+  grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$helper_path" || fail "exporter install missing for ${label}"
+  grep -Fq 'self._commaview_exporter.publish(self)' "$helper_path" || fail "exporter publish missing for ${label}"
+
   if [[ "$label" == sunnypilot* ]]; then
-    grep -Fq 'from cereal import messaging, car, log, custom' "$checkout/selfdrive/ui/ui_state.py" || fail "custom import missing for ${label}"
-    grep -Fq 'def _commaview_speed_limit_pre_active_icon(self) -> str:' "$checkout/selfdrive/ui/ui_state.py" || fail "speed-limit icon helper missing for ${label}"
-    grep -Fq 'status.speedLimitPreActive = speed_limit_assist.state == custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$checkout/selfdrive/ui/ui_state.py" || fail "speed-limit pre-active export missing for ${label}"
-    grep -Fq 'status.speedLimitPreActiveIcon = self._commaview_speed_limit_pre_active_icon()' "$checkout/selfdrive/ui/ui_state.py" || fail "speed-limit icon export missing for ${label}"
+    grep -Fq 'from cereal import custom' "$helper_path" || fail "custom import missing for ${label}"
+    grep -Fq 'def _speed_limit_pre_active_icon(self, ui_state) -> str:' "$helper_path" || fail "speed-limit icon helper missing for ${label}"
+    grep -Fq 'custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$helper_path" || fail "preActive marker missing for ${label}"
   fi
 
-  printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","controlServicePresent":true,"sceneServicePresent":true,"statusServicePresent":true,"schemaPresent":true,"runtimeFlavorFieldPresent":true,"statusModeEnumPresent":true,"statusModeFieldPresent":true,"speedLimitIconEnumPresent":true,"speedLimitPreActiveFieldPresent":true,"speedLimitPreActiveIconFieldPresent":true,"latActiveFieldPresent":true,"longActiveFieldPresent":true,"controlPublisherPresent":true,"scenePublisherPresent":true,"statusPublisherPresent":true,"runtimeFlavorConstantPresent":true,"runtimeFlavorPublisherPresent":true,"statusModeHelperPresent":true,"statusModePublisherPresent":true,"speedLimitDefaultsPresent":true,"speedLimitFlavorMarkersPresent":true,"latLongPublisherPresent":true,"controlEventPresent":true,"sceneEventPresent":true,"statusEventPresent":true}'
+  printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","repairNeeded":false,"state":"patch-verified","reason":"socket ui export hook verified on real canary ref"}'
 
   git -C "$checkout" reset --hard -q HEAD
   git -C "$checkout" clean -fdq
@@ -88,4 +77,4 @@ run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-n
 run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" "$SUNNYPILOT_PATCH" 'SUNNYPILOT'
 run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" "$SUNNYPILOT_PATCH" 'SUNNYPILOT'
 
-echo 'PASS: direct v2 UI export patch applies and verifies on real canary refs'
+echo 'PASS: socket UI export patch applies and verifies on real canary refs'

@@ -1,380 +1,387 @@
-diff --git a/cereal/commaview.capnp b/cereal/commaview.capnp
+diff --git a/selfdrive/ui/commaview_export.py b/selfdrive/ui/commaview_export.py
 new file mode 100644
-index 0000000..f4623ad
+index 0000000..8136a25
 --- /dev/null
-+++ b/cereal/commaview.capnp
-@@ -0,0 +1,119 @@
-+using Cxx = import "./include/c++.capnp";
-+$Cxx.namespace("cereal");
++++ b/selfdrive/ui/commaview_export.py
+@@ -0,0 +1,360 @@
++import json
++import math
++import os
++import socket
++import struct
++import time
 +
-+@0xe3d2f2c0b57c9f11;
-+
-+struct CommaViewControl {
-+  exportVersion @0 :UInt16;
-+  speedMps @1 :Float32;
-+  speedClusterMps @2 :Float32;
-+  cruiseSetSpeed @3 :Float32;
-+  standstill @4 :Bool;
-+  steeringAngleDeg @5 :Float32;
-+  steeringPressed @6 :Bool;
-+  engaged @7 :Bool;
-+  isMetric @8 :Bool;
-+  started @9 :Bool;
-+  leftBlinker @10 :Bool;
-+  rightBlinker @11 :Bool;
-+  leftBlindspot @12 :Bool;
-+  rightBlindspot @13 :Bool;
-+  latActive @14 :Bool;
-+  longActive @15 :Bool;
-+}
-+
-+struct CommaViewLead {
-+  dRel @0 :Float32;
-+  yRel @1 :Float32;
-+  vRel @2 :Float32;
-+  aRel @3 :Float32;
-+  status @4 :Bool;
-+}
-+
-+struct CommaViewPath3f {
-+  x @0 :List(Float32);
-+  y @1 :List(Float32);
-+  z @2 :List(Float32);
-+}
-+
-+struct CommaViewLaneLine {
-+  points @0 :CommaViewPath3f;
-+  prob @1 :Float32;
-+  std @2 :Float32;
-+}
-+
-+struct CommaViewRoadEdge {
-+  points @0 :CommaViewPath3f;
-+  std @1 :Float32;
-+}
-+
-+enum CommaViewCameraSource {
-+  road @0;
-+  wideRoad @1;
-+}
-+
-+enum CommaViewStatusMode {
-+  unknown @0;
-+  disengaged @1;
-+  engaged @2;
-+  override @3;
-+  latOnly @4;
-+  longOnly @5;
-+}
-+
-+enum CommaViewSpeedLimitPreActiveIcon {
-+  none @0;
-+  up @1;
-+  down @2;
-+}
-+
-+struct CommaViewCalibration {
-+  rpyCalib @0 :List(Float32);
-+  height @1 :List(Float32);
-+  calStatus @2 :UInt16;
-+  calPerc @3 :UInt16;
-+  cameraIntrinsics @4 :List(Float32);
-+  cameraOffset @5 :List(Float32);
-+  cameraRpyOffset @6 :List(Float32);
-+}
-+
-+struct CommaViewScene {
-+  exportVersion @0 :UInt16;
-+  frameId @1 :UInt32;
-+  frameIdExtra @2 :UInt32;
-+  frameAge @3 :UInt32;
-+  frameDropPerc @4 :Float32;
-+  timestampEof @5 :UInt64;
-+  laneLines @6 :List(CommaViewLaneLine);
-+  roadEdges @7 :List(CommaViewRoadEdge);
-+  position @8 :CommaViewPath3f;
-+  leadOne @9 :CommaViewLead;
-+  leadTwo @10 :CommaViewLead;
-+  calibration @11 :CommaViewCalibration;
-+  activeCamera @12 :CommaViewCameraSource;
-+}
-+
-+struct CommaViewStatus {
-+  exportVersion @0 :UInt16;
-+  enabled @1 :Bool;
-+  active @2 :Bool;
-+  engageable @3 :Bool;
-+  alertText1 @4 :Text;
-+  alertText2 @5 :Text;
-+  alertType @6 :Text;
-+  alertStatus @7 :UInt16;
-+  alertSize @8 :UInt16;
-+  faceDetected @9 :Bool;
-+  isDistracted @10 :Bool;
-+  isRhd @11 :Bool;
-+  poseYawOffset @12 :Float32;
-+  posePitchOffset @13 :Float32;
-+  poseYawValidCount @14 :UInt16;
-+  posePitchValidCount @15 :UInt16;
-+  isLowStd @16 :Bool;
-+  driverMonitoringActive @17 :Bool;
-+  experimentalMode @18 :Bool;
-+  runtimeFlavor @19 :Text;
-+  statusMode @20 :CommaViewStatusMode;
-+  speedLimitPreActive @21 :Bool;
-+  speedLimitPreActiveIcon @22 :CommaViewSpeedLimitPreActiveIcon;
-+  blindspotIndicatorsEnabled @23 :Bool;
-+  rainbowPathEnabled @24 :Bool;
-+}
-diff --git a/cereal/log.capnp b/cereal/log.capnp
-index 510ffe3..f217ce5 100644
---- a/cereal/log.capnp
-+++ b/cereal/log.capnp
-@@ -4,6 +4,7 @@ $Cxx.namespace("cereal");
- using Car = import "car.capnp";
- using Legacy = import "legacy.capnp";
- using Custom = import "custom.capnp";
-+using CommaView = import "commaview.capnp";
- 
- @0xf3b1f17e25a4285b;
- 
-@@ -2603,6 +2604,9 @@ struct Event {
-     mapRenderState @105: MapRenderState;
- 
-     # UI services
-+    commaViewControl @150 :CommaView.CommaViewControl;
-+    commaViewScene @151 :CommaView.CommaViewScene;
-+    commaViewStatus @152 :CommaView.CommaViewStatus;
-     uiDebug @102 :UIDebug;
- 
-     # driving feedback
-diff --git a/cereal/services.py b/cereal/services.py
-index e7350ac..e2d06b6 100755
---- a/cereal/services.py
-+++ b/cereal/services.py
-@@ -91,6 +91,9 @@ _services: dict[str, tuple] = {
- 
-   # debug
-   "uiDebug": (True, 0., 1),
-+  "commaViewControl": (True, 20., 10),
-+  "commaViewScene": (True, 20., 10),
-+  "commaViewStatus": (True, 20., 10),
-   "testJoystick": (True, 0.),
-   "alertDebug": (True, 20., 5),
-   "livestreamWideRoadEncodeIdx": (False, 20.),
-diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
-index 30a6565..f78fe52 100644
---- a/selfdrive/ui/ui_state.py
-+++ b/selfdrive/ui/ui_state.py
-@@ -7,8 +7,12 @@ from enum import Enum
- from cereal import messaging, car, log
- from openpilot.common.filter_simple import FirstOrderFilter
- from openpilot.common.params import Params
 +from openpilot.common.transformations.camera import DEVICE_CAMERAS
- from openpilot.common.swaglog import cloudlog
- from openpilot.selfdrive.ui.lib.prime_state import PrimeState
 +
 +COMMAVIEW_RUNTIME_FLAVOR = "OPENPILOT"
 +COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN = "UNKNOWN"
- from openpilot.system.ui.lib.application import gui_app
- from openpilot.system.hardware import HARDWARE, PC
- 
-@@ -59,6 +63,12 @@ class UIState:
-     )
- 
-     self.prime_state = PrimeState()
-+    self._commaview_pm = messaging.PubMaster([
-+      "commaViewControl",
-+      "commaViewScene",
-+      "commaViewStatus",
-+    ])
-+    self._commaview_active_camera = "road"
- 
-     # UI Status tracking
-     self.status: UIStatus = UIStatus.DISENGAGED
-@@ -108,6 +118,9 @@ class UIState:
-     self.sm.update(0)
-     self._update_state()
-     self._update_status()
-+    self._publish_commaview_control()
-+    self._publish_commaview_scene()
-+    self._publish_commaview_status()
-     if time.monotonic() - self._param_update_time > 5.0:
-       self.update_params()
-     device.update()
-@@ -170,6 +183,171 @@ class UIState:
- 
-       self._started_prev = self.started
- 
-+  @staticmethod
-+  def _copy_commaview_path(target, source) -> None:
-+    target.x = [float(v) for v in source.x]
-+    target.y = [float(v) for v in source.y]
-+    target.z = [float(v) for v in source.z]
++COMMAVIEW_FRAME_VERSION = 1
++COMMAVIEW_CONTROL_SERVICE_INDEX = 0
++COMMAVIEW_SCENE_SERVICE_INDEX = 1
++COMMAVIEW_STATUS_SERVICE_INDEX = 2
++COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"
++COMMAVIEW_CONNECT_RETRY_SEC = 1.0
++COMMAVIEW_SOCKET_TIMEOUT_SEC = 0.05
 +
-+  @staticmethod
-+  def _copy_commaview_lead(target, source) -> None:
-+    target.dRel = float(source.dRel)
-+    target.yRel = float(source.yRel)
-+    target.vRel = float(source.vRel)
-+    target.aRel = float(source.aRel)
-+    target.status = bool(source.status)
 +
-+  def _commaview_camera_offset(self) -> float:
++def _safe_float(value) -> float:
++  try:
++    result = float(value)
++  except (TypeError, ValueError):
++    return 0.0
++  return result if math.isfinite(result) else 0.0
++
++
++def _safe_int(value) -> int:
++  try:
++    if hasattr(value, "raw"):
++      value = value.raw
++    return int(value)
++  except (TypeError, ValueError):
++    return 0
++
++
++def _float_list(values) -> list[float]:
++  return [_safe_float(v) for v in values]
++
++
++def _path_dict(source) -> dict:
++  return {
++    "x": _float_list(getattr(source, "x", [])),
++    "y": _float_list(getattr(source, "y", [])),
++    "z": _float_list(getattr(source, "z", [])),
++  }
++
++
++def _lead_dict(source) -> dict:
++  return {
++    "dRel": _safe_float(getattr(source, "dRel", 0.0)),
++    "yRel": _safe_float(getattr(source, "yRel", 0.0)),
++    "vRel": _safe_float(getattr(source, "vRel", 0.0)),
++    "aRel": _safe_float(getattr(source, "aRel", 0.0)),
++    "status": bool(getattr(source, "status", False)),
++  }
++
++
++def _commaview_camera_offset(params) -> float:
++  try:
++    return _safe_float(params.get("CameraOffset", return_default=True) or 0.0)
++  except (TypeError, ValueError):
++    return 0.0
++
++
++def _status_mode_name(status) -> str:
++  status_value = str(status.value if hasattr(status, "value") else status)
++  return {
++    "disengaged": "disengaged",
++    "engaged": "engaged",
++    "override": "override",
++    "lat_only": "latOnly",
++    "long_only": "longOnly",
++  }.get(status_value, "unknown")
++
++
++class _CommaViewSocketExporter:
++  def __init__(self, flavor: str):
++    self._flavor = flavor if flavor in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN
++    self._socket_path = os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT
++    self._sock = None
++    self._next_connect_attempt = 0.0
++    self._active_camera = "road"
++
++  def publish(self, ui_state) -> None:
 +    try:
-+      return float(self.params.get("CameraOffset", return_default=True) or 0.0)
-+    except (TypeError, ValueError):
-+      return 0.0
++      self._send_json(COMMAVIEW_CONTROL_SERVICE_INDEX, self._control_payload(ui_state))
++      self._send_json(COMMAVIEW_SCENE_SERVICE_INDEX, self._scene_payload(ui_state))
++      self._send_json(COMMAVIEW_STATUS_SERVICE_INDEX, self._status_payload(ui_state))
++    except OSError:
++      self._close()
 +
-+  def _resolve_commaview_camera(self):
++  def _connect(self) -> bool:
++    if self._sock is not None:
++      return True
++    now = time.monotonic()
++    if now < self._next_connect_attempt:
++      return False
++    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
++    sock.settimeout(COMMAVIEW_SOCKET_TIMEOUT_SEC)
++    try:
++      sock.connect(self._socket_path)
++    except OSError:
++      sock.close()
++      self._next_connect_attempt = now + COMMAVIEW_CONNECT_RETRY_SEC
++      return False
++    self._sock = sock
++    self._next_connect_attempt = 0.0
++    return True
++
++  def _close(self) -> None:
++    if self._sock is not None:
++      try:
++        self._sock.close()
++      except OSError:
++        pass
++    self._sock = None
++
++  def _send_json(self, service_index: int, payload: dict) -> None:
++    if not self._connect():
++      return
++    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
++    frame = bytes((COMMAVIEW_FRAME_VERSION, service_index)) + raw
++    packet = struct.pack(">I", len(frame)) + frame
++    try:
++      self._sock.sendall(packet)
++    except OSError:
++      self._close()
++      raise
++
++  def _service_log_mono(self, ui_state, *services: str) -> int:
++    values = []
++    for service in services:
++      try:
++        values.append(int(ui_state.sm.logMonoTime.get(service, 0) or 0))
++      except (AttributeError, TypeError, ValueError):
++        values.append(0)
++    return max(values) if values else 0
++
++  def _resolve_camera(self, ui_state):
 +    default_device_camera = DEVICE_CAMERAS[("tici", "ar0231")]
 +    device_camera = default_device_camera
-+    have_real_camera_key = self.sm.seen["roadCameraState"] and self.sm.seen["deviceState"]
++    have_real_camera_key = ui_state.sm.seen["roadCameraState"] and ui_state.sm.seen["deviceState"]
 +    if have_real_camera_key:
-+      camera_key = (str(self.sm["deviceState"].deviceType), str(self.sm["roadCameraState"].sensor))
-+      device_camera = DEVICE_CAMERAS.get(camera_key)
++      camera_key = (str(ui_state.sm["deviceState"].deviceType), str(ui_state.sm["roadCameraState"].sensor))
++      device_camera = DEVICE_CAMERAS.get(camera_key, default_device_camera)
 +
 +    wide_camera_ready = (
-+      self.sm.seen["wideRoadCameraState"] and
-+      self.sm.alive["wideRoadCameraState"] and
-+      self.sm.valid["wideRoadCameraState"]
++      ui_state.sm.seen["wideRoadCameraState"] and
++      ui_state.sm.alive["wideRoadCameraState"] and
++      ui_state.sm.valid["wideRoadCameraState"]
 +    )
-+    experimental_mode = bool(self.sm["selfdriveState"].experimentalMode)
++    experimental_mode = bool(ui_state.sm["selfdriveState"].experimentalMode)
 +    if not experimental_mode or not wide_camera_ready:
-+      self._commaview_active_camera = "road"
++      self._active_camera = "road"
 +    else:
-+      v_ego = float(self.sm["carState"].vEgo)
++      v_ego = _safe_float(ui_state.sm["carState"].vEgo)
 +      if v_ego < 5.0:
-+        self._commaview_active_camera = "wideRoad"
++        self._active_camera = "wideRoad"
 +      elif v_ego > 10.0:
-+        self._commaview_active_camera = "road"
++        self._active_camera = "road"
 +
-+    return self._commaview_active_camera, device_camera
++    return self._active_camera, device_camera
 +
-+  @staticmethod
-+  def _commaview_status_mode_name(status) -> str:
-+    status_value = str(status.value if hasattr(status, "value") else status)
-+    return {
-+      "disengaged": "disengaged",
-+      "engaged": "engaged",
-+      "override": "override",
-+      "lat_only": "latOnly",
-+      "long_only": "longOnly",
-+    }.get(status_value, "unknown")
++  def _control_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 4,
++      "speedMps": 0.0,
++      "speedClusterMps": 0.0,
++      "cruiseSetSpeedMps": 0.0,
++      "standstill": False,
++      "steeringAngleDeg": 0.0,
++      "steeringPressed": False,
++      "engaged": bool(ui_state.engaged),
++      "isMetric": bool(ui_state.is_metric),
++      "started": bool(ui_state.started),
++      "leftBlinker": False,
++      "rightBlinker": False,
++      "leftBlindspot": False,
++      "rightBlindspot": False,
++      "latActive": False,
++      "longActive": False,
++      "logMonoTime": self._service_log_mono(ui_state, "carState", "carControl", "controlsState"),
++    }
++    if ui_state.sm.recv_frame["carState"] >= ui_state.started_frame:
++      car_state = ui_state.sm["carState"]
++      controls_state = ui_state.sm["controlsState"]
++      v_cruise_cluster = _safe_float(getattr(car_state, "vCruiseCluster", 0.0))
++      payload.update({
++        "speedMps": _safe_float(car_state.vEgo),
++        "speedClusterMps": _safe_float(car_state.vEgoCluster),
++        "cruiseSetSpeedMps": _safe_float(controls_state.vCruiseDEPRECATED if v_cruise_cluster == 0.0 else v_cruise_cluster),
++        "standstill": bool(car_state.standstill),
++        "steeringAngleDeg": _safe_float(car_state.steeringAngleDeg),
++        "steeringPressed": bool(car_state.steeringPressed),
++        "leftBlinker": bool(car_state.leftBlinker),
++        "rightBlinker": bool(car_state.rightBlinker),
++        "leftBlindspot": bool(car_state.leftBlindspot),
++        "rightBlindspot": bool(car_state.rightBlindspot),
++      })
++    if ui_state.sm.recv_frame["carControl"] >= ui_state.started_frame:
++      car_control = ui_state.sm["carControl"]
++      payload["latActive"] = bool(car_control.latActive)
++      payload["longActive"] = bool(car_control.longActive)
++    return payload
 +
-+  def _publish_commaview_control(self) -> None:
-+    # COMMAVIEW UI EXPORT V4
-+    msg = messaging.new_message("commaViewControl")
-+    control = msg.commaViewControl
-+    control.exportVersion = 4
-+    control.started = bool(self.started)
-+    control.isMetric = bool(self.is_metric)
-+    control.engaged = bool(self.engaged)
-+    if self.sm.recv_frame["carState"] >= self.started_frame:
-+      car_state = self.sm["carState"]
-+      controls_state = self.sm["controlsState"]
-+      v_cruise_cluster = car_state.vCruiseCluster
-+      control.speedMps = float(car_state.vEgo)
-+      control.speedClusterMps = float(car_state.vEgoCluster)
-+      control.cruiseSetSpeed = float(controls_state.vCruiseDEPRECATED if v_cruise_cluster == 0.0 else v_cruise_cluster)
-+      control.standstill = bool(car_state.standstill)
-+      control.steeringAngleDeg = float(car_state.steeringAngleDeg)
-+      control.steeringPressed = bool(car_state.steeringPressed)
-+      control.leftBlinker = bool(car_state.leftBlinker)
-+      control.rightBlinker = bool(car_state.rightBlinker)
-+      control.leftBlindspot = bool(car_state.leftBlindspot)
-+      control.rightBlindspot = bool(car_state.rightBlindspot)
-+    if self.sm.recv_frame["carControl"] >= self.started_frame:
-+      car_control = self.sm["carControl"]
-+      control.latActive = bool(car_control.latActive)
-+      control.longActive = bool(car_control.longActive)
-+    self._commaview_pm.send("commaViewControl", msg)
-+
-+  def _publish_commaview_scene(self) -> None:
-+    msg = messaging.new_message("commaViewScene")
-+    scene = msg.commaViewScene
-+    scene.exportVersion = 2
-+    active_camera, device_camera = self._resolve_commaview_camera()
-+    scene.activeCamera = active_camera
++  def _scene_payload(self, ui_state) -> dict:
++    active_camera, device_camera = self._resolve_camera(ui_state)
++    calibration = {
++      "rpyCalib": [],
++      "height": [],
++      "calStatus": 0,
++      "calPerc": 0,
++      "cameraIntrinsics": [],
++      "cameraOffset": [0.0, _commaview_camera_offset(ui_state.params), 0.0],
++      "cameraRpyOffset": [0.0, 0.0, 0.0],
++    }
 +    if device_camera is not None:
 +      intrinsics = device_camera.ecam.intrinsics if active_camera == "wideRoad" else device_camera.fcam.intrinsics
-+      scene.calibration.cameraIntrinsics = [
-+        float(intrinsics[0, 0]),
-+        float(intrinsics[1, 1]),
-+        float(intrinsics[0, 2]),
-+        float(intrinsics[1, 2]),
++      calibration["cameraIntrinsics"] = [
++        _safe_float(intrinsics[0, 0]),
++        _safe_float(intrinsics[1, 1]),
++        _safe_float(intrinsics[0, 2]),
++        _safe_float(intrinsics[1, 2]),
 +      ]
-+    scene.calibration.cameraOffset = [0.0, float(self._commaview_camera_offset()), 0.0]
-+    scene.calibration.cameraRpyOffset = [0.0, 0.0, 0.0]
-+    if self.sm.recv_frame["modelV2"] >= self.started_frame:
-+      model = self.sm["modelV2"]
-+      radar_state = self.sm["radarState"]
-+      live_calibration = self.sm["liveCalibration"]
-+      scene.frameId = int(model.frameId)
-+      scene.frameIdExtra = int(model.frameIdExtra)
-+      scene.frameAge = int(model.frameAge)
-+      scene.frameDropPerc = float(model.frameDropPerc)
-+      scene.timestampEof = int(model.timestampEof)
-+      scene.init('laneLines', len(model.laneLines))
-+      for idx, model_lane_line in enumerate(model.laneLines):
-+        lane_line = scene.laneLines[idx]
-+        self._copy_commaview_path(lane_line.points, model_lane_line)
-+        lane_line.prob = float(model.laneLineProbs[idx] if idx < len(model.laneLineProbs) else 0.0)
-+        lane_line.std = float(model.laneLineStds[idx] if idx < len(model.laneLineStds) else 0.0)
-+      scene.init('roadEdges', len(model.roadEdges))
-+      for idx, model_road_edge in enumerate(model.roadEdges):
-+        road_edge = scene.roadEdges[idx]
-+        self._copy_commaview_path(road_edge.points, model_road_edge)
-+        road_edge.std = float(model.roadEdgeStds[idx] if idx < len(model.roadEdgeStds) else 0.0)
-+      self._copy_commaview_path(scene.position, model.position)
-+      self._copy_commaview_lead(scene.leadOne, radar_state.leadOne)
-+      self._copy_commaview_lead(scene.leadTwo, radar_state.leadTwo)
-+      scene.calibration.rpyCalib = [float(v) for v in live_calibration.rpyCalib]
-+      scene.calibration.height = [float(v) for v in live_calibration.height]
++
++    payload = {
++      "exportVersion": 3,
++      "frameId": 0,
++      "frameIdExtra": 0,
++      "frameAge": 0,
++      "frameDropPerc": 0.0,
++      "timestampEof": 0,
++      "laneLines": [],
++      "roadEdges": [],
++      "position": {"x": [], "y": [], "z": []},
++      "leadOne": _lead_dict(None),
++      "leadTwo": _lead_dict(None),
++      "calibration": calibration,
++      "activeCamera": active_camera,
++      "logMonoTime": self._service_log_mono(ui_state, "modelV2", "radarState", "liveCalibration"),
++    }
++    if ui_state.sm.recv_frame["modelV2"] >= ui_state.started_frame:
++      model = ui_state.sm["modelV2"]
++      radar_state = ui_state.sm["radarState"]
++      live_calibration = ui_state.sm["liveCalibration"]
++      payload.update({
++        "frameId": _safe_int(model.frameId),
++        "frameIdExtra": _safe_int(model.frameIdExtra),
++        "frameAge": _safe_int(model.frameAge),
++        "frameDropPerc": _safe_float(model.frameDropPerc),
++        "timestampEof": _safe_int(model.timestampEof),
++        "laneLines": [
++          {
++            "points": _path_dict(model_lane_line),
++            "prob": _safe_float(model.laneLineProbs[idx] if idx < len(model.laneLineProbs) else 0.0),
++            "std": _safe_float(model.laneLineStds[idx] if idx < len(model.laneLineStds) else 0.0),
++          }
++          for idx, model_lane_line in enumerate(model.laneLines)
++        ],
++        "roadEdges": [
++          {
++            "points": _path_dict(model_road_edge),
++            "std": _safe_float(model.roadEdgeStds[idx] if idx < len(model.roadEdgeStds) else 0.0),
++          }
++          for idx, model_road_edge in enumerate(model.roadEdges)
++        ],
++        "position": _path_dict(model.position),
++        "leadOne": _lead_dict(radar_state.leadOne),
++        "leadTwo": _lead_dict(radar_state.leadTwo),
++      })
++      calibration.update({
++        "rpyCalib": _float_list(live_calibration.rpyCalib),
++        "height": _float_list(live_calibration.height),
++        "calStatus": _safe_int(live_calibration.calStatus),
++        "calPerc": _safe_int(live_calibration.calPerc),
++      })
 +      if active_camera == "wideRoad" and hasattr(live_calibration, "wideFromDeviceEuler") and len(live_calibration.wideFromDeviceEuler) == 3:
-+        scene.calibration.cameraRpyOffset = [float(v) for v in live_calibration.wideFromDeviceEuler]
-+      cal_status = live_calibration.calStatus
-+      scene.calibration.calStatus = int(cal_status.raw if hasattr(cal_status, "raw") else cal_status)
-+      scene.calibration.calPerc = int(live_calibration.calPerc)
-+    self._commaview_pm.send("commaViewScene", msg)
++        calibration["cameraRpyOffset"] = _float_list(live_calibration.wideFromDeviceEuler)
++    return payload
 +
-+  def _publish_commaview_status(self) -> None:
-+    msg = messaging.new_message("commaViewStatus")
-+    status = msg.commaViewStatus
-+    status.exportVersion = 6
-+    status.experimentalMode = False
-+    status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN
-+    status.statusMode = "disengaged" if not self.started else "unknown"
-+    status.speedLimitPreActive = False
-+    status.speedLimitPreActiveIcon = "none"
-+    status.blindspotIndicatorsEnabled = bool(self.params.get_bool("BlindSpot"))
-+    status.rainbowPathEnabled = bool(self.params.get_bool("RainbowMode"))
-+    if self.sm.recv_frame["selfdriveState"] >= self.started_frame:
-+      selfdrive_state = self.sm["selfdriveState"]
-+      driver_monitoring = self.sm["driverMonitoringState"]
-+      status.enabled = bool(selfdrive_state.enabled)
-+      status.active = bool(selfdrive_state.active)
-+      status.engageable = bool(selfdrive_state.engageable)
-+      status.alertText1 = str(selfdrive_state.alertText1)
-+      status.alertText2 = str(selfdrive_state.alertText2)
-+      status.alertType = str(selfdrive_state.alertType)
-+      alert_status = selfdrive_state.alertStatus
-+      alert_size = selfdrive_state.alertSize
-+      status.alertStatus = int(alert_status.raw if hasattr(alert_status, "raw") else alert_status)
-+      status.alertSize = int(alert_size.raw if hasattr(alert_size, "raw") else alert_size)
-+      status.faceDetected = bool(driver_monitoring.faceDetected)
-+      status.isDistracted = bool(driver_monitoring.isDistracted)
-+      status.isRhd = bool(driver_monitoring.isRHD)
-+      status.poseYawOffset = float(driver_monitoring.poseYawOffset)
-+      status.posePitchOffset = float(driver_monitoring.posePitchOffset)
-+      status.poseYawValidCount = int(driver_monitoring.poseYawValidCount)
-+      status.posePitchValidCount = int(driver_monitoring.posePitchValidCount)
-+      status.isLowStd = bool(driver_monitoring.isLowStd)
-+      status.driverMonitoringActive = bool(driver_monitoring.isActiveMode)
-+      status.experimentalMode = bool(selfdrive_state.experimentalMode)
-+      status.statusMode = self._commaview_status_mode_name(self.status)
-+    self._commaview_pm.send("commaViewStatus", msg)
++  def _status_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 6,
++      "enabled": False,
++      "active": False,
++      "engageable": False,
++      "alertText1": "",
++      "alertText2": "",
++      "alertType": "none",
++      "alertStatus": 0,
++      "alertSize": 0,
++      "driverMonitoring": {
++        "faceDetected": False,
++        "isDistracted": False,
++        "isRhd": False,
++        "poseYawOffset": 0.0,
++        "posePitchOffset": 0.0,
++        "poseYawValidCount": 0,
++        "posePitchValidCount": 0,
++        "isLowStd": False,
++        "driverMonitoringActive": False,
++      },
++      "experimentalMode": False,
++      "runtimeFlavor": self._flavor,
++      "statusMode": "disengaged" if not ui_state.started else "unknown",
++      "speedLimitPreActive": False,
++      "speedLimitPreActiveIcon": "none",
++      "blindspotIndicatorsEnabled": bool(ui_state.params.get_bool("BlindSpot")),
++      "rainbowPathEnabled": bool(ui_state.params.get_bool("RainbowMode")),
++      "logMonoTime": self._service_log_mono(ui_state, "selfdriveState", "driverMonitoringState"),
++    }
++    if ui_state.sm.recv_frame["selfdriveState"] >= ui_state.started_frame:
++      selfdrive_state = ui_state.sm["selfdriveState"]
++      driver_monitoring = ui_state.sm["driverMonitoringState"]
++      payload.update({
++        "enabled": bool(selfdrive_state.enabled),
++        "active": bool(selfdrive_state.active),
++        "engageable": bool(selfdrive_state.engageable),
++        "alertText1": str(selfdrive_state.alertText1),
++        "alertText2": str(selfdrive_state.alertText2),
++        "alertType": str(selfdrive_state.alertType),
++        "alertStatus": _safe_int(selfdrive_state.alertStatus),
++        "alertSize": _safe_int(selfdrive_state.alertSize),
++        "experimentalMode": bool(selfdrive_state.experimentalMode),
++        "statusMode": _status_mode_name(ui_state.status),
++        "driverMonitoring": {
++          "faceDetected": bool(driver_monitoring.faceDetected),
++          "isDistracted": bool(driver_monitoring.isDistracted),
++          "isRhd": bool(driver_monitoring.isRHD),
++          "poseYawOffset": _safe_float(driver_monitoring.poseYawOffset),
++          "posePitchOffset": _safe_float(driver_monitoring.posePitchOffset),
++          "poseYawValidCount": _safe_int(driver_monitoring.poseYawValidCount),
++          "posePitchValidCount": _safe_int(driver_monitoring.posePitchValidCount),
++          "isLowStd": bool(driver_monitoring.isLowStd),
++          "driverMonitoringActive": bool(driver_monitoring.isActiveMode),
++        },
++      })
++    return payload
 +
-   def update_params(self) -> None:
-     # For slower operations
-     # Update longitudinal control state
++
++def install_commaview_ui_export(ui_state_cls) -> None:
++  if getattr(ui_state_cls, "_commaview_ui_export_installed", False):
++    return
++
++  original_initialize = ui_state_cls._initialize
++  original_update = ui_state_cls.update
++
++  def _initialize_with_commaview(self):
++    original_initialize(self)
++    self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)
++
++  def _update_with_commaview(self):
++    original_update(self)
++    self._commaview_exporter.publish(self)
++
++  ui_state_cls._initialize = _initialize_with_commaview
++  ui_state_cls.update = _update_with_commaview
++  ui_state_cls._commaview_ui_export_installed = True
+diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
+index 30a6565..2955ff2 100644
+--- a/selfdrive/ui/ui_state.py
++++ b/selfdrive/ui/ui_state.py
+@@ -8,6 +8,7 @@ from cereal import messaging, car, log
+ from openpilot.common.filter_simple import FirstOrderFilter
+ from openpilot.common.params import Params
+ from openpilot.common.swaglog import cloudlog
++from openpilot.selfdrive.ui.commaview_export import install_commaview_ui_export
+ from openpilot.selfdrive.ui.lib.prime_state import PrimeState
+ from openpilot.system.ui.lib.application import gui_app
+ from openpilot.system.hardware import HARDWARE, PC
+@@ -281,6 +282,8 @@ class Device:
+       gui_app.set_should_render(on)
+ 
+ 
++install_commaview_ui_export(UIState)
++
+ # Global instance
+ ui_state = UIState()
+ device = Device()

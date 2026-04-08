@@ -16,7 +16,7 @@ done
 
 is_onroad="$(cat /data/params/d/IsOnroad 2>/dev/null | tr -d "\000\r\n" || echo 0)"
 if [ "$is_onroad" = "1" ]; then
-  echo "ERROR: direct v2 patch apply blocked while onroad" >&2
+  echo "ERROR: socket UI export patch apply blocked while onroad" >&2
   exit 42
 fi
 
@@ -76,11 +76,11 @@ detect_flavor() {
 }
 
 flavor="$(detect_flavor)" || {
-  echo "ERROR: unable to determine supported direct v2 patch flavor for $OP_ROOT" >&2
+  echo "ERROR: unable to determine supported socket UI export patch flavor for $OP_ROOT" >&2
   exit 1
 }
 patch="$PATCH_ROOT/$flavor/0001-commaview-ui-export-v2.patch"
-[ -f "$patch" ] || { echo "ERROR: missing direct v2 patch asset: $patch" >&2; exit 1; }
+[ -f "$patch" ] || { echo "ERROR: missing socket UI export patch asset: $patch" >&2; exit 1; }
 
 if [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then
   exit 0

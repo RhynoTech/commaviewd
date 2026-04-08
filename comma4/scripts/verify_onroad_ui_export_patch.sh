@@ -6,6 +6,8 @@ OP_ROOT="${COMMAVIEWD_OP_ROOT:-/data/openpilot}"
 PATCH_ROOT="$INSTALL_DIR/patches"
 STATE_JSON="$INSTALL_DIR/run/onroad-ui-export-status.json"
 STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
+HELPER_PATH="$OP_ROOT/selfdrive/ui/commaview_export.py"
+UI_STATE_PATH="$OP_ROOT/selfdrive/ui/ui_state.py"
 JSON_ONLY=0
 
 while [ "$#" -gt 0 ]; do
@@ -82,109 +84,92 @@ reason="onroad UI export status unavailable"
 healthy=false
 patch_verified=false
 repair_needed=true
-control_service_present=false
-scene_service_present=false
-status_service_present=false
-schema_present=false
-experimental_mode_field_present=false
-runtime_flavor_field_present=false
-status_mode_enum_present=false
-status_mode_field_present=false
-speed_limit_icon_enum_present=false
-speed_limit_pre_active_field_present=false
-speed_limit_pre_active_icon_field_present=false
-lat_active_field_present=false
-long_active_field_present=false
-control_publisher_present=false
-scene_publisher_present=false
-status_publisher_present=false
+helper_present=false
+ui_state_hook_present=false
 runtime_flavor_constant_present=false
-runtime_flavor_publisher_present=false
-status_mode_helper_present=false
-status_mode_publisher_present=false
-speed_limit_defaults_present=false
-speed_limit_flavor_markers_present=false
-lat_long_publisher_present=false
-control_export_version_present=false
-scene_export_version_present=false
-status_export_version_present=false
-control_event_present=false
-scene_event_present=false
-status_event_present=false
+socket_path_present=false
+socket_env_present=false
+frame_version_present=false
+unix_socket_present=false
+framing_present=false
+control_payload_present=false
+scene_payload_present=false
+status_payload_present=false
+control_publish_present=false
+scene_publish_present=false
+status_publish_present=false
+cruise_set_speed_present=false
+driver_monitoring_present=false
+active_camera_present=false
+status_mode_present=false
+runtime_flavor_export_present=false
+exporter_install_present=false
+exporter_publish_present=false
+speed_limit_helper_present=false
 fingerprint=""
 
 if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   state="missing-repo"; reason="upstream repo not found at $OP_ROOT"
 elif [ "$flavor_detected" -ne 1 ]; then
-  state="unknown-flavor"; reason="unable to determine supported direct v2 patch flavor for $OP_ROOT"
+  state="unknown-flavor"; reason="unable to determine supported socket UI export patch flavor for $OP_ROOT"
 elif [ ! -f "$patch" ]; then
-  state="missing-patch"; reason="missing direct v2 patch asset for $flavor"
+  state="missing-patch"; reason="missing socket UI export patch asset for $flavor"
 else
   fingerprint="$(sha256sum "$patch" | awk '{print $1}')"
-  expected_runtime_flavor="UNKNOWN"
-  case "$flavor" in
-    openpilot) expected_runtime_flavor="OPENPILOT" ;;
-    sunnypilot) expected_runtime_flavor="SUNNYPILOT" ;;
-  esac
-  grep -Fq '"commaViewControl"' "$OP_ROOT/cereal/services.py" && control_service_present=true || true
-  grep -Fq '"commaViewScene"' "$OP_ROOT/cereal/services.py" && scene_service_present=true || true
-  grep -Fq '"commaViewStatus"' "$OP_ROOT/cereal/services.py" && status_service_present=true || true
-  grep -Fq 'struct CommaViewControl' "$OP_ROOT/cereal/commaview.capnp" && schema_present=true || true
-  grep -Fq 'experimentalMode @18 :Bool;' "$OP_ROOT/cereal/commaview.capnp" && experimental_mode_field_present=true || true
-  grep -Fq 'runtimeFlavor @19 :Text;' "$OP_ROOT/cereal/commaview.capnp" && runtime_flavor_field_present=true || true
-  grep -Fq 'enum CommaViewStatusMode {' "$OP_ROOT/cereal/commaview.capnp" && status_mode_enum_present=true || true
-  grep -Fq 'statusMode @20 :CommaViewStatusMode;' "$OP_ROOT/cereal/commaview.capnp" && status_mode_field_present=true || true
-  grep -Fq 'enum CommaViewSpeedLimitPreActiveIcon {' "$OP_ROOT/cereal/commaview.capnp" && speed_limit_icon_enum_present=true || true
-  grep -Fq 'speedLimitPreActive @21 :Bool;' "$OP_ROOT/cereal/commaview.capnp" && speed_limit_pre_active_field_present=true || true
-  grep -Fq 'speedLimitPreActiveIcon @22 :CommaViewSpeedLimitPreActiveIcon;' "$OP_ROOT/cereal/commaview.capnp" && speed_limit_pre_active_icon_field_present=true || true
-  grep -Fq 'latActive @14 :Bool;' "$OP_ROOT/cereal/commaview.capnp" && lat_active_field_present=true || true
-  grep -Fq 'longActive @15 :Bool;' "$OP_ROOT/cereal/commaview.capnp" && long_active_field_present=true || true
-  grep -Fq '_publish_commaview_control' "$OP_ROOT/selfdrive/ui/ui_state.py" && control_publisher_present=true || true
-  grep -Fq '_publish_commaview_scene' "$OP_ROOT/selfdrive/ui/ui_state.py" && scene_publisher_present=true || true
-  grep -Fq '_publish_commaview_status' "$OP_ROOT/selfdrive/ui/ui_state.py" && status_publisher_present=true || true
-  grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$OP_ROOT/selfdrive/ui/ui_state.py" && runtime_flavor_constant_present=true || true
-  grep -Fq 'status.runtimeFlavor = COMMAVIEW_RUNTIME_FLAVOR if COMMAVIEW_RUNTIME_FLAVOR in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN' "$OP_ROOT/selfdrive/ui/ui_state.py" && runtime_flavor_publisher_present=true || true
-  grep -Fq 'def _commaview_status_mode_name(status) -> str:' "$OP_ROOT/selfdrive/ui/ui_state.py" && status_mode_helper_present=true || true
-  grep -Fq 'status.statusMode = self._commaview_status_mode_name(self.status)' "$OP_ROOT/selfdrive/ui/ui_state.py" && status_mode_publisher_present=true || true
-  if grep -Fq 'status.speedLimitPreActive = False' "$OP_ROOT/selfdrive/ui/ui_state.py" && grep -Fq 'status.speedLimitPreActiveIcon = "none"' "$OP_ROOT/selfdrive/ui/ui_state.py"; then
-    speed_limit_defaults_present=true
-  fi
+  expected_runtime_flavor="OPENPILOT"
   if [ "$flavor" = "sunnypilot" ]; then
-    if grep -Fq 'from cereal import messaging, car, log, custom' "$OP_ROOT/selfdrive/ui/ui_state.py" && \
-       grep -Fq 'def _commaview_speed_limit_pre_active_icon(self) -> str:' "$OP_ROOT/selfdrive/ui/ui_state.py" && \
-       grep -Fq 'status.speedLimitPreActive = speed_limit_assist.state == custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$OP_ROOT/selfdrive/ui/ui_state.py" && \
-       grep -Fq 'status.speedLimitPreActiveIcon = self._commaview_speed_limit_pre_active_icon()' "$OP_ROOT/selfdrive/ui/ui_state.py"; then
-      speed_limit_flavor_markers_present=true
+    expected_runtime_flavor="SUNNYPILOT"
+  fi
+
+  grep -Fq 'from openpilot.selfdrive.ui.commaview_export import install_commaview_ui_export' "$UI_STATE_PATH" && ui_state_hook_present=true || true
+  grep -Fq 'install_commaview_ui_export(UIState)' "$UI_STATE_PATH" && ui_state_hook_present=true || true
+  [ -f "$HELPER_PATH" ] && helper_present=true || true
+  grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$HELPER_PATH" && runtime_flavor_constant_present=true || true
+  grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$HELPER_PATH" && socket_path_present=true || true
+  grep -Fq 'os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT' "$HELPER_PATH" && socket_env_present=true || true
+  grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$HELPER_PATH" && frame_version_present=true || true
+  grep -Fq 'socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' "$HELPER_PATH" && unix_socket_present=true || true
+  grep -Fq 'struct.pack(">I", len(frame)) + frame' "$HELPER_PATH" && framing_present=true || true
+  grep -Fq 'def _control_payload(self, ui_state) -> dict:' "$HELPER_PATH" && control_payload_present=true || true
+  grep -Fq 'def _scene_payload(self, ui_state) -> dict:' "$HELPER_PATH" && scene_payload_present=true || true
+  grep -Fq 'def _status_payload(self, ui_state) -> dict:' "$HELPER_PATH" && status_payload_present=true || true
+  grep -Fq 'self._send_json(COMMAVIEW_CONTROL_SERVICE_INDEX, self._control_payload(ui_state))' "$HELPER_PATH" && control_publish_present=true || true
+  grep -Fq 'self._send_json(COMMAVIEW_SCENE_SERVICE_INDEX, self._scene_payload(ui_state))' "$HELPER_PATH" && scene_publish_present=true || true
+  grep -Fq 'self._send_json(COMMAVIEW_STATUS_SERVICE_INDEX, self._status_payload(ui_state))' "$HELPER_PATH" && status_publish_present=true || true
+  grep -Fq '"cruiseSetSpeedMps":' "$HELPER_PATH" && cruise_set_speed_present=true || true
+  grep -Fq '"driverMonitoring": {' "$HELPER_PATH" && driver_monitoring_present=true || true
+  grep -Fq '"activeCamera": active_camera' "$HELPER_PATH" && active_camera_present=true || true
+  grep -Fq '"statusMode": _status_mode_name(ui_state.status)' "$HELPER_PATH" && status_mode_present=true || true
+  grep -Fq '"runtimeFlavor": self._flavor' "$HELPER_PATH" && runtime_flavor_export_present=true || true
+  grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$HELPER_PATH" && exporter_install_present=true || true
+  grep -Fq 'self._commaview_exporter.publish(self)' "$HELPER_PATH" && exporter_publish_present=true || true
+  if [ "$flavor" = "sunnypilot" ]; then
+    if grep -Fq 'def _speed_limit_pre_active_icon(self, ui_state) -> str:' "$HELPER_PATH" && \
+       grep -Fq 'custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$HELPER_PATH"; then
+      speed_limit_helper_present=true
     fi
   else
-    speed_limit_flavor_markers_present=true
+    speed_limit_helper_present=true
   fi
-  if grep -Fq 'control.latActive = bool(car_control.latActive)' "$OP_ROOT/selfdrive/ui/ui_state.py" && grep -Fq 'control.longActive = bool(car_control.longActive)' "$OP_ROOT/selfdrive/ui/ui_state.py"; then
-    lat_long_publisher_present=true
-  fi
-  grep -Fq 'control.exportVersion = 4' "$OP_ROOT/selfdrive/ui/ui_state.py" && control_export_version_present=true || true
-  grep -Fq 'scene.exportVersion = 2' "$OP_ROOT/selfdrive/ui/ui_state.py" && scene_export_version_present=true || true
-  grep -Fq 'status.exportVersion = 6' "$OP_ROOT/selfdrive/ui/ui_state.py" && status_export_version_present=true || true
-  grep -Fq 'commaViewControl @150' "$OP_ROOT/cereal/log.capnp" && control_event_present=true || true
-  grep -Fq 'commaViewScene @151' "$OP_ROOT/cereal/log.capnp" && scene_event_present=true || true
-  grep -Fq 'commaViewStatus @152' "$OP_ROOT/cereal/log.capnp" && status_event_present=true || true
-  if $control_service_present && $scene_service_present && $status_service_present && $schema_present && \
-     $experimental_mode_field_present && $runtime_flavor_field_present && $status_mode_enum_present && $status_mode_field_present && $speed_limit_icon_enum_present && $speed_limit_pre_active_field_present && $speed_limit_pre_active_icon_field_present && $lat_active_field_present && $long_active_field_present && \
-     $control_publisher_present && $scene_publisher_present && $status_publisher_present && \
-     $runtime_flavor_constant_present && $runtime_flavor_publisher_present && $status_mode_helper_present && $status_mode_publisher_present && $speed_limit_defaults_present && $speed_limit_flavor_markers_present && $lat_long_publisher_present && \
-     $control_export_version_present && $scene_export_version_present && $status_export_version_present && \
-     $control_event_present && $scene_event_present && $status_event_present; then
+
+  if $helper_present && $ui_state_hook_present && $runtime_flavor_constant_present && \
+     $socket_path_present && $socket_env_present && $frame_version_present && $unix_socket_present && $framing_present && \
+     $control_payload_present && $scene_payload_present && $status_payload_present && \
+     $control_publish_present && $scene_publish_present && $status_publish_present && \
+     $cruise_set_speed_present && $driver_monitoring_present && $active_camera_present && \
+     $status_mode_present && $runtime_flavor_export_present && $exporter_install_present && \
+     $exporter_publish_present && $speed_limit_helper_present; then
     state="patch-verified"
-    reason="static direct v2 patch markers verified; runtime telemetry not proven"
+    reason="socket UI export hook markers verified; runtime telemetry not proven"
     patch_verified=true
     repair_needed=false
   else
     state="repair-needed"
-    reason="direct v2 export markers missing from upstream UI tree"
+    reason="socket UI export markers missing from upstream UI tree"
   fi
 fi
 
-json=$(printf '{"healthy":%s,"patchVerified":%s,"statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","patch":"%s","patchFingerprint":"%s","controlServicePresent":%s,"sceneServicePresent":%s,"statusServicePresent":%s,"schemaPresent":%s,"experimentalModeFieldPresent":%s,"runtimeFlavorFieldPresent":%s,"statusModeEnumPresent":%s,"statusModeFieldPresent":%s,"speedLimitIconEnumPresent":%s,"speedLimitPreActiveFieldPresent":%s,"speedLimitPreActiveIconFieldPresent":%s,"latActiveFieldPresent":%s,"longActiveFieldPresent":%s,"controlPublisherPresent":%s,"scenePublisherPresent":%s,"statusPublisherPresent":%s,"runtimeFlavorConstantPresent":%s,"runtimeFlavorPublisherPresent":%s,"statusModeHelperPresent":%s,"statusModePublisherPresent":%s,"speedLimitDefaultsPresent":%s,"speedLimitFlavorMarkersPresent":%s,"latLongPublisherPresent":%s,"controlEventPresent":%s,"sceneEventPresent":%s,"statusEventPresent":%s}' "$healthy" "$patch_verified" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$control_service_present" "$scene_service_present" "$status_service_present" "$schema_present" "$experimental_mode_field_present" "$runtime_flavor_field_present" "$status_mode_enum_present" "$status_mode_field_present" "$speed_limit_icon_enum_present" "$speed_limit_pre_active_field_present" "$speed_limit_pre_active_icon_field_present" "$lat_active_field_present" "$long_active_field_present" "$control_publisher_present" "$scene_publisher_present" "$status_publisher_present" "$runtime_flavor_constant_present" "$runtime_flavor_publisher_present" "$status_mode_helper_present" "$status_mode_publisher_present" "$speed_limit_defaults_present" "$speed_limit_flavor_markers_present" "$lat_long_publisher_present" "$control_event_present" "$scene_event_present" "$status_event_present")
+json=$(printf '{"healthy":%s,"patchVerified":%s,"statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","patch":"%s","patchFingerprint":"%s","helperPresent":%s,"uiStateHookPresent":%s,"runtimeFlavorConstantPresent":%s,"socketPathPresent":%s,"socketEnvPresent":%s,"frameVersionPresent":%s,"unixSocketPresent":%s,"framingPresent":%s,"controlPayloadPresent":%s,"scenePayloadPresent":%s,"statusPayloadPresent":%s,"controlPublishPresent":%s,"scenePublishPresent":%s,"statusPublishPresent":%s,"cruiseSetSpeedPresent":%s,"driverMonitoringPresent":%s,"activeCameraPresent":%s,"statusModePresent":%s,"runtimeFlavorExportPresent":%s,"exporterInstallPresent":%s,"exporterPublishPresent":%s,"speedLimitHelperPresent":%s}' "$healthy" "$patch_verified" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$helper_present" "$ui_state_hook_present" "$runtime_flavor_constant_present" "$socket_path_present" "$socket_env_present" "$frame_version_present" "$unix_socket_present" "$framing_present" "$control_payload_present" "$scene_payload_present" "$status_payload_present" "$control_publish_present" "$scene_publish_present" "$status_publish_present" "$cruise_set_speed_present" "$driver_monitoring_present" "$active_camera_present" "$status_mode_present" "$runtime_flavor_export_present" "$exporter_install_present" "$exporter_publish_present" "$speed_limit_helper_present")
 printf '%s\n' "$json" > "$STATE_JSON"
 if [ -n "$fingerprint" ]; then
   printf 'ONROAD_UI_EXPORT_FLAVOR=%s\nONROAD_UI_EXPORT_PATCH_SHA=%s\nONROAD_UI_EXPORT_OP_ROOT=%s\n' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"

@@ -4,6 +4,7 @@
 #include "router.h"
 #include "telemetry_policy.h"
 #include "runtime_debug_config.h"
+#include "ui_export_socket.h"
 /**
  * CommaView Unified Bridge (C++)
  *
@@ -64,6 +65,8 @@ using commaview::telemetry::service_policy_subscribes;
 static constexpr uint8_t MSG_VIDEO = 0x01;
 static constexpr uint8_t MSG_CONTROL = 0x03;
 static constexpr uint8_t MSG_META_RAW = 0x04;
+static constexpr uint8_t RAW_META_ENVELOPE_V4 = 0x04;
+static constexpr uint8_t RAW_META_ENVELOPE_V5 = 0x05;
 
 static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;
@@ -90,6 +93,7 @@ static std::atomic<bool> g_running{true};
 static std::atomic<int> g_active_road{0};
 static std::atomic<int> g_active_wide{0};
 static std::atomic<int> g_active_driver{0};
+static std::unique_ptr<commaview::ui_export::SocketServer> g_ui_export_socket;
 
 static std::atomic<int>& active_counter_for_port(int port) {
   if (port == PORT_ROAD) return g_active_road;
@@ -136,21 +140,19 @@ static void put_be64(uint8_t* buf, uint64_t val) {
 
 static void telemetry_loop(int client_fd,
                            const char* video_service,
-                           Poller* telemetry_poller,
-                           SubSocket* telem_socks[],
-                           ServicePolicy telem_policies[],
                            std::atomic<bool>* disconnect_requested,
                            std::mutex* send_mutex);
 
-static bool send_meta_raw_frame(int fd,
-                                uint8_t service_index,
-                                const uint8_t* raw_data,
-                                size_t raw_size,
-                                std::mutex* send_mutex) {
+static bool send_meta_raw_payload_frame(int fd,
+                                        uint8_t envelope_version,
+                                        uint8_t service_index,
+                                        const uint8_t* raw_data,
+                                        size_t raw_size,
+                                        std::mutex* send_mutex) {
   if (raw_data == nullptr || raw_size == 0) return true;
   const uint32_t raw_len = static_cast<uint32_t>(raw_size);
   std::vector<uint8_t> payload(1 + 1 + 4 + raw_len);
-  payload[0] = 0x04;  // raw meta envelope v4 is service index + raw event only
+  payload[0] = envelope_version;
   payload[1] = service_index;
   put_be32(&payload[2], raw_len);
   memcpy(&payload[6], raw_data, raw_len);
@@ -159,6 +161,19 @@ static bool send_meta_raw_frame(int fd,
     return commaview::net::send_meta_bytes(fd, payload.data(), payload.size(), MSG_META_RAW);
   }
   return commaview::net::send_meta_bytes(fd, payload.data(), payload.size(), MSG_META_RAW);
+}
+
+static bool send_meta_raw_frame(int fd,
+                                uint8_t service_index,
+                                const uint8_t* raw_data,
+                                size_t raw_size,
+                                std::mutex* send_mutex) {
+  return send_meta_raw_payload_frame(fd,
+                                     RAW_META_ENVELOPE_V4,
+                                     service_index,
+                                     raw_data,
+                                     raw_size,
+                                     send_mutex);
 }
 
 
@@ -274,7 +289,19 @@ static std::string build_runtime_stats_json_locked() {
     out << "\"sendBackpressureCount\":" << stats.send_backpressure_count;
     out << "}";
   }
-  out << "}}";
+  out << "}";
+  if (g_ui_export_socket != nullptr) {
+    const auto socket_stats = g_ui_export_socket->stats();
+    out << ",\"uiExportSocket\":{";
+    out << "\"running\":" << (socket_stats.running ? "true" : "false") << ",";
+    out << "\"connected\":" << (socket_stats.connected ? "true" : "false") << ",";
+    out << "\"connectCount\":" << socket_stats.connect_count << ",";
+    out << "\"acceptedCount\":" << socket_stats.accepted_count << ",";
+    out << "\"malformedCount\":" << socket_stats.malformed_count << ",";
+    out << "\"lastReceiveMs\":" << socket_stats.last_receive_ms;
+    out << "}";
+  }
+  out << "}";
   return out.str();
 }
 
@@ -453,41 +480,17 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   }
 
   const bool include_telemetry = (port == PORT_ROAD || port == PORT_WIDE);
-  SubSocket* telem_socks[NUM_TELEM] = {};
-  ServicePolicy telem_policies[NUM_TELEM] = {};
-
-  if (include_telemetry) {
-    for (int i = 0; i < NUM_TELEM; i++) {
-      telem_policies[i] = runtime_policy_for_index(i);
-      if (!service_policy_subscribes(telem_policies[i])) continue;
-      const char* service_name = kTelemetryServices[static_cast<size_t>(i)];
-      const size_t segment_size = queue_size_for_service(service_name);
-      telem_socks[i] = SubSocket::create(ctx, service_name, "127.0.0.1", true, true, segment_size);
-      if (telem_socks[i] != nullptr) note_runtime_subscriber_delta(i, 1);
-    }
-  }
 
   Poller* video_poller = Poller::create();
   if (video_sock != nullptr) video_poller->registerSocket(video_sock);
 
-  Poller* telemetry_poller = nullptr;
-  if (include_telemetry) {
-    telemetry_poller = Poller::create();
-    for (int i = 0; i < NUM_TELEM; i++) {
-      if (telem_socks[i] != nullptr) telemetry_poller->registerSocket(telem_socks[i]);
-    }
-  }
-
   std::atomic<bool> telemetry_disconnect_requested{false};
   std::thread telemetry_thread;
   std::mutex send_mutex;
-  if (include_telemetry && telemetry_poller != nullptr) {
+  if (include_telemetry) {
     telemetry_thread = std::thread(telemetry_loop,
                                    client_fd,
                                    video_service,
-                                   telemetry_poller,
-                                   telem_socks,
-                                   telem_policies,
                                    &telemetry_disconnect_requested,
                                    &send_mutex);
   }
@@ -629,27 +632,18 @@ disconnect:
   close(client_fd);
 
   delete video_poller;
-  if (telemetry_poller != nullptr) delete telemetry_poller;
   if (video_sock != nullptr) delete video_sock;
-  for (int i = 0; i < NUM_TELEM; i++) {
-    if (telem_socks[i] != nullptr) {
-      note_runtime_subscriber_delta(i, -1);
-      delete telem_socks[i];
-    }
-  }
   delete ctx;
 }
 static void telemetry_loop(int client_fd,
                            const char* video_service,
-                           Poller* telemetry_poller,
-                           SubSocket* telem_socks[],
-                           ServicePolicy telem_policies[],
                            std::atomic<bool>* disconnect_requested,
                            std::mutex* send_mutex) {
-  if (telemetry_poller == nullptr || disconnect_requested == nullptr) return;
+  if (disconnect_requested == nullptr) return;
   uint64_t telem_raw_count = 0;
   auto next_telem_poll = std::chrono::steady_clock::now();
   auto next_stats_flush = next_telem_poll + std::chrono::milliseconds(1000);
+  std::array<uint64_t, static_cast<size_t>(NUM_TELEM)> last_ui_emit_ms = {};
 
   while (g_running && !disconnect_requested->load()) {
     if (!client_socket_alive(client_fd)) {
@@ -672,47 +666,46 @@ static void telemetry_loop(int client_fd,
       next_telem_poll += std::chrono::milliseconds(g_telemetry_emit_ms);
     } while (next_telem_poll <= now);
 
-    auto telem_ready = telemetry_poller->poll(0);
-    for (auto* sock : telem_ready) {
-      int telem_sock_idx = -1;
+    std::array<bool, static_cast<size_t>(NUM_TELEM)> ui_fresh = {};
+    if (g_ui_export_socket != nullptr) {
       for (int i = 0; i < NUM_TELEM; ++i) {
-        if (sock == telem_socks[i]) {
-          telem_sock_idx = i;
+        commaview::ui_export::LatestFrame frame;
+        if (!g_ui_export_socket->latest_frame(static_cast<uint8_t>(i),
+                                              commaview::ui_export::kFreshFrameWindowMs,
+                                              &frame)) {
+          continue;
+        }
+        ui_fresh[static_cast<size_t>(i)] = true;
+        if (frame.updated_at_ms <= last_ui_emit_ms[static_cast<size_t>(i)]) continue;
+
+        const auto send_started = std::chrono::steady_clock::now();
+        const bool sent = send_meta_raw_payload_frame(client_fd,
+                                                      RAW_META_ENVELOPE_V5,
+                                                      static_cast<uint8_t>(i),
+                                                      frame.payload.data(),
+                                                      frame.payload.size(),
+                                                      send_mutex);
+        const auto send_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - send_started);
+        note_runtime_emit(i,
+                          frame.payload.size(),
+                          false,
+                          sent,
+                          static_cast<uint64_t>(send_elapsed.count()));
+        if (!sent) {
+          disconnect_requested->store(true);
+          shutdown(client_fd, SHUT_RDWR);
           break;
         }
+        last_ui_emit_ms[static_cast<size_t>(i)] = frame.updated_at_ms;
+        telem_raw_count++;
       }
-      if (telem_sock_idx < 0) continue;
-      if (!service_policy_subscribes(telem_policies[telem_sock_idx])) continue;
-      std::unique_ptr<Message> raw_msg(sock->receive(true));
-      if (!raw_msg) continue;
-
-      const size_t raw_size = raw_msg->getSize();
-      const uint8_t* raw_ptr = reinterpret_cast<const uint8_t*>(raw_msg->getData());
-      note_runtime_receive(telem_sock_idx, raw_size);
-
-      const auto send_started = std::chrono::steady_clock::now();
-      const bool sent = send_meta_raw_frame(client_fd,
-                                            static_cast<uint8_t>(telem_sock_idx),
-                                            raw_ptr,
-                                            raw_size,
-                                            send_mutex);
-      const auto send_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::steady_clock::now() - send_started);
-      note_runtime_emit(telem_sock_idx,
-                        raw_size,
-                        false,
-                        sent,
-                        static_cast<uint64_t>(send_elapsed.count()));
-      if (!sent) {
-        disconnect_requested->store(true);
-        shutdown(client_fd, SHUT_RDWR);
-        break;
-      }
-      telem_raw_count++;
     }
 
+    if (disconnect_requested->load()) break;
+
     if (telem_raw_count > 0 && (telem_raw_count <= 3 || (telem_raw_count % 200) == 0)) {
-      printf("[%s] telem_raw=%llu [DIRECT_V2_UI_EXPORT] (read+send throttled %dms)\n",
+      printf("[%s] telem_raw=%llu [DIRECT_UI_SOCKET_ONLY] (read+send throttled %dms)\n",
              video_service,
              static_cast<unsigned long long>(telem_raw_count),
              g_telemetry_emit_ms);
@@ -761,8 +754,12 @@ int commaview_bridge_main(int argc, char* argv[]) {
   (void)argv;
   initialize_runtime_state_once();
 
+  g_ui_export_socket = std::make_unique<commaview::ui_export::SocketServer>();
+  const bool ui_export_socket_ready = g_ui_export_socket->start();
+
   const char** video_services = VIDEO_SERVICES_PROD;
-  printf("CommaView Bridge v3.3.8-safe-bundle (C++) [VIDEO+TELEMETRY][RAW_ONLY_DEFAULT][DIRECT_V2_UI_EXPORT_DEFAULT][META_MODE=raw-only][EMIT_MS=%d]\n",
+  printf("CommaView Bridge v3.3.8-safe-bundle (C++) [VIDEO+TELEMETRY][RAW_ONLY_DEFAULT][DIRECT_V2_UI_EXPORT_DEFAULT][UI_SOCKET_PREFERRED=%s][META_MODE=raw-only][EMIT_MS=%d]\n",
+         ui_export_socket_ready ? "on" : "off",
          g_telemetry_emit_ms);
   fflush(stdout);
 
@@ -789,6 +786,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
 
   for (auto& t : threads) t.join();
   for (int fd : server_fds) close(fd);
+  if (g_ui_export_socket != nullptr) g_ui_export_socket->stop();
 
   printf("CommaView Bridge stopped.\n");
   return 0;
