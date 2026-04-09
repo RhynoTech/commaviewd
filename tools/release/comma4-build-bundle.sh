@@ -54,7 +54,6 @@ DIST_DIR="${DIST_DIR:-${ROOT}/dist}"
 
 required_stage_files=(
   "commaviewd"
-  "upgrade.sh"
   "start.sh"
   "stop.sh"
   "uninstall.sh"
@@ -117,7 +116,6 @@ for src in "${capnp_libs[@]}" "${kj_libs[@]}"; do
   install -m 755 "$src" "${STAGE_DIR}/lib/$(basename "$src")"
 done
 
-install -m 755 "${ROOT}/comma4/upgrade.sh" "${STAGE_DIR}/upgrade.sh"
 install -m 755 "${ROOT}/comma4/start.sh" "${STAGE_DIR}/start.sh"
 install -m 755 "${ROOT}/comma4/stop.sh" "${STAGE_DIR}/stop.sh"
 install -m 755 "${ROOT}/comma4/uninstall.sh" "${STAGE_DIR}/uninstall.sh"

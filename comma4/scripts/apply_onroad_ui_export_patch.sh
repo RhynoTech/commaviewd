@@ -6,24 +6,105 @@ OP_ROOT="${COMMAVIEWD_OP_ROOT:-/data/openpilot}"
 PATCH_ROOT="$INSTALL_DIR/patches"
 VERIFY_SCRIPT="$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
 STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
+PARAMS_DIR="/data/params/d"
+FORCE_OFFROAD=0
+FORCE_OFFROAD_OWNED=0
+FORCE_OFFROAD_PREV=""
+
+read_param() {
+  tr -d '\000\r\n' < "$PARAMS_DIR/$1" 2>/dev/null || true
+}
+
+write_param() {
+  mkdir -p "$PARAMS_DIR"
+  printf '%s' "$2" > "$PARAMS_DIR/$1"
+}
+
+restore_force_offroad_mode() {
+  if [ "$FORCE_OFFROAD_OWNED" = "1" ]; then
+    write_param "OffroadMode" "${FORCE_OFFROAD_PREV:-0}"
+  fi
+}
+
+cleanup() {
+  restore_force_offroad_mode
+}
+
+wait_until_offroad() {
+  local timeout_sec="${1:-45}"
+  local elapsed=0
+  local is_onroad=""
+  while [ "$elapsed" -lt "$timeout_sec" ]; do
+    is_onroad="$(read_param IsOnroad)"
+    if [ "$is_onroad" != "1" ]; then
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
+ensure_offroad_ready() {
+  local is_onroad
+  is_onroad="$(read_param IsOnroad)"
+  if [ "$is_onroad" != "1" ]; then
+    return 0
+  fi
+
+  if [ "$FORCE_OFFROAD" != "1" ]; then
+    echo "ERROR: socket UI export patch apply blocked while onroad" >&2
+    exit 42
+  fi
+
+  FORCE_OFFROAD_PREV="$(read_param OffroadMode)"
+  if [ "$FORCE_OFFROAD_PREV" != "1" ]; then
+    echo "INFO: requesting OffroadMode for patch apply" >&2
+    write_param "OffroadMode" "1"
+    FORCE_OFFROAD_OWNED=1
+  fi
+
+  echo "INFO: waiting for actual offroad transition" >&2
+  if ! wait_until_offroad 45; then
+    echo "ERROR: device did not transition offroad in time" >&2
+    exit 42
+  fi
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -h|--help) echo "Usage: apply_onroad_ui_export_patch.sh"; exit 0 ;;
+    --force-offroad) FORCE_OFFROAD=1; shift ;;
+    -h|--help) echo "Usage: apply_onroad_ui_export_patch.sh [--force-offroad]"; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
-is_onroad="$(cat /data/params/d/IsOnroad 2>/dev/null | tr -d "\000\r\n" || echo 0)"
-if [ "$is_onroad" = "1" ]; then
-  echo "ERROR: socket UI export patch apply blocked while onroad" >&2
-  exit 42
-fi
+trap cleanup EXIT
+ensure_offroad_ready
 
 if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "ERROR: upstream repo not found at $OP_ROOT" >&2
   exit 1
 fi
+
+patch_targets() {
+  local patch_file="$1"
+  grep '^+++ b/' "$patch_file" | sed 's#^+++ b/##'
+}
+
+reset_patch_targets() {
+  local patch_file="$1"
+  local rel=""
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    git -C "$OP_ROOT" reset -q HEAD -- "$rel" >/dev/null 2>&1 || true
+    if git -C "$OP_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+      git -C "$OP_ROOT" checkout -- "$rel"
+    else
+      rm -f "$OP_ROOT/$rel"
+    fi
+  done < <(patch_targets "$patch_file")
+}
 
 detect_flavor() {
   local preferred=""
@@ -87,7 +168,11 @@ if [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then
 fi
 
 if ! git -C "$OP_ROOT" apply --recount --reverse --check "$patch" >/dev/null 2>&1; then
-  git -C "$OP_ROOT" apply --recount --check "$patch"
+  if ! git -C "$OP_ROOT" apply --recount --check "$patch" >/dev/null 2>&1; then
+    echo "INFO: resetting managed onroad UI export patch targets before apply" >&2
+    reset_patch_targets "$patch"
+    git -C "$OP_ROOT" apply --recount --check "$patch"
+  fi
   git -C "$OP_ROOT" apply --recount "$patch"
 fi
 

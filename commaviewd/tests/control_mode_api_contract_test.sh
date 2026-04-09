@@ -22,8 +22,11 @@ grep -Fq "configHash" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should e
 grep -Fq "warnings" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose warnings"; exit 1; }
 grep -Fq "safeFallback" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose safeFallback state"; exit 1; }
 grep -Fq "onroadUiExport" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose onroadUiExport"; exit 1; }
+grep -Fq "runtimeVersion" "$CONTROL_CPP" || { echo "FAIL: control mode should expose runtimeVersion alias"; exit 1; }
+grep -Fq "live_onroad_ui_export_status_json(false)" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should use live onroad UI export verification"; exit 1; }
 grep -Fq "/commaview/onroad-ui-export/status" "$CONTROL_CPP" || { echo "FAIL: missing /commaview/onroad-ui-export/status route"; exit 1; }
 grep -Fq "/commaview/onroad-ui-export/repair" "$CONTROL_CPP" || { echo "FAIL: missing /commaview/onroad-ui-export/repair route"; exit 1; }
+grep -Fq 'json_field_true(request_body, "forceOffroad")' "$CONTROL_CPP" || { echo "FAIL: repair route should parse forceOffroad"; exit 1; }
 grep -Fq '/commaview/runtime-debug/config' "$CONTROL_CPP" || { echo "FAIL: missing /commaview/runtime-debug/config route"; exit 1; }
 grep -Fq '/commaview/runtime-debug/defaults' "$CONTROL_CPP" || { echo "FAIL: missing /commaview/runtime-debug/defaults route"; exit 1; }
 grep -Fq '/commaview/runtime-debug/apply' "$CONTROL_CPP" || { echo "FAIL: missing /commaview/runtime-debug/apply route"; exit 1; }

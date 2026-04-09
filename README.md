@@ -15,7 +15,7 @@
 ## Repository layout
 
 - `commaviewd/` — runtime source, tests, verification scripts
-- `comma4/` — install/start/stop/upgrade/uninstall scripts + version pin
+- `comma4/` — install/start/stop/uninstall scripts + version pin
 - `tools/release/` — release bundle builder
 - `.github/workflows/` — CI/release/canary workflows
 
@@ -33,12 +33,13 @@ Install/update:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/install.sh | ssh comma@<comma-ip> bash
+curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/install.sh | ssh comma@<comma-ip> bash -s -- --tag <release-tag>
+curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/install.sh | ssh comma@<comma-ip> bash -s -- --force-offroad
 ```
 
-Upgrade / uninstall:
+Uninstall:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/upgrade.sh | ssh comma@<comma-ip> bash
 ssh comma@<comma-ip> 'bash /data/commaview/uninstall.sh'
 ```
 

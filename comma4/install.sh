@@ -44,21 +44,43 @@ INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubuserconte
 INSTALL_DIR="/data/commaview"
 CONTINUE_SH="/data/continue.sh"
 MARKER="# commaview-hook"
+PARAMS_DIR="/data/params/d"
+FORCE_OFFROAD=0
+FORCE_OFFROAD_OWNED=0
+FORCE_OFFROAD_PREV=""
+tmpdir=""
 
 usage() {
   cat <<USAGE
 CommaView installer ${VERSION}
 
 Usage:
-  install.sh [--help]
+  install.sh [--tag <release-tag>] [--force-offroad] [--help]
 
 Options:
+  --tag <release-tag>            Install or update to a specific release tag.
+  --force-offroad                Set OffroadMode and wait for an actual offroad transition before changing files.
   -h, --help                     Show this help and exit.
 USAGE
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --tag)
+      [ "$#" -ge 2 ] || { echo "ERROR: --tag requires a value" >&2; exit 1; }
+      RELEASE_TAG="$2"
+      VERSION="${COMMAVIEWD_VERSION:-${VERSION:-${RELEASE_TAG#v}}}"
+      ASSET_NAME="${COMMAVIEWD_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
+      ASSET_SHA_NAME="${ASSET_NAME}.sha256"
+      BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
+      INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-$RELEASE_TAG}"
+      INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma4}"
+      shift 2
+      ;;
+    --force-offroad)
+      FORCE_OFFROAD=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -78,6 +100,67 @@ need_cmd() {
   }
 }
 
+read_param() {
+  tr -d '\000\r\n' < "$PARAMS_DIR/$1" 2>/dev/null || true
+}
+
+write_param() {
+  mkdir -p "$PARAMS_DIR"
+  printf '%s' "$2" > "$PARAMS_DIR/$1"
+}
+
+restore_force_offroad_mode() {
+  if [ "$FORCE_OFFROAD_OWNED" = "1" ]; then
+    write_param "OffroadMode" "${FORCE_OFFROAD_PREV:-0}"
+  fi
+}
+
+cleanup() {
+  restore_force_offroad_mode
+  rm -rf "${tmpdir:-}"
+}
+
+wait_until_offroad() {
+  local timeout_sec="${1:-45}"
+  local elapsed=0
+  local is_onroad=""
+  while [ "$elapsed" -lt "$timeout_sec" ]; do
+    is_onroad="$(read_param IsOnroad)"
+    if [ "$is_onroad" != "1" ]; then
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
+ensure_offroad_ready() {
+  local is_onroad
+  is_onroad="$(read_param IsOnroad)"
+  if [ "$is_onroad" != "1" ]; then
+    return 0
+  fi
+
+  if [ "$FORCE_OFFROAD" != "1" ]; then
+    echo "ERROR: install blocked while onroad. Park the vehicle or rerun with --force-offroad." >&2
+    exit 42
+  fi
+
+  FORCE_OFFROAD_PREV="$(read_param OffroadMode)"
+  if [ "$FORCE_OFFROAD_PREV" != "1" ]; then
+    echo "Requesting OffroadMode for maintenance..."
+    write_param "OffroadMode" "1"
+    FORCE_OFFROAD_OWNED=1
+  fi
+
+  echo "Waiting for actual offroad transition..."
+  if ! wait_until_offroad 45; then
+    echo "ERROR: device did not transition offroad in time" >&2
+    exit 42
+  fi
+}
+
 copy_required_file() {
   local src_rel="$1"
   local dst="$2"
@@ -95,7 +178,7 @@ copy_required_file() {
 }
 
 required_files=(
-  "upgrade.sh"
+  "install.sh"
   "start.sh"
   "stop.sh"
   "uninstall.sh"
@@ -158,7 +241,7 @@ validate_required_files() {
 }
 
 deploy_required_scripts() {
-  copy_required_file "upgrade.sh" "$INSTALL_DIR/upgrade.sh"
+  copy_required_file "install.sh" "$INSTALL_DIR/install.sh"
   copy_required_file "start.sh" "$INSTALL_DIR/start.sh"
   copy_required_file "runtime-debug.defaults.json" "$INSTALL_DIR/runtime-debug.defaults.json" 644
   copy_required_file "scripts/verify_onroad_ui_export_patch.sh" "$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
@@ -192,6 +275,27 @@ PYTOKEN
   chmod 600 "$token_path" 2>/dev/null || true
 }
 
+clean_managed_install_tree() {
+  echo "Removing stale managed CommaView files..."
+  rm -f \
+    "$INSTALL_DIR/commaviewd" \
+    "$INSTALL_DIR/VERSION" \
+    "$INSTALL_DIR/start.sh" \
+    "$INSTALL_DIR/stop.sh" \
+    "$INSTALL_DIR/uninstall.sh" \
+    "$INSTALL_DIR/runtime-debug.defaults.json"
+  rm -rf \
+    "$INSTALL_DIR/lib" \
+    "$INSTALL_DIR/scripts" \
+    "$INSTALL_DIR/patches"
+  mkdir -p \
+    "$INSTALL_DIR/logs" \
+    "$INSTALL_DIR/run" \
+    "$INSTALL_DIR/lib" \
+    "$INSTALL_DIR/api" \
+    "$INSTALL_DIR/config"
+}
+
 need_cmd curl
 need_cmd tar
 need_cmd sha256sum
@@ -203,15 +307,12 @@ echo "=== CommaView ${VERSION} Installer ==="
 echo "Release: ${RELEASE_TAG}"
 echo "Repo:    ${GITHUB_REPO}"
 
-tmpdir="$(mktemp -d /tmp/commaview-install.XXXXXX)"
-cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT
+ensure_offroad_ready
+
+tmpdir="$(mktemp -d /tmp/commaview-install.XXXXXX)"
 
 mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/run" "$INSTALL_DIR/lib" "$INSTALL_DIR/api"
-
-echo "Stopping existing CommaView processes..."
-pkill -f "/data/commaview/commaviewd" 2>/dev/null || true
-sleep 1
 
 echo "Downloading release assets..."
 curl -fL --retry 3 --retry-delay 1 -o "$tmpdir/$ASSET_NAME" "$BASE_URL/$ASSET_NAME"
@@ -229,6 +330,12 @@ if [ "$expected_sha" != "$actual_sha" ]; then
   echo "  actual:   $actual_sha" >&2
   exit 1
 fi
+
+echo "Stopping existing CommaView processes..."
+pkill -f "/data/commaview/commaviewd" 2>/dev/null || true
+sleep 1
+
+clean_managed_install_tree
 
 echo "Extracting bundle..."
 tar -xzf "$tmpdir/$ASSET_NAME" -C "$INSTALL_DIR" --strip-components=1
@@ -277,5 +384,5 @@ echo "  Source:      ${BASE_URL}/${ASSET_NAME}"
 echo "  Binary:      $INSTALL_DIR/commaviewd ($BINARY_SIZE)"
 echo "  Runtime:     commaviewd dual-mode (bridge + control)"
 echo "  Direct v2 onroad UI export: install-time patch lifecycle enforced"
-echo "  Upgrade:     bash $INSTALL_DIR/upgrade.sh"
+echo "  Install/update: bash $INSTALL_DIR/install.sh [--tag <release-tag>] [--force-offroad]"
 echo "  Uninstall:   bash $INSTALL_DIR/uninstall.sh"

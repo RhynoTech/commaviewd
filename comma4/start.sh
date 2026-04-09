@@ -10,6 +10,9 @@ RUNTIME_DEBUG_CONFIG="${COMMAVIEWD_RUNTIME_DEBUG_CONFIG:-$CONFIG_DIR/runtime-deb
 RUNTIME_DEBUG_EFFECTIVE="${COMMAVIEWD_RUNTIME_DEBUG_EFFECTIVE:-$RUN_DIR/runtime-debug-effective.json}"
 RUNTIME_DEBUG_STATS="${COMMAVIEWD_RUNTIME_STATS:-$RUN_DIR/telemetry-stats.json}"
 RESTART_REASON="${COMMAVIEWD_RESTART_REASON:-startup}"
+ONROAD_UI_EXPORT_VERIFY="$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
+ONROAD_UI_EXPORT_APPLY="$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh"
+ONROAD_UI_EXPORT_LOG="$LOG_DIR/onroad-ui-export-startup.log"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR" "$CONFIG_DIR"
 echo "$RESTART_REASON" > "$RUN_DIR/last-restart-reason.txt"
@@ -30,6 +33,36 @@ PY
 if [ $? -ne 0 ]; then
   echo "WARN: invalid runtime debug config JSON; bridge/control will fall back to safe defaults" >> "$LOG_DIR/commaviewd-control.log"
 fi
+
+refresh_onroad_ui_export_status() {
+  if [ ! -x "$ONROAD_UI_EXPORT_VERIFY" ]; then
+    return 0
+  fi
+
+  if "$ONROAD_UI_EXPORT_VERIFY" --json >> "$ONROAD_UI_EXPORT_LOG" 2>&1; then
+    echo "INFO: onroad UI export patch verified at startup" >> "$ONROAD_UI_EXPORT_LOG"
+    return 0
+  fi
+
+  is_onroad="$(cat /data/params/d/IsOnroad 2>/dev/null | tr -d "\000\r\n" || echo 0)"
+  if [ "$is_onroad" = "1" ]; then
+    echo "WARN: onroad UI export verify failed while onroad; skipping startup repair" >> "$ONROAD_UI_EXPORT_LOG"
+    return 0
+  fi
+
+  if [ ! -x "$ONROAD_UI_EXPORT_APPLY" ]; then
+    echo "WARN: onroad UI export verify failed and repair helper is missing" >> "$ONROAD_UI_EXPORT_LOG"
+    return 0
+  fi
+
+  if "$ONROAD_UI_EXPORT_APPLY" >> "$ONROAD_UI_EXPORT_LOG" 2>&1; then
+    echo "INFO: onroad UI export patch repaired at startup" >> "$ONROAD_UI_EXPORT_LOG"
+  else
+    echo "WARN: onroad UI export startup repair failed" >> "$ONROAD_UI_EXPORT_LOG"
+  fi
+}
+
+refresh_onroad_ui_export_status
 
 # Stop stale runtime processes first
 bash /data/commaview/stop.sh >/dev/null 2>&1 || true

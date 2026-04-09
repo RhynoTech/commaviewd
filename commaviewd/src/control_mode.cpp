@@ -43,6 +43,7 @@ struct PairingGrant {
 std::mutex g_pairing_mutex;
 PairingGrant g_pairing_grant;
 bool run_command(const std::vector<std::string>& args, int* exit_code, std::string* stdout_text, std::string* stderr_text);
+bool is_onroad();
 
 std::string trim_copy(const std::string& in) {
   size_t s = 0;
@@ -228,6 +229,88 @@ std::string load_onroad_ui_export_status_json() {
   return raw.empty() ? default_onroad_ui_export_status_json() : raw;
 }
 
+bool json_field_true(const std::string& body, const char* key) {
+  if (key == nullptr) return false;
+  return body.find(std::string("\"") + key + "\":true") != std::string::npos;
+}
+
+std::string onroad_ui_export_status_error_json(const std::string& state, const std::string& reason) {
+  return std::string("{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"") +
+         json_escape(state.empty() ? "error" : state) + "\",\"reason\":\"" +
+         json_escape(reason.empty() ? "onroad UI export verify failed" : reason) + "\"}";
+}
+
+std::string run_onroad_ui_export_verify_json(int* rc_out, std::string* err_out) {
+  if (rc_out) *rc_out = 0;
+  if (err_out) err_out->clear();
+  if (!file_executable(kOnroadUiExportVerifyScript)) {
+    return load_onroad_ui_export_status_json();
+  }
+
+  int rc = 0;
+  std::string out;
+  std::string err;
+  if (!run_command({kOnroadUiExportVerifyScript, "--json"}, &rc, &out, &err)) {
+    return load_onroad_ui_export_status_json();
+  }
+
+  if (rc_out) *rc_out = rc;
+  if (err_out) *err_out = trim_copy(err);
+
+  const std::string body = trim_copy(out);
+  if (!body.empty()) return body;
+  if (rc == 0) return load_onroad_ui_export_status_json();
+  return onroad_ui_export_status_error_json("error", trim_copy(err));
+}
+
+std::string run_onroad_ui_export_apply_status_json(int* rc_out, std::string* err_out, bool force_offroad = false) {
+  if (rc_out) *rc_out = 1;
+  if (err_out) err_out->clear();
+  if (is_onroad() && !force_offroad) {
+    if (err_out) *err_out = "repair blocked while onroad";
+    return onroad_ui_export_status_error_json("onroad-blocked", "repair blocked while onroad");
+  }
+  if (!file_executable(kOnroadUiExportApplyScript)) {
+    if (err_out) *err_out = "onroad UI export repair helper missing";
+    return onroad_ui_export_status_error_json("missing-helper", "onroad UI export repair helper missing");
+  }
+
+  int rc = 0;
+  std::string out;
+  std::string err;
+  std::vector<std::string> args{kOnroadUiExportApplyScript};
+  if (force_offroad) args.push_back("--force-offroad");
+  if (!run_command(args, &rc, &out, &err)) {
+    if (err_out) *err_out = trim_copy(err).empty() ? "onroad UI export repair failed" : trim_copy(err);
+    return onroad_ui_export_status_error_json("error", trim_copy(err).empty() ? "onroad UI export repair failed" : trim_copy(err));
+  }
+
+  if (rc_out) *rc_out = rc;
+  if (err_out) *err_out = trim_copy(err);
+
+  const std::string body = trim_copy(out);
+  if (!body.empty()) return body;
+  if (rc == 0) return load_onroad_ui_export_status_json();
+  return onroad_ui_export_status_error_json("error", trim_copy(err).empty() ? "onroad UI export repair failed" : trim_copy(err));
+}
+
+std::string live_onroad_ui_export_status_json(bool allow_self_heal) {
+  int verify_rc = 0;
+  std::string verify_err;
+  std::string status = run_onroad_ui_export_verify_json(&verify_rc, &verify_err);
+
+  if (!allow_self_heal) return status;
+  if (is_onroad()) return status;
+  if (!file_executable(kOnroadUiExportApplyScript)) return status;
+  if (verify_rc == 0 && !json_field_true(status, "repairNeeded")) return status;
+
+  int repair_rc = 0;
+  std::string repair_err;
+  const std::string repaired = run_onroad_ui_export_apply_status_json(&repair_rc, &repair_err);
+  if (repair_rc == 0 || json_field_true(repaired, "patchVerified")) return repaired;
+  return status;
+}
+
 std::string runtime_status_json() {
   const std::string version = runtime_version();
   const std::string telemetryMode = telemetry_mode();
@@ -237,9 +320,10 @@ std::string runtime_status_json() {
   std::ostringstream out;
   out << "{";
   out << "\"version\":\"" << json_escape(version) << "\",";
+  out << "\"runtimeVersion\":\"" << json_escape(version) << "\",";
   out << "\"api_port\":" << kDefaultApiPort << ",";
   out << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\",";
-  out << "\"onroadUiExport\":" << load_onroad_ui_export_status_json() << ",";
+  out << "\"onroadUiExport\":" << live_onroad_ui_export_status_json(false) << ",";
   out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
   out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true) << ",";
   out << "\"runtimeStats\":" << load_runtime_stats_json(effective) << ",";
@@ -527,42 +611,18 @@ commaview::api::HttpResponse make_json(int code, const std::string& body) {
 }  // namespace
 
 std::string onroad_ui_export_status_response() {
-  if (!file_executable(kOnroadUiExportVerifyScript)) {
-    return load_onroad_ui_export_status_json();
-  }
-  int rc = 0;
-  std::string out;
-  std::string err;
-  if (!run_command({kOnroadUiExportVerifyScript, "--json"}, &rc, &out, &err)) {
-    return load_onroad_ui_export_status_json();
-  }
-  const std::string body = trim_copy(out);
-  if (!body.empty()) return body;
-  if (rc == 0) return load_onroad_ui_export_status_json();
-  const std::string msg = trim_copy(err);
-  return std::string("{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"error\",\"reason\":\"") + json_escape(msg.empty() ? "onroad UI export verify failed" : msg) + "\"}";
+  return live_onroad_ui_export_status_json(false);
 }
 
-std::string onroad_ui_export_repair_response() {
-  if (is_onroad()) {
-    return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"repair blocked while onroad\",\"status\":{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"onroad-blocked\",\"reason\":\"repair blocked while onroad\"}}";
-  }
-  if (!file_executable(kOnroadUiExportApplyScript)) {
-    return "{\"ok\":false,\"repairNeeded\":true,\"error\":\"onroad UI export repair helper missing\",\"status\":{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"missing-helper\",\"reason\":\"onroad UI export repair helper missing\"}}";
-  }
+std::string onroad_ui_export_repair_response(const std::string& request_body) {
+  const bool force_offroad = json_field_true(request_body, "forceOffroad");
   int rc = 0;
-  std::string out;
   std::string err;
-  if (!run_command({kOnroadUiExportApplyScript}, &rc, &out, &err)) {
-    const std::string msg = trim_copy(err);
-    return std::string("{\"ok\":false,\"repairNeeded\":true,\"error\":\"") + json_escape(msg.empty() ? "onroad UI export repair failed" : msg) + "\",\"status\":" + load_onroad_ui_export_status_json() + "}";
-  }
-  std::string status = trim_copy(out);
-  if (status.empty()) status = load_onroad_ui_export_status_json();
+  const std::string status = run_onroad_ui_export_apply_status_json(&rc, &err, force_offroad);
   std::ostringstream resp;
   resp << "{\"ok\":" << (rc == 0 ? "true" : "false") << ",\"repairNeeded\":" << (rc == 0 ? "false" : "true") << ",\"status\":" << status;
   if (rc != 0) {
-    resp << ",\"error\":\"" << json_escape(trim_copy(err).empty() ? "onroad UI export repair failed" : trim_copy(err)) << "\"";
+    resp << ",\"error\":\"" << json_escape(err.empty() ? "onroad UI export repair failed" : err) << "\"";
   }
   resp << "}";
   return resp.str();
@@ -590,7 +650,13 @@ int run_control_mode(int argc, char* argv[]) {
     if (req.method == "GET") {
       if (req.path == "/commaview/version") {
         const std::string version = runtime_version();
-        return make_json(200, "{\"version\":\"" + json_escape(version) + "\"}");
+        const std::string telemetryMode = telemetry_mode();
+        std::ostringstream body;
+        body << "{\"version\":\"" << json_escape(version) << "\",";
+        body << "\"runtimeVersion\":\"" << json_escape(version) << "\",";
+        body << "\"api_port\":" << kDefaultApiPort << ",";
+        body << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\"}";
+        return make_json(200, body.str());
       }
       if (req.path == "/commaview/status") {
         return make_json(200, runtime_status_json());
@@ -642,7 +708,7 @@ int run_control_mode(int argc, char* argv[]) {
         return make_json(code, body);
       }
       if (req.path == "/commaview/onroad-ui-export/repair") {
-        std::string body = onroad_ui_export_repair_response();
+        std::string body = onroad_ui_export_repair_response(req.body);
         int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
         return make_json(code, body);
       }
