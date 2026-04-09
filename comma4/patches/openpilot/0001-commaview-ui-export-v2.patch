@@ -344,44 +344,34 @@ index 0000000..8136a25
 +        },
 +      })
 +    return payload
-+
-+
-+def install_commaview_ui_export(ui_state_cls) -> None:
-+  if getattr(ui_state_cls, "_commaview_ui_export_installed", False):
-+    return
-+
-+  original_initialize = ui_state_cls._initialize
-+  original_update = ui_state_cls.update
-+
-+  def _initialize_with_commaview(self):
-+    original_initialize(self)
-+    self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)
-+
-+  def _update_with_commaview(self):
-+    original_update(self)
-+    self._commaview_exporter.publish(self)
-+
-+  ui_state_cls._initialize = _initialize_with_commaview
-+  ui_state_cls.update = _update_with_commaview
-+  ui_state_cls._commaview_ui_export_installed = True
 diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
-index 30a6565..2955ff2 100644
+index 30a6565..66ebfa0 100644
 --- a/selfdrive/ui/ui_state.py
 +++ b/selfdrive/ui/ui_state.py
 @@ -8,6 +8,7 @@ from cereal import messaging, car, log
  from openpilot.common.filter_simple import FirstOrderFilter
  from openpilot.common.params import Params
  from openpilot.common.swaglog import cloudlog
-+from openpilot.selfdrive.ui.commaview_export import install_commaview_ui_export
++from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR
  from openpilot.selfdrive.ui.lib.prime_state import PrimeState
  from openpilot.system.ui.lib.application import gui_app
  from openpilot.system.hardware import HARDWARE, PC
-@@ -281,6 +282,8 @@ class Device:
-       gui_app.set_should_render(on)
+@@ -86,6 +87,7 @@ class UIState:
+     self._engaged_transition_callbacks: list[Callable[[], None]] = []
  
+     self.update_params()
++    self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)
  
-+install_commaview_ui_export(UIState)
-+
- # Global instance
- ui_state = UIState()
- device = Device()
+   def add_offroad_transition_callback(self, callback: Callable[[], None]):
+     self._offroad_transition_callbacks.append(callback)
+@@ -111,6 +113,10 @@ class UIState:
+     if time.monotonic() - self._param_update_time > 5.0:
+       self.update_params()
+     device.update()
++    try:
++      self._commaview_exporter.publish(self)
++    except Exception:
++      cloudlog.exception("commaview ui export publish failed")
+ 
+   def _update_state(self) -> None:
+     # Handle panda states updates

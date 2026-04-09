@@ -18,8 +18,7 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   fi
 
   grep -Fq 'diff --git a/selfdrive/ui/commaview_export.py b/selfdrive/ui/commaview_export.py' "$patch" || fail "$patch missing helper file diff"
-  grep -Fq 'from openpilot.selfdrive.ui.commaview_export import install_commaview_ui_export' "$patch" || fail "$patch missing ui_state import hook"
-  grep -Fq 'install_commaview_ui_export(UIState)' "$patch" || fail "$patch missing ui_state install hook"
+  grep -Fq 'from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR' "$patch" || fail "$patch missing ui_state direct exporter import"
   grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$patch" || fail "$patch missing runtime flavor constant"
   grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN = "UNKNOWN"' "$patch" || fail "$patch missing runtime flavor fallback"
   grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$patch" || fail "$patch missing frame version"
@@ -48,9 +47,9 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   grep -Fq '"speedLimitPreActiveIcon": "none"' "$patch" || fail "$patch missing default speed-limit icon export"
   grep -Fq '"blindspotIndicatorsEnabled": bool(ui_state.params.get_bool("BlindSpot"))' "$patch" || fail "$patch missing BlindSpot export"
   grep -Fq '"rainbowPathEnabled": bool(ui_state.params.get_bool("RainbowMode"))' "$patch" || fail "$patch missing RainbowMode export"
-  grep -Fq 'original_update = ui_state_cls.update' "$patch" || fail "$patch missing update hook capture"
   grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$patch" || fail "$patch missing exporter installation"
   grep -Fq 'self._commaview_exporter.publish(self)' "$patch" || fail "$patch missing exporter publish call"
+  grep -Fq 'cloudlog.exception("commaview ui export publish failed")' "$patch" || fail "$patch missing exporter publish guardrail"
 
   if [[ "$patch" == *'/sunnypilot/'* ]]; then
     grep -Fq 'from cereal import custom' "$patch" || fail "$patch missing sunnypilot custom import"

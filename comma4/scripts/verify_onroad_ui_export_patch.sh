@@ -121,8 +121,7 @@ else
     expected_runtime_flavor="SUNNYPILOT"
   fi
 
-  grep -Fq 'from openpilot.selfdrive.ui.commaview_export import install_commaview_ui_export' "$UI_STATE_PATH" && ui_state_hook_present=true || true
-  grep -Fq 'install_commaview_ui_export(UIState)' "$UI_STATE_PATH" && ui_state_hook_present=true || true
+  grep -Fq 'from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR' "$UI_STATE_PATH" && ui_state_hook_present=true || true
   [ -f "$HELPER_PATH" ] && helper_present=true || true
   grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$HELPER_PATH" && runtime_flavor_constant_present=true || true
   grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$HELPER_PATH" && socket_path_present=true || true
@@ -141,8 +140,8 @@ else
   grep -Fq '"activeCamera": active_camera' "$HELPER_PATH" && active_camera_present=true || true
   grep -Fq '"statusMode": _status_mode_name(ui_state.status)' "$HELPER_PATH" && status_mode_present=true || true
   grep -Fq '"runtimeFlavor": self._flavor' "$HELPER_PATH" && runtime_flavor_export_present=true || true
-  grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$HELPER_PATH" && exporter_install_present=true || true
-  grep -Fq 'self._commaview_exporter.publish(self)' "$HELPER_PATH" && exporter_publish_present=true || true
+  grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$UI_STATE_PATH" && exporter_install_present=true || true
+  grep -Fq 'self._commaview_exporter.publish(self)' "$UI_STATE_PATH" && exporter_publish_present=true || true
   if [ "$flavor" = "sunnypilot" ]; then
     if grep -Fq 'def _speed_limit_pre_active_icon(self, ui_state) -> str:' "$HELPER_PATH" && \
        grep -Fq 'custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$HELPER_PATH"; then
@@ -160,7 +159,7 @@ else
      $status_mode_present && $runtime_flavor_export_present && $exporter_install_present && \
      $exporter_publish_present && $speed_limit_helper_present; then
     state="patch-verified"
-    reason="socket UI export hook markers verified; runtime telemetry not proven"
+    reason="socket UI export direct wiring markers verified; runtime telemetry not proven"
     patch_verified=true
     repair_needed=false
   else

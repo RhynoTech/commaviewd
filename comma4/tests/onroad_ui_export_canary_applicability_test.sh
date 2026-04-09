@@ -38,8 +38,9 @@ run_ref() {
   helper_path="$checkout/selfdrive/ui/commaview_export.py"
   ui_state_path="$checkout/selfdrive/ui/ui_state.py"
 
-  grep -Fq 'install_commaview_ui_export(UIState)' "$ui_state_path" || fail "ui_state install hook missing for ${label}"
-  grep -Fq 'from openpilot.selfdrive.ui.commaview_export import install_commaview_ui_export' "$ui_state_path" || fail "ui_state import hook missing for ${label}"
+  grep -Fq 'from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR' "$ui_state_path" || fail "ui_state direct exporter import missing for ${label}"
+  grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$ui_state_path" || fail "ui_state exporter install missing for ${label}"
+  grep -Fq 'self._commaview_exporter.publish(self)' "$ui_state_path" || fail "ui_state exporter publish missing for ${label}"
   grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$helper_path" || fail "runtime flavor constant missing for ${label}"
   grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$helper_path" || fail "frame version missing for ${label}"
   grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$helper_path" || fail "socket path missing for ${label}"
@@ -57,8 +58,7 @@ run_ref() {
   grep -Fq '"activeCamera": active_camera' "$helper_path" || fail "active camera export missing for ${label}"
   grep -Fq '"runtimeFlavor": self._flavor' "$helper_path" || fail "runtime flavor export missing for ${label}"
   grep -Fq '"statusMode": _status_mode_name(ui_state.status)' "$helper_path" || fail "status mode export missing for ${label}"
-  grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$helper_path" || fail "exporter install missing for ${label}"
-  grep -Fq 'self._commaview_exporter.publish(self)' "$helper_path" || fail "exporter publish missing for ${label}"
+  grep -Fq 'cloudlog.exception("commaview ui export publish failed")' "$ui_state_path" || fail "ui_state exporter guardrail missing for ${label}"
 
   if [[ "$label" == sunnypilot* ]]; then
     grep -Fq 'from cereal import custom' "$helper_path" || fail "custom import missing for ${label}"
@@ -66,7 +66,7 @@ run_ref() {
     grep -Fq 'custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$helper_path" || fail "preActive marker missing for ${label}"
   fi
 
-  printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","repairNeeded":false,"state":"patch-verified","reason":"socket ui export hook verified on real canary ref"}'
+  printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","repairNeeded":false,"state":"patch-verified","reason":"socket ui export direct wiring verified on real canary ref"}'
 
   git -C "$checkout" reset --hard -q HEAD
   git -C "$checkout" clean -fdq
