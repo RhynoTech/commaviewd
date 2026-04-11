@@ -12,6 +12,7 @@ index 0000000..ee2d421
 +import time
 +
 +from cereal import custom
++from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
 +from openpilot.common.transformations.camera import DEVICE_CAMERAS
 +
 +COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"
@@ -71,6 +72,55 @@ index 0000000..ee2d421
 +    return 0.0
 +
 +
++COMMAVIEW_DEFAULT_MAX_LAT_ACCEL = 3.0
++
++
++def _interp(value: float, xp: list[float], fp: list[float]) -> float:
++  if value <= xp[0]:
++    return fp[0]
++  if value >= xp[-1]:
++    return fp[-1]
++  span = xp[-1] - xp[0]
++  if span <= 0.0:
++    return fp[-1]
++  return fp[0] + (fp[-1] - fp[0]) * ((value - xp[0]) / span)
++
++
++def _torque_bar_value(ui_state) -> float:
++  if ui_state.sm.recv_frame["controlsState"] < ui_state.started_frame:
++    return 0.0
++
++  controls_state = ui_state.sm["controlsState"]
++  lateral_control = getattr(controls_state, "lateralControlState", None)
++  control_mode = lateral_control.which() if lateral_control is not None and hasattr(lateral_control, "which") else ""
++  if control_mode == "angleState":
++    if (
++      ui_state.sm.recv_frame["carState"] < ui_state.started_frame or
++      ui_state.sm.recv_frame["carControl"] < ui_state.started_frame or
++      ui_state.sm.recv_frame["liveParameters"] < ui_state.started_frame
++    ):
++      return 0.0
++
++    car_state = ui_state.sm["carState"]
++    car_control = ui_state.sm["carControl"]
++    live_parameters = ui_state.sm["liveParameters"]
++    v_ego = max(_safe_float(car_state.vEgo), 0.0)
++    actual_lateral_accel = _safe_float(getattr(controls_state, "curvature", 0.0)) * v_ego ** 2
++    desired_lateral_accel = _safe_float(getattr(controls_state, "desiredCurvature", 0.0)) * v_ego ** 2
++    roll_compensation = _safe_float(live_parameters.roll) * ACCELERATION_DUE_TO_GRAVITY * _interp(v_ego, [5.0, 15.0], [0.0, 1.0])
++    lateral_accel = actual_lateral_accel - roll_compensation
++    max_lateral_accel = COMMAVIEW_DEFAULT_MAX_LAT_ACCEL
++    if hasattr(ui_state, "CP") and ui_state.CP is not None:
++      max_lateral_accel = _safe_float(getattr(ui_state.CP, "maxLateralAccel", COMMAVIEW_DEFAULT_MAX_LAT_ACCEL)) or COMMAVIEW_DEFAULT_MAX_LAT_ACCEL
++    if max_lateral_accel <= 0.0 or not bool(car_control.latActive):
++      return 0.0
++    return max(-1.0, min(1.0, (lateral_accel + (desired_lateral_accel - actual_lateral_accel)) / max_lateral_accel))
++
++  if ui_state.sm.recv_frame["carOutput"] < ui_state.started_frame:
++    return 0.0
++  return max(-1.0, min(1.0, -_safe_float(ui_state.sm["carOutput"].actuatorsOutput.torque)))
++
++
 +def _status_mode_name(status) -> str:
 +  status_value = str(status.value if hasattr(status, "value") else status)
 +  return {
@@ -80,6 +130,22 @@ index 0000000..ee2d421
 +    "lat_only": "latOnly",
 +    "long_only": "longOnly",
 +  }.get(status_value, "unknown")
++
++
++def _service_seen(ui_state, service: str) -> bool:
++  try:
++    return ui_state.sm.recv_frame[service] >= ui_state.started_frame
++  except Exception:
++    return False
++
++
++def _allow_throttle(ui_state) -> bool:
++  longitudinal_control = bool(getattr(getattr(ui_state, "CP", None), "openpilotLongitudinalControl", False))
++  if not longitudinal_control:
++    return True
++  if _service_seen(ui_state, "longitudinalPlanSP"):
++    return bool(getattr(ui_state.sm["longitudinalPlanSP"], "allowThrottle", False))
++  return False
 +
 +
 +class _CommaViewSocketExporter:
@@ -194,7 +260,7 @@ index 0000000..ee2d421
 +
 +  def _control_payload(self, ui_state) -> dict:
 +    payload = {
-+      "exportVersion": 4,
++      "exportVersion": 5,
 +      "speedMps": 0.0,
 +      "speedClusterMps": 0.0,
 +      "cruiseSetSpeedMps": 0.0,
@@ -210,7 +276,8 @@ index 0000000..ee2d421
 +      "rightBlindspot": False,
 +      "latActive": False,
 +      "longActive": False,
-+      "logMonoTime": self._service_log_mono(ui_state, "carState", "carControl", "controlsState"),
++      "torqueBarValue": 0.0,
++      "logMonoTime": self._service_log_mono(ui_state, "carState", "carControl", "controlsState", "carOutput", "liveParameters"),
 +    }
 +    if ui_state.sm.recv_frame["carState"] >= ui_state.started_frame:
 +      car_state = ui_state.sm["carState"]
@@ -232,6 +299,7 @@ index 0000000..ee2d421
 +      car_control = ui_state.sm["carControl"]
 +      payload["latActive"] = bool(car_control.latActive)
 +      payload["longActive"] = bool(car_control.longActive)
++    payload["torqueBarValue"] = _safe_float(_torque_bar_value(ui_state))
 +    return payload
 +
 +  def _scene_payload(self, ui_state) -> dict:
@@ -255,7 +323,7 @@ index 0000000..ee2d421
 +      ]
 +
 +    payload = {
-+      "exportVersion": 3,
++      "exportVersion": 5,
 +      "frameId": 0,
 +      "frameIdExtra": 0,
 +      "frameAge": 0,
@@ -268,6 +336,11 @@ index 0000000..ee2d421
 +      "leadTwo": _lead_dict(None),
 +      "calibration": calibration,
 +      "activeCamera": active_camera,
++      "disengagePredictions": {
++        "brakeDisengageProbs": [],
++        "steerOverrideProbs": [],
++      },
++      "accelerationX": [],
 +      "logMonoTime": self._service_log_mono(ui_state, "modelV2", "radarState", "liveCalibration"),
 +    }
 +    if ui_state.sm.recv_frame["modelV2"] >= ui_state.started_frame:
@@ -298,6 +371,11 @@ index 0000000..ee2d421
 +        "position": _path_dict(model.position),
 +        "leadOne": _lead_dict(radar_state.leadOne),
 +        "leadTwo": _lead_dict(radar_state.leadTwo),
++        "disengagePredictions": {
++          "brakeDisengageProbs": _float_list(getattr(model.meta.disengagePredictions, "brakeDisengageProbs", [])),
++          "steerOverrideProbs": _float_list(getattr(model.meta.disengagePredictions, "steerOverrideProbs", [])),
++        },
++        "accelerationX": _float_list(getattr(getattr(model, "acceleration", None), "x", [])),
 +      })
 +      calibration.update({
 +        "rpyCalib": _float_list(live_calibration.rpyCalib),
@@ -311,7 +389,7 @@ index 0000000..ee2d421
 +
 +  def _status_payload(self, ui_state) -> dict:
 +    payload = {
-+      "exportVersion": 6,
++      "exportVersion": 9,
 +      "enabled": False,
 +      "active": False,
 +      "engageable": False,
@@ -338,6 +416,9 @@ index 0000000..ee2d421
 +      "speedLimitPreActiveIcon": "none",
 +      "blindspotIndicatorsEnabled": bool(ui_state.params.get_bool("BlindSpot")),
 +      "rainbowPathEnabled": bool(ui_state.params.get_bool("RainbowMode")),
++      "torqueBarEnabled": bool(ui_state.params.get_bool("TorqueBar")),
++      "alwaysOnDm": bool(ui_state.always_on_dm),
++      "allowThrottle": _allow_throttle(ui_state),
 +      "logMonoTime": self._service_log_mono(ui_state, "selfdriveState", "driverMonitoringState", "longitudinalPlanSP"),
 +    }
 +    if ui_state.sm.recv_frame["selfdriveState"] >= ui_state.started_frame:
