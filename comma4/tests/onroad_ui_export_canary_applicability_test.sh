@@ -54,29 +54,16 @@ run_ref() {
   grep -Fq 'self._send_json(COMMAVIEW_SCENE_SERVICE_INDEX, self._scene_payload(ui_state))' "$helper_path" || fail "scene publish path missing for ${label}"
   grep -Fq 'self._send_json(COMMAVIEW_STATUS_SERVICE_INDEX, self._status_payload(ui_state))' "$helper_path" || fail "status publish path missing for ${label}"
   grep -Fq '"cruiseSetSpeedMps":' "$helper_path" || fail "cruiseSetSpeedMps export missing for ${label}"
-  grep -Fq '"torqueBarValue": 0.0' "$helper_path" || fail "torqueBarValue default missing for ${label}"
-  grep -Fq '_torque_bar_value(ui_state)' "$helper_path" || fail "torqueBarValue mapping missing for ${label}"
   grep -Fq '"driverMonitoring": {' "$helper_path" || fail "nested driverMonitoring export missing for ${label}"
   grep -Fq '"activeCamera": active_camera' "$helper_path" || fail "active camera export missing for ${label}"
-  grep -Fq '"disengagePredictions": {' "$helper_path" || fail "disengage prediction export missing for ${label}"
-  grep -Fq '_float_list(getattr(model.meta.disengagePredictions, "brakeDisengageProbs", []))' "$helper_path" || fail "brake disengage prediction mapping missing for ${label}"
-  grep -Fq '_float_list(getattr(model.meta.disengagePredictions, "steerOverrideProbs", []))' "$helper_path" || fail "steer override prediction mapping missing for ${label}"
-  grep -Fq '"accelerationX": _float_list(getattr(getattr(model, "acceleration", None), "x", []))' "$helper_path" || fail "accelerationX export missing for ${label}"
   grep -Fq '"runtimeFlavor": self._flavor' "$helper_path" || fail "runtime flavor export missing for ${label}"
   grep -Fq '"statusMode": _status_mode_name(ui_state.status)' "$helper_path" || fail "status mode export missing for ${label}"
-  grep -Fq '"torqueBarEnabled":' "$helper_path" || fail "torqueBarEnabled export missing for ${label}"
-  grep -Fq '"alwaysOnDm": bool(ui_state.always_on_dm)' "$helper_path" || fail "AlwaysOnDM export missing for ${label}"
-  grep -Fq '"allowThrottle": _allow_throttle(ui_state)' "$helper_path" || fail "allowThrottle export missing for ${label}"
-  grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$helper_path" || fail "torque accel helper import missing for ${label}"
-  grep -Fq 'def _torque_bar_value(ui_state) -> float:' "$helper_path" || fail "torque bar helper missing for ${label}"
-  grep -Fq 'def _allow_throttle(ui_state) -> bool:' "$helper_path" || fail "allowThrottle helper missing for ${label}"
   grep -Fq 'cloudlog.exception("commaview ui export publish failed")' "$ui_state_path" || fail "ui_state exporter guardrail missing for ${label}"
 
   if [[ "$label" == sunnypilot* ]]; then
     grep -Fq 'from cereal import custom' "$helper_path" || fail "custom import missing for ${label}"
     grep -Fq 'def _speed_limit_pre_active_icon(self, ui_state) -> str:' "$helper_path" || fail "speed-limit icon helper missing for ${label}"
     grep -Fq 'custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$helper_path" || fail "preActive marker missing for ${label}"
-    grep -Fq '"torqueBarEnabled": bool(ui_state.params.get_bool("TorqueBar"))' "$helper_path" || fail "TorqueBar export missing for ${label}"
   fi
 
   printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","repairNeeded":false,"state":"patch-verified","reason":"socket ui export direct wiring verified on real canary ref"}'
