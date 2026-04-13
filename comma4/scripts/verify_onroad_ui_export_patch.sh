@@ -20,6 +20,12 @@ done
 
 mkdir -p "$(dirname "$STATE_JSON")" "$(dirname "$STATE_ENV")"
 
+check_fixed() {
+  local needle="$1"
+  local file="$2"
+  grep -Fq -- "$needle" "$file"
+}
+
 detect_flavor() {
   local preferred=""
   local remote=""
@@ -92,21 +98,82 @@ socket_env_present=false
 frame_version_present=false
 unix_socket_present=false
 framing_present=false
-control_payload_present=false
-scene_payload_present=false
-status_payload_present=false
-control_publish_present=false
-scene_publish_present=false
-status_publish_present=false
-cruise_set_speed_present=false
-driver_monitoring_present=false
-active_camera_present=false
-status_mode_present=false
-runtime_flavor_export_present=false
+compact_json_present=false
+payload_helpers_present=false
+publish_paths_present=false
+risk_fields_present=false
+legacy_bucket_markers_absent=false
 exporter_install_present=false
 exporter_publish_present=false
-speed_limit_helper_present=false
 fingerprint=""
+service_marker_count=0
+
+service_consts=(
+  COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX
+  COMMAVIEW_SELFDRIVE_STATE_SERVICE_INDEX
+  COMMAVIEW_CAR_STATE_SERVICE_INDEX
+  COMMAVIEW_CONTROLS_STATE_SERVICE_INDEX
+  COMMAVIEW_ONROAD_EVENTS_SERVICE_INDEX
+  COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX
+  COMMAVIEW_DRIVER_STATE_V2_SERVICE_INDEX
+  COMMAVIEW_MODEL_V2_SERVICE_INDEX
+  COMMAVIEW_RADAR_STATE_SERVICE_INDEX
+  COMMAVIEW_LIVE_CALIBRATION_SERVICE_INDEX
+  COMMAVIEW_CAR_OUTPUT_SERVICE_INDEX
+  COMMAVIEW_CAR_CONTROL_SERVICE_INDEX
+  COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX
+  COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX
+  COMMAVIEW_CAR_PARAMS_SERVICE_INDEX
+  COMMAVIEW_DEVICE_STATE_SERVICE_INDEX
+  COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX
+  COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX
+)
+
+payload_markers=(
+  'def _ui_state_onroad_payload(self, ui_state) -> dict:'
+  'def _selfdrive_state_payload(self, ui_state) -> dict:'
+  'def _car_state_payload(self, ui_state) -> dict:'
+  'def _controls_state_payload(self, ui_state) -> dict:'
+  'def _onroad_events_payload(self, ui_state) -> dict:'
+  'def _driver_monitoring_state_payload(self, ui_state) -> dict:'
+  'def _driver_state_v2_payload(self, ui_state) -> dict:'
+  'def _model_v2_payload(self, ui_state) -> dict:'
+  'def _radar_state_payload(self, ui_state) -> dict:'
+  'def _live_calibration_payload(self, ui_state) -> dict:'
+  'def _car_output_payload(self, ui_state) -> dict:'
+  'def _car_control_payload(self, ui_state) -> dict:'
+  'def _live_parameters_payload(self, ui_state) -> dict:'
+  'def _longitudinal_plan_payload(self, ui_state) -> dict:'
+  'def _car_params_payload(self, ui_state) -> dict:'
+  'def _device_state_payload(self, ui_state) -> dict:'
+  'def _road_camera_state_payload(self, ui_state) -> dict:'
+  'def _panda_states_summary_payload(self, ui_state) -> dict:'
+)
+
+risk_markers=(
+  '"alertHudVisual": 0'
+  '"allowThrottle": False'
+  '"openpilotLongitudinalControl": bool(getattr(car_params, "openpilotLongitudinalControl", False))'
+  '"maxLateralAccel": _safe_float(getattr(car_params, "maxLateralAccel", COMMAVIEW_DEFAULT_MAX_LAT_ACCEL))'
+  '"faceOrientation": _float_list(getattr(driver_state.leftDriverData, "faceOrientation", []))'
+  '"deviceType": _safe_str(device_state.deviceType)'
+  '"sensor": _safe_str(getattr(road_camera_state, "sensor", ""))'
+  '"startedFrame": _safe_int(getattr(ui_state, "started_frame", 0))'
+  '"startedTime": _safe_float(getattr(ui_state, "started_time", 0.0))'
+  '_panda_states_summary(ui_state)'
+)
+
+legacy_markers=(
+  'def _control_payload(self, ui_state) -> dict:'
+  'def _scene_payload(self, ui_state) -> dict:'
+  'def _status_payload(self, ui_state) -> dict:'
+  'COMMAVIEW_CONTROL_SERVICE_INDEX'
+  'COMMAVIEW_SCENE_SERVICE_INDEX'
+  'COMMAVIEW_STATUS_SERVICE_INDEX'
+  'commaViewControl'
+  'commaViewScene'
+  'commaViewStatus'
+)
 
 if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   state="missing-repo"; reason="upstream repo not found at $OP_ROOT"
@@ -121,54 +188,68 @@ else
     expected_runtime_flavor="SUNNYPILOT"
   fi
 
-  grep -Fq 'from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR' "$UI_STATE_PATH" && ui_state_hook_present=true || true
   [ -f "$HELPER_PATH" ] && helper_present=true || true
-  grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$HELPER_PATH" && runtime_flavor_constant_present=true || true
-  grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$HELPER_PATH" && socket_path_present=true || true
-  grep -Fq 'os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT' "$HELPER_PATH" && socket_env_present=true || true
-  grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$HELPER_PATH" && frame_version_present=true || true
-  grep -Fq 'socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' "$HELPER_PATH" && unix_socket_present=true || true
-  grep -Fq 'struct.pack(">I", len(frame)) + frame' "$HELPER_PATH" && framing_present=true || true
-  grep -Fq 'def _control_payload(self, ui_state) -> dict:' "$HELPER_PATH" && control_payload_present=true || true
-  grep -Fq 'def _scene_payload(self, ui_state) -> dict:' "$HELPER_PATH" && scene_payload_present=true || true
-  grep -Fq 'def _status_payload(self, ui_state) -> dict:' "$HELPER_PATH" && status_payload_present=true || true
-  grep -Fq 'self._send_json(COMMAVIEW_CONTROL_SERVICE_INDEX, self._control_payload(ui_state))' "$HELPER_PATH" && control_publish_present=true || true
-  grep -Fq 'self._send_json(COMMAVIEW_SCENE_SERVICE_INDEX, self._scene_payload(ui_state))' "$HELPER_PATH" && scene_publish_present=true || true
-  grep -Fq 'self._send_json(COMMAVIEW_STATUS_SERVICE_INDEX, self._status_payload(ui_state))' "$HELPER_PATH" && status_publish_present=true || true
-  grep -Fq '"cruiseSetSpeedMps":' "$HELPER_PATH" && cruise_set_speed_present=true || true
-  grep -Fq '"driverMonitoring": {' "$HELPER_PATH" && driver_monitoring_present=true || true
-  grep -Fq '"activeCamera": active_camera' "$HELPER_PATH" && active_camera_present=true || true
-  grep -Fq '"statusMode": _status_mode_name(ui_state.status)' "$HELPER_PATH" && status_mode_present=true || true
-  grep -Fq '"runtimeFlavor": self._flavor' "$HELPER_PATH" && runtime_flavor_export_present=true || true
-  grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$UI_STATE_PATH" && exporter_install_present=true || true
-  grep -Fq 'self._commaview_exporter.publish(self)' "$UI_STATE_PATH" && exporter_publish_present=true || true
-  if [ "$flavor" = "sunnypilot" ]; then
-    if grep -Fq 'def _speed_limit_pre_active_icon(self, ui_state) -> str:' "$HELPER_PATH" && \
-       grep -Fq 'custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive' "$HELPER_PATH"; then
-      speed_limit_helper_present=true
+  check_fixed 'from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR' "$UI_STATE_PATH" && ui_state_hook_present=true || true
+  check_fixed "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$HELPER_PATH" && runtime_flavor_constant_present=true || true
+  check_fixed 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$HELPER_PATH" && socket_path_present=true || true
+  check_fixed 'os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT' "$HELPER_PATH" && socket_env_present=true || true
+  check_fixed 'COMMAVIEW_FRAME_VERSION = 1' "$HELPER_PATH" && frame_version_present=true || true
+  check_fixed 'socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' "$HELPER_PATH" && unix_socket_present=true || true
+  check_fixed 'struct.pack(">I", len(frame)) + frame' "$HELPER_PATH" && framing_present=true || true
+  check_fixed 'json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")' "$HELPER_PATH" && compact_json_present=true || true
+  check_fixed 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$UI_STATE_PATH" && exporter_install_present=true || true
+  check_fixed 'self._commaview_exporter.publish(self)' "$UI_STATE_PATH" && exporter_publish_present=true || true
+
+  payload_helpers_present=true
+  for marker in "${payload_markers[@]}"; do
+    if ! check_fixed "$marker" "$HELPER_PATH"; then
+      payload_helpers_present=false
+      break
     fi
-  else
-    speed_limit_helper_present=true
-  fi
+  done
+
+  publish_paths_present=true
+  service_marker_count=0
+  for const_name in "${service_consts[@]}"; do
+    if check_fixed "self._send_json(${const_name}, self._" "$HELPER_PATH"; then
+      service_marker_count=$((service_marker_count + 1))
+    else
+      publish_paths_present=false
+    fi
+  done
+
+  risk_fields_present=true
+  for marker in "${risk_markers[@]}"; do
+    if ! check_fixed "$marker" "$HELPER_PATH"; then
+      risk_fields_present=false
+      break
+    fi
+  done
+
+  legacy_bucket_markers_absent=true
+  for marker in "${legacy_markers[@]}"; do
+    if check_fixed "$marker" "$HELPER_PATH"; then
+      legacy_bucket_markers_absent=false
+      break
+    fi
+  done
 
   if $helper_present && $ui_state_hook_present && $runtime_flavor_constant_present && \
-     $socket_path_present && $socket_env_present && $frame_version_present && $unix_socket_present && $framing_present && \
-     $control_payload_present && $scene_payload_present && $status_payload_present && \
-     $control_publish_present && $scene_publish_present && $status_publish_present && \
-     $cruise_set_speed_present && $driver_monitoring_present && $active_camera_present && \
-     $status_mode_present && $runtime_flavor_export_present && $exporter_install_present && \
-     $exporter_publish_present && $speed_limit_helper_present; then
+     $socket_path_present && $socket_env_present && $frame_version_present && $unix_socket_present && \
+     $framing_present && $compact_json_present && $payload_helpers_present && $publish_paths_present && \
+     $risk_fields_present && $legacy_bucket_markers_absent && $exporter_install_present && \
+     $exporter_publish_present; then
     state="patch-verified"
-    reason="socket UI export direct wiring markers verified; runtime telemetry not proven"
+    reason="upstream-organized socket UI export markers verified; runtime telemetry not proven"
     patch_verified=true
     repair_needed=false
   else
     state="repair-needed"
-    reason="socket UI export markers missing from upstream UI tree"
+    reason="upstream-organized socket UI export markers missing from upstream UI tree"
   fi
 fi
 
-json=$(printf '{"healthy":%s,"patchVerified":%s,"statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","patch":"%s","patchFingerprint":"%s","helperPresent":%s,"uiStateHookPresent":%s,"runtimeFlavorConstantPresent":%s,"socketPathPresent":%s,"socketEnvPresent":%s,"frameVersionPresent":%s,"unixSocketPresent":%s,"framingPresent":%s,"controlPayloadPresent":%s,"scenePayloadPresent":%s,"statusPayloadPresent":%s,"controlPublishPresent":%s,"scenePublishPresent":%s,"statusPublishPresent":%s,"cruiseSetSpeedPresent":%s,"driverMonitoringPresent":%s,"activeCameraPresent":%s,"statusModePresent":%s,"runtimeFlavorExportPresent":%s,"exporterInstallPresent":%s,"exporterPublishPresent":%s,"speedLimitHelperPresent":%s}' "$healthy" "$patch_verified" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$helper_present" "$ui_state_hook_present" "$runtime_flavor_constant_present" "$socket_path_present" "$socket_env_present" "$frame_version_present" "$unix_socket_present" "$framing_present" "$control_payload_present" "$scene_payload_present" "$status_payload_present" "$control_publish_present" "$scene_publish_present" "$status_publish_present" "$cruise_set_speed_present" "$driver_monitoring_present" "$active_camera_present" "$status_mode_present" "$runtime_flavor_export_present" "$exporter_install_present" "$exporter_publish_present" "$speed_limit_helper_present")
+json=$(printf '{"healthy":%s,"patchVerified":%s,"statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","patch":"%s","patchFingerprint":"%s","helperPresent":%s,"uiStateHookPresent":%s,"runtimeFlavorConstantPresent":%s,"socketPathPresent":%s,"socketEnvPresent":%s,"frameVersionPresent":%s,"unixSocketPresent":%s,"framingPresent":%s,"compactJsonPresent":%s,"payloadHelpersPresent":%s,"publishPathsPresent":%s,"riskFieldsPresent":%s,"legacyBucketMarkersAbsent":%s,"exporterInstallPresent":%s,"exporterPublishPresent":%s,"serviceMarkerCount":%s}' "$healthy" "$patch_verified" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$helper_present" "$ui_state_hook_present" "$runtime_flavor_constant_present" "$socket_path_present" "$socket_env_present" "$frame_version_present" "$unix_socket_present" "$framing_present" "$compact_json_present" "$payload_helpers_present" "$publish_paths_present" "$risk_fields_present" "$legacy_bucket_markers_absent" "$exporter_install_present" "$exporter_publish_present" "$service_marker_count")
 printf '%s\n' "$json" > "$STATE_JSON"
 if [ -n "$fingerprint" ]; then
   printf 'ONROAD_UI_EXPORT_FLAVOR=%s\nONROAD_UI_EXPORT_PATCH_SHA=%s\nONROAD_UI_EXPORT_OP_ROOT=%s\n' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"

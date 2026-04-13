@@ -1,9 +1,9 @@
 diff --git a/selfdrive/ui/commaview_export.py b/selfdrive/ui/commaview_export.py
 new file mode 100644
-index 0000000..ee2d421
+index 0000000..8136a25
 --- /dev/null
 +++ b/selfdrive/ui/commaview_export.py
-@@ -0,0 +1,388 @@
+@@ -0,0 +1,592 @@
 +import json
 +import math
 +import os
@@ -11,18 +11,32 @@ index 0000000..ee2d421
 +import struct
 +import time
 +
-+from cereal import custom
-+from openpilot.common.transformations.camera import DEVICE_CAMERAS
++from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
 +
 +COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"
-+COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN = "UNKNOWN"
 +COMMAVIEW_FRAME_VERSION = 1
-+COMMAVIEW_CONTROL_SERVICE_INDEX = 0
-+COMMAVIEW_SCENE_SERVICE_INDEX = 1
-+COMMAVIEW_STATUS_SERVICE_INDEX = 2
++COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX = 0
++COMMAVIEW_SELFDRIVE_STATE_SERVICE_INDEX = 1
++COMMAVIEW_CAR_STATE_SERVICE_INDEX = 2
++COMMAVIEW_CONTROLS_STATE_SERVICE_INDEX = 3
++COMMAVIEW_ONROAD_EVENTS_SERVICE_INDEX = 4
++COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX = 5
++COMMAVIEW_DRIVER_STATE_V2_SERVICE_INDEX = 6
++COMMAVIEW_MODEL_V2_SERVICE_INDEX = 7
++COMMAVIEW_RADAR_STATE_SERVICE_INDEX = 8
++COMMAVIEW_LIVE_CALIBRATION_SERVICE_INDEX = 9
++COMMAVIEW_CAR_OUTPUT_SERVICE_INDEX = 10
++COMMAVIEW_CAR_CONTROL_SERVICE_INDEX = 11
++COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX = 12
++COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX = 13
++COMMAVIEW_CAR_PARAMS_SERVICE_INDEX = 14
++COMMAVIEW_DEVICE_STATE_SERVICE_INDEX = 15
++COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX = 16
++COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX = 17
 +COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"
 +COMMAVIEW_CONNECT_RETRY_SEC = 1.0
 +COMMAVIEW_SOCKET_TIMEOUT_SEC = 0.05
++COMMAVIEW_DEFAULT_MAX_LAT_ACCEL = 3.0
 +
 +
 +def _safe_float(value) -> float:
@@ -40,6 +54,10 @@ index 0000000..ee2d421
 +    return int(value)
 +  except (TypeError, ValueError):
 +    return 0
++
++
++def _safe_str(value) -> str:
++  return "" if value is None else str(value)
 +
 +
 +def _float_list(values) -> list[float]:
@@ -64,11 +82,50 @@ index 0000000..ee2d421
 +  }
 +
 +
-+def _commaview_camera_offset(params) -> float:
-+  try:
-+    return _safe_float(params.get("CameraOffset", return_default=True) or 0.0)
-+  except (TypeError, ValueError):
++def _interp(value: float, xp: list[float], fp: list[float]) -> float:
++  if value <= xp[0]:
++    return fp[0]
++  if value >= xp[-1]:
++    return fp[-1]
++  span = xp[-1] - xp[0]
++  if span <= 0.0:
++    return fp[-1]
++  return fp[0] + (fp[-1] - fp[0]) * ((value - xp[0]) / span)
++
++
++def _torque_bar_value(ui_state) -> float:
++  if ui_state.sm.recv_frame["controlsState"] < ui_state.started_frame:
 +    return 0.0
++
++  controls_state = ui_state.sm["controlsState"]
++  lateral_control = getattr(controls_state, "lateralControlState", None)
++  control_mode = lateral_control.which() if lateral_control is not None and hasattr(lateral_control, "which") else ""
++  if control_mode == "angleState":
++    if (
++      ui_state.sm.recv_frame["carState"] < ui_state.started_frame or
++      ui_state.sm.recv_frame["carControl"] < ui_state.started_frame or
++      ui_state.sm.recv_frame["liveParameters"] < ui_state.started_frame
++    ):
++      return 0.0
++
++    car_state = ui_state.sm["carState"]
++    car_control = ui_state.sm["carControl"]
++    live_parameters = ui_state.sm["liveParameters"]
++    v_ego = max(_safe_float(car_state.vEgo), 0.0)
++    actual_lateral_accel = _safe_float(getattr(controls_state, "curvature", 0.0)) * v_ego ** 2
++    desired_lateral_accel = _safe_float(getattr(controls_state, "desiredCurvature", 0.0)) * v_ego ** 2
++    roll_compensation = _safe_float(live_parameters.roll) * ACCELERATION_DUE_TO_GRAVITY * _interp(v_ego, [5.0, 15.0], [0.0, 1.0])
++    lateral_accel = actual_lateral_accel - roll_compensation
++    max_lateral_accel = COMMAVIEW_DEFAULT_MAX_LAT_ACCEL
++    if hasattr(ui_state, "CP") and ui_state.CP is not None:
++      max_lateral_accel = _safe_float(getattr(ui_state.CP, "maxLateralAccel", COMMAVIEW_DEFAULT_MAX_LAT_ACCEL)) or COMMAVIEW_DEFAULT_MAX_LAT_ACCEL
++    if max_lateral_accel <= 0.0 or not bool(car_control.latActive):
++      return 0.0
++    return max(-1.0, min(1.0, (lateral_accel + (desired_lateral_accel - actual_lateral_accel)) / max_lateral_accel))
++
++  if ui_state.sm.recv_frame["carOutput"] < ui_state.started_frame:
++    return 0.0
++  return max(-1.0, min(1.0, -_safe_float(ui_state.sm["carOutput"].actuatorsOutput.torque)))
 +
 +
 +def _status_mode_name(status) -> str:
@@ -82,19 +139,45 @@ index 0000000..ee2d421
 +  }.get(status_value, "unknown")
 +
 +
++def _panda_states_summary(ui_state) -> tuple[bool, bool, bool]:
++  ignition_line = False
++  ignition_can = False
++  try:
++    for panda_state in ui_state.sm["pandaStates"]:
++      ignition_line = ignition_line or bool(getattr(panda_state, "ignitionLine", False))
++      ignition_can = ignition_can or bool(getattr(panda_state, "ignitionCan", False))
++  except (KeyError, TypeError):
++    pass
++  return ignition_line, ignition_can, ignition_line or ignition_can
++
++
 +class _CommaViewSocketExporter:
 +  def __init__(self, flavor: str):
-+    self._flavor = flavor if flavor in ("OPENPILOT", "SUNNYPILOT") else COMMAVIEW_RUNTIME_FLAVOR_UNKNOWN
++    self._flavor = flavor
 +    self._socket_path = os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT
 +    self._sock = None
 +    self._next_connect_attempt = 0.0
-+    self._active_camera = "road"
 +
 +  def publish(self, ui_state) -> None:
 +    try:
-+      self._send_json(COMMAVIEW_CONTROL_SERVICE_INDEX, self._control_payload(ui_state))
-+      self._send_json(COMMAVIEW_SCENE_SERVICE_INDEX, self._scene_payload(ui_state))
-+      self._send_json(COMMAVIEW_STATUS_SERVICE_INDEX, self._status_payload(ui_state))
++      self._send_json(COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX, self._ui_state_onroad_payload(ui_state))
++      self._send_json(COMMAVIEW_SELFDRIVE_STATE_SERVICE_INDEX, self._selfdrive_state_payload(ui_state))
++      self._send_json(COMMAVIEW_CAR_STATE_SERVICE_INDEX, self._car_state_payload(ui_state))
++      self._send_json(COMMAVIEW_CONTROLS_STATE_SERVICE_INDEX, self._controls_state_payload(ui_state))
++      self._send_json(COMMAVIEW_ONROAD_EVENTS_SERVICE_INDEX, self._onroad_events_payload(ui_state))
++      self._send_json(COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX, self._driver_monitoring_state_payload(ui_state))
++      self._send_json(COMMAVIEW_DRIVER_STATE_V2_SERVICE_INDEX, self._driver_state_v2_payload(ui_state))
++      self._send_json(COMMAVIEW_MODEL_V2_SERVICE_INDEX, self._model_v2_payload(ui_state))
++      self._send_json(COMMAVIEW_RADAR_STATE_SERVICE_INDEX, self._radar_state_payload(ui_state))
++      self._send_json(COMMAVIEW_LIVE_CALIBRATION_SERVICE_INDEX, self._live_calibration_payload(ui_state))
++      self._send_json(COMMAVIEW_CAR_OUTPUT_SERVICE_INDEX, self._car_output_payload(ui_state))
++      self._send_json(COMMAVIEW_CAR_CONTROL_SERVICE_INDEX, self._car_control_payload(ui_state))
++      self._send_json(COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX, self._live_parameters_payload(ui_state))
++      self._send_json(COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX, self._longitudinal_plan_payload(ui_state))
++      self._send_json(COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload(ui_state))
++      self._send_json(COMMAVIEW_DEVICE_STATE_SERVICE_INDEX, self._device_state_payload(ui_state))
++      self._send_json(COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX, self._road_camera_state_payload(ui_state))
++      self._send_json(COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX, self._panda_states_summary_payload(ui_state))
 +    except OSError:
 +      self._close()
 +
@@ -145,173 +228,24 @@ index 0000000..ee2d421
 +        values.append(0)
 +    return max(values) if values else 0
 +
-+  def _resolve_camera(self, ui_state):
-+    default_device_camera = DEVICE_CAMERAS[("tici", "ar0231")]
-+    device_camera = default_device_camera
-+    have_real_camera_key = ui_state.sm.seen["roadCameraState"] and ui_state.sm.seen["deviceState"]
-+    if have_real_camera_key:
-+      camera_key = (str(ui_state.sm["deviceState"].deviceType), str(ui_state.sm["roadCameraState"].sensor))
-+      device_camera = DEVICE_CAMERAS.get(camera_key, default_device_camera)
-+
-+    wide_camera_ready = (
-+      ui_state.sm.seen["wideRoadCameraState"] and
-+      ui_state.sm.alive["wideRoadCameraState"] and
-+      ui_state.sm.valid["wideRoadCameraState"]
-+    )
-+    experimental_mode = bool(ui_state.sm["selfdriveState"].experimentalMode)
-+    if not experimental_mode or not wide_camera_ready:
-+      self._active_camera = "road"
-+    else:
-+      v_ego = _safe_float(ui_state.sm["carState"].vEgo)
-+      if v_ego < 5.0:
-+        self._active_camera = "wideRoad"
-+      elif v_ego > 10.0:
-+        self._active_camera = "road"
-+
-+    return self._active_camera, device_camera
-+
-+  def _speed_limit_pre_active_icon(self, ui_state) -> str:
-+    if ui_state.sm.recv_frame["longitudinalPlanSP"] < ui_state.started_frame:
-+      return "none"
-+    speed_limit = _safe_float(ui_state.sm["longitudinalPlanSP"].speedLimit.resolver.speedLimitFinalLast)
-+    if speed_limit <= 0.0:
-+      return "none"
-+    car_state = ui_state.sm["carState"]
-+    controls_state = ui_state.sm["controlsState"]
-+    v_cruise_cluster = _safe_float(getattr(car_state, "vCruiseCluster", 0.0))
-+    set_speed = _safe_float(controls_state.vCruiseDEPRECATED if v_cruise_cluster == 0.0 else v_cruise_cluster)
-+    speed_conv = 3.6 if ui_state.is_metric else 2.2369362920544
-+    if not ui_state.is_metric:
-+      set_speed *= 0.621371
-+    speed_limit_display = speed_limit * speed_conv
-+    set_speed_round = round(set_speed)
-+    speed_limit_round = round(speed_limit_display)
-+    if set_speed_round < speed_limit_round:
-+      return "up"
-+    if set_speed_round > speed_limit_round:
-+      return "down"
-+    return "none"
-+
-+  def _control_payload(self, ui_state) -> dict:
-+    payload = {
-+      "exportVersion": 4,
-+      "speedMps": 0.0,
-+      "speedClusterMps": 0.0,
-+      "cruiseSetSpeedMps": 0.0,
-+      "standstill": False,
-+      "steeringAngleDeg": 0.0,
-+      "steeringPressed": False,
-+      "engaged": bool(ui_state.engaged),
-+      "isMetric": bool(ui_state.is_metric),
++  def _ui_state_onroad_payload(self, ui_state) -> dict:
++    _, _, ignition = _panda_states_summary(ui_state)
++    return {
++      "exportVersion": 1,
 +      "started": bool(ui_state.started),
-+      "leftBlinker": False,
-+      "rightBlinker": False,
-+      "leftBlindspot": False,
-+      "rightBlindspot": False,
-+      "latActive": False,
-+      "longActive": False,
-+      "logMonoTime": self._service_log_mono(ui_state, "carState", "carControl", "controlsState"),
++      "ignition": bool(getattr(ui_state, "ignition", ignition)),
++      "status": _status_mode_name(ui_state.status),
++      "isMetric": bool(ui_state.is_metric),
++      "alwaysOnDm": bool(getattr(ui_state, "always_on_dm", ui_state.params.get_bool("AlwaysOnDM"))),
++      "hasLongitudinalControl": bool(getattr(ui_state, "has_longitudinal_control", False)),
++      "startedFrame": _safe_int(getattr(ui_state, "started_frame", 0)),
++      "startedTime": _safe_float(getattr(ui_state, "started_time", 0.0)),
++      "logMonoTime": self._service_log_mono(ui_state, "deviceState", "pandaStates", "selfdriveState"),
 +    }
-+    if ui_state.sm.recv_frame["carState"] >= ui_state.started_frame:
-+      car_state = ui_state.sm["carState"]
-+      controls_state = ui_state.sm["controlsState"]
-+      v_cruise_cluster = _safe_float(getattr(car_state, "vCruiseCluster", 0.0))
-+      payload.update({
-+        "speedMps": _safe_float(car_state.vEgo),
-+        "speedClusterMps": _safe_float(car_state.vEgoCluster),
-+        "cruiseSetSpeedMps": _safe_float(controls_state.vCruiseDEPRECATED if v_cruise_cluster == 0.0 else v_cruise_cluster),
-+        "standstill": bool(car_state.standstill),
-+        "steeringAngleDeg": _safe_float(car_state.steeringAngleDeg),
-+        "steeringPressed": bool(car_state.steeringPressed),
-+        "leftBlinker": bool(car_state.leftBlinker),
-+        "rightBlinker": bool(car_state.rightBlinker),
-+        "leftBlindspot": bool(car_state.leftBlindspot),
-+        "rightBlindspot": bool(car_state.rightBlindspot),
-+      })
-+    if ui_state.sm.recv_frame["carControl"] >= ui_state.started_frame:
-+      car_control = ui_state.sm["carControl"]
-+      payload["latActive"] = bool(car_control.latActive)
-+      payload["longActive"] = bool(car_control.longActive)
-+    return payload
 +
-+  def _scene_payload(self, ui_state) -> dict:
-+    active_camera, device_camera = self._resolve_camera(ui_state)
-+    calibration = {
-+      "rpyCalib": [],
-+      "height": [],
-+      "calStatus": 0,
-+      "calPerc": 0,
-+      "cameraIntrinsics": [],
-+      "cameraOffset": [0.0, _commaview_camera_offset(ui_state.params), 0.0],
-+      "cameraRpyOffset": [0.0, 0.0, 0.0],
-+    }
-+    if device_camera is not None:
-+      intrinsics = device_camera.ecam.intrinsics if active_camera == "wideRoad" else device_camera.fcam.intrinsics
-+      calibration["cameraIntrinsics"] = [
-+        _safe_float(intrinsics[0, 0]),
-+        _safe_float(intrinsics[1, 1]),
-+        _safe_float(intrinsics[0, 2]),
-+        _safe_float(intrinsics[1, 2]),
-+      ]
-+
++  def _selfdrive_state_payload(self, ui_state) -> dict:
 +    payload = {
-+      "exportVersion": 3,
-+      "frameId": 0,
-+      "frameIdExtra": 0,
-+      "frameAge": 0,
-+      "frameDropPerc": 0.0,
-+      "timestampEof": 0,
-+      "laneLines": [],
-+      "roadEdges": [],
-+      "position": {"x": [], "y": [], "z": []},
-+      "leadOne": _lead_dict(None),
-+      "leadTwo": _lead_dict(None),
-+      "calibration": calibration,
-+      "activeCamera": active_camera,
-+      "logMonoTime": self._service_log_mono(ui_state, "modelV2", "radarState", "liveCalibration"),
-+    }
-+    if ui_state.sm.recv_frame["modelV2"] >= ui_state.started_frame:
-+      model = ui_state.sm["modelV2"]
-+      radar_state = ui_state.sm["radarState"]
-+      live_calibration = ui_state.sm["liveCalibration"]
-+      payload.update({
-+        "frameId": _safe_int(model.frameId),
-+        "frameIdExtra": _safe_int(model.frameIdExtra),
-+        "frameAge": _safe_int(model.frameAge),
-+        "frameDropPerc": _safe_float(model.frameDropPerc),
-+        "timestampEof": _safe_int(model.timestampEof),
-+        "laneLines": [
-+          {
-+            "points": _path_dict(model_lane_line),
-+            "prob": _safe_float(model.laneLineProbs[idx] if idx < len(model.laneLineProbs) else 0.0),
-+            "std": _safe_float(model.laneLineStds[idx] if idx < len(model.laneLineStds) else 0.0),
-+          }
-+          for idx, model_lane_line in enumerate(model.laneLines)
-+        ],
-+        "roadEdges": [
-+          {
-+            "points": _path_dict(model_road_edge),
-+            "std": _safe_float(model.roadEdgeStds[idx] if idx < len(model.roadEdgeStds) else 0.0),
-+          }
-+          for idx, model_road_edge in enumerate(model.roadEdges)
-+        ],
-+        "position": _path_dict(model.position),
-+        "leadOne": _lead_dict(radar_state.leadOne),
-+        "leadTwo": _lead_dict(radar_state.leadTwo),
-+      })
-+      calibration.update({
-+        "rpyCalib": _float_list(live_calibration.rpyCalib),
-+        "height": _float_list(live_calibration.height),
-+        "calStatus": _safe_int(live_calibration.calStatus),
-+        "calPerc": _safe_int(live_calibration.calPerc),
-+      })
-+      if active_camera == "wideRoad" and hasattr(live_calibration, "wideFromDeviceEuler") and len(live_calibration.wideFromDeviceEuler) == 3:
-+        calibration["cameraRpyOffset"] = _float_list(live_calibration.wideFromDeviceEuler)
-+    return payload
-+
-+  def _status_payload(self, ui_state) -> dict:
-+    payload = {
-+      "exportVersion": 6,
++      "exportVersion": 1,
 +      "enabled": False,
 +      "active": False,
 +      "engageable": False,
@@ -320,58 +254,348 @@ index 0000000..ee2d421
 +      "alertType": "none",
 +      "alertStatus": 0,
 +      "alertSize": 0,
-+      "driverMonitoring": {
-+        "faceDetected": False,
-+        "isDistracted": False,
-+        "isRhd": False,
-+        "poseYawOffset": 0.0,
-+        "posePitchOffset": 0.0,
-+        "poseYawValidCount": 0,
-+        "posePitchValidCount": 0,
-+        "isLowStd": False,
-+        "driverMonitoringActive": False,
-+      },
++      "alertHudVisual": 0,
 +      "experimentalMode": False,
-+      "runtimeFlavor": self._flavor,
-+      "statusMode": "disengaged" if not ui_state.started else "unknown",
-+      "speedLimitPreActive": False,
-+      "speedLimitPreActiveIcon": "none",
-+      "blindspotIndicatorsEnabled": bool(ui_state.params.get_bool("BlindSpot")),
-+      "rainbowPathEnabled": bool(ui_state.params.get_bool("RainbowMode")),
-+      "logMonoTime": self._service_log_mono(ui_state, "selfdriveState", "driverMonitoringState", "longitudinalPlanSP"),
++      "logMonoTime": self._service_log_mono(ui_state, "selfdriveState"),
 +    }
 +    if ui_state.sm.recv_frame["selfdriveState"] >= ui_state.started_frame:
 +      selfdrive_state = ui_state.sm["selfdriveState"]
-+      driver_monitoring = ui_state.sm["driverMonitoringState"]
 +      payload.update({
 +        "enabled": bool(selfdrive_state.enabled),
 +        "active": bool(selfdrive_state.active),
 +        "engageable": bool(selfdrive_state.engageable),
-+        "alertText1": str(selfdrive_state.alertText1),
-+        "alertText2": str(selfdrive_state.alertText2),
-+        "alertType": str(selfdrive_state.alertType),
++        "alertText1": _safe_str(selfdrive_state.alertText1),
++        "alertText2": _safe_str(selfdrive_state.alertText2),
++        "alertType": _safe_str(selfdrive_state.alertType),
 +        "alertStatus": _safe_int(selfdrive_state.alertStatus),
 +        "alertSize": _safe_int(selfdrive_state.alertSize),
++        "alertHudVisual": _safe_int(getattr(selfdrive_state, "alertHudVisual", 0)),
 +        "experimentalMode": bool(selfdrive_state.experimentalMode),
-+        "statusMode": _status_mode_name(ui_state.status),
-+        "driverMonitoring": {
-+          "faceDetected": bool(driver_monitoring.faceDetected),
-+          "isDistracted": bool(driver_monitoring.isDistracted),
-+          "isRhd": bool(driver_monitoring.isRHD),
-+          "poseYawOffset": _safe_float(driver_monitoring.poseYawOffset),
-+          "posePitchOffset": _safe_float(driver_monitoring.posePitchOffset),
-+          "poseYawValidCount": _safe_int(driver_monitoring.poseYawValidCount),
-+          "posePitchValidCount": _safe_int(driver_monitoring.posePitchValidCount),
-+          "isLowStd": bool(driver_monitoring.isLowStd),
-+          "driverMonitoringActive": bool(driver_monitoring.isActiveMode),
++      })
++    return payload
++
++  def _car_state_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "vEgo": 0.0,
++      "vEgoCluster": 0.0,
++      "vCruiseCluster": 0.0,
++      "standstill": False,
++      "steeringAngleDeg": 0.0,
++      "steeringPressed": False,
++      "leftBlinker": False,
++      "rightBlinker": False,
++      "leftBlindspot": False,
++      "rightBlindspot": False,
++      "logMonoTime": self._service_log_mono(ui_state, "carState"),
++    }
++    if ui_state.sm.recv_frame["carState"] >= ui_state.started_frame:
++      car_state = ui_state.sm["carState"]
++      payload.update({
++        "vEgo": _safe_float(car_state.vEgo),
++        "vEgoCluster": _safe_float(car_state.vEgoCluster),
++        "vCruiseCluster": _safe_float(getattr(car_state, "vCruiseCluster", 0.0)),
++        "standstill": bool(car_state.standstill),
++        "steeringAngleDeg": _safe_float(car_state.steeringAngleDeg),
++        "steeringPressed": bool(car_state.steeringPressed),
++        "leftBlinker": bool(car_state.leftBlinker),
++        "rightBlinker": bool(car_state.rightBlinker),
++        "leftBlindspot": bool(car_state.leftBlindspot),
++        "rightBlindspot": bool(car_state.rightBlindspot),
++      })
++    return payload
++
++  def _controls_state_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "vCruiseDEPRECATED": 0.0,
++      "lateralControlStateWhich": "",
++      "curvature": 0.0,
++      "desiredCurvature": 0.0,
++      "torqueBarValue": 0.0,
++      "logMonoTime": self._service_log_mono(ui_state, "controlsState", "carOutput", "carControl", "liveParameters", "carState"),
++    }
++    if ui_state.sm.recv_frame["controlsState"] >= ui_state.started_frame:
++      controls_state = ui_state.sm["controlsState"]
++      lateral_control = getattr(controls_state, "lateralControlState", None)
++      control_mode = lateral_control.which() if lateral_control is not None and hasattr(lateral_control, "which") else ""
++      payload.update({
++        "vCruiseDEPRECATED": _safe_float(getattr(controls_state, "vCruiseDEPRECATED", 0.0)),
++        "lateralControlStateWhich": _safe_str(control_mode),
++        "curvature": _safe_float(getattr(controls_state, "curvature", 0.0)),
++        "desiredCurvature": _safe_float(getattr(controls_state, "desiredCurvature", 0.0)),
++      })
++    payload["torqueBarValue"] = _safe_float(_torque_bar_value(ui_state))
++    return payload
++
++  def _onroad_events_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "events": [],
++      "logMonoTime": self._service_log_mono(ui_state, "onroadEvents"),
++    }
++    if ui_state.sm.recv_frame["onroadEvents"] >= ui_state.started_frame:
++      payload["events"] = [
++        {
++          "name": _safe_int(onroad_event.name.raw if hasattr(onroad_event.name, "raw") else onroad_event.name),
++          "enable": bool(onroad_event.enable),
++          "noEntry": bool(onroad_event.noEntry),
++          "warning": bool(onroad_event.warning),
++          "userDisable": bool(onroad_event.userDisable),
++          "softDisable": bool(onroad_event.softDisable),
++          "immediateDisable": bool(onroad_event.immediateDisable),
++          "preEnable": bool(onroad_event.preEnable),
++          "permanent": bool(onroad_event.permanent),
++          "overrideLateral": bool(onroad_event.overrideLateral),
++          "overrideLongitudinal": bool(onroad_event.overrideLongitudinal),
++        }
++        for onroad_event in ui_state.sm["onroadEvents"]
++      ]
++    return payload
++
++  def _driver_monitoring_state_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "faceDetected": False,
++      "isDistracted": False,
++      "isRHD": False,
++      "poseYawOffset": 0.0,
++      "posePitchOffset": 0.0,
++      "poseYawValidCount": 0,
++      "posePitchValidCount": 0,
++      "isLowStd": False,
++      "isActiveMode": False,
++      "logMonoTime": self._service_log_mono(ui_state, "driverMonitoringState"),
++    }
++    if ui_state.sm.recv_frame["driverMonitoringState"] >= ui_state.started_frame:
++      driver_monitoring = ui_state.sm["driverMonitoringState"]
++      payload.update({
++        "faceDetected": bool(driver_monitoring.faceDetected),
++        "isDistracted": bool(driver_monitoring.isDistracted),
++        "isRHD": bool(driver_monitoring.isRHD),
++        "poseYawOffset": _safe_float(driver_monitoring.poseYawOffset),
++        "posePitchOffset": _safe_float(driver_monitoring.posePitchOffset),
++        "poseYawValidCount": _safe_int(driver_monitoring.poseYawValidCount),
++        "posePitchValidCount": _safe_int(driver_monitoring.posePitchValidCount),
++        "isLowStd": bool(driver_monitoring.isLowStd),
++        "isActiveMode": bool(driver_monitoring.isActiveMode),
++      })
++    return payload
++
++  def _driver_state_v2_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "leftDriverData": {"faceOrientation": []},
++      "rightDriverData": {"faceOrientation": []},
++      "logMonoTime": self._service_log_mono(ui_state, "driverStateV2"),
++    }
++    if ui_state.sm.recv_frame["driverStateV2"] >= ui_state.started_frame:
++      driver_state = ui_state.sm["driverStateV2"]
++      payload.update({
++        "leftDriverData": {
++          "faceOrientation": _float_list(getattr(driver_state.leftDriverData, "faceOrientation", [])),
++        },
++        "rightDriverData": {
++          "faceOrientation": _float_list(getattr(driver_state.rightDriverData, "faceOrientation", [])),
 +        },
 +      })
-+      if ui_state.sm.recv_frame["longitudinalPlanSP"] >= ui_state.started_frame:
-+        speed_limit_assist = ui_state.sm["longitudinalPlanSP"].speedLimit.assist
-+        payload["speedLimitPreActive"] = speed_limit_assist.state == custom.LongitudinalPlanSP.SpeedLimit.AssistState.preActive
-+        if payload["speedLimitPreActive"]:
-+          payload["speedLimitPreActiveIcon"] = self._speed_limit_pre_active_icon(ui_state)
 +    return payload
++
++  def _model_v2_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "frameId": 0,
++      "frameIdExtra": 0,
++      "frameAge": 0,
++      "frameDropPerc": 0.0,
++      "timestampEof": 0,
++      "position": {"x": [], "y": [], "z": []},
++      "laneLines": [],
++      "laneLineProbs": [],
++      "laneLineStds": [],
++      "roadEdges": [],
++      "roadEdgeStds": [],
++      "meta": {
++        "disengagePredictions": {
++          "t": [],
++          "brakeDisengageProbs": [],
++          "gasDisengageProbs": [],
++          "steerOverrideProbs": [],
++          "brake3MetersPerSecondSquaredProbs": [],
++          "brake4MetersPerSecondSquaredProbs": [],
++          "brake5MetersPerSecondSquaredProbs": [],
++          "gasPressProbs": [],
++          "brakePressProbs": [],
++        },
++      },
++      "acceleration": {"x": []},
++      "logMonoTime": self._service_log_mono(ui_state, "modelV2"),
++    }
++    if ui_state.sm.recv_frame["modelV2"] >= ui_state.started_frame:
++      model = ui_state.sm["modelV2"]
++      disengage_predictions = getattr(getattr(model, "meta", None), "disengagePredictions", None)
++      payload.update({
++        "frameId": _safe_int(model.frameId),
++        "frameIdExtra": _safe_int(model.frameIdExtra),
++        "frameAge": _safe_int(model.frameAge),
++        "frameDropPerc": _safe_float(model.frameDropPerc),
++        "timestampEof": _safe_int(model.timestampEof),
++        "position": _path_dict(model.position),
++        "laneLines": [_path_dict(line) for line in model.laneLines],
++        "laneLineProbs": _float_list(getattr(model, "laneLineProbs", [])),
++        "laneLineStds": _float_list(getattr(model, "laneLineStds", [])),
++        "roadEdges": [_path_dict(edge) for edge in model.roadEdges],
++        "roadEdgeStds": _float_list(getattr(model, "roadEdgeStds", [])),
++        "meta": {
++          "disengagePredictions": {
++            "t": _float_list(getattr(disengage_predictions, "t", [])),
++            "brakeDisengageProbs": _float_list(getattr(disengage_predictions, "brakeDisengageProbs", [])),
++            "gasDisengageProbs": _float_list(getattr(disengage_predictions, "gasDisengageProbs", [])),
++            "steerOverrideProbs": _float_list(getattr(disengage_predictions, "steerOverrideProbs", [])),
++            "brake3MetersPerSecondSquaredProbs": _float_list(getattr(disengage_predictions, "brake3MetersPerSecondSquaredProbs", [])),
++            "brake4MetersPerSecondSquaredProbs": _float_list(getattr(disengage_predictions, "brake4MetersPerSecondSquaredProbs", [])),
++            "brake5MetersPerSecondSquaredProbs": _float_list(getattr(disengage_predictions, "brake5MetersPerSecondSquaredProbs", [])),
++            "gasPressProbs": _float_list(getattr(disengage_predictions, "gasPressProbs", [])),
++            "brakePressProbs": _float_list(getattr(disengage_predictions, "brakePressProbs", [])),
++          },
++        },
++        "acceleration": {
++          "x": _float_list(getattr(getattr(model, "acceleration", None), "x", [])),
++        },
++      })
++    return payload
++
++  def _radar_state_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "leadOne": _lead_dict(None),
++      "leadTwo": _lead_dict(None),
++      "logMonoTime": self._service_log_mono(ui_state, "radarState"),
++    }
++    if ui_state.sm.recv_frame["radarState"] >= ui_state.started_frame:
++      radar_state = ui_state.sm["radarState"]
++      payload.update({
++        "leadOne": _lead_dict(radar_state.leadOne),
++        "leadTwo": _lead_dict(radar_state.leadTwo),
++      })
++    return payload
++
++  def _live_calibration_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "rpyCalib": [],
++      "height": [],
++      "calStatus": 0,
++      "calPerc": 0,
++      "wideFromDeviceEuler": [],
++      "logMonoTime": self._service_log_mono(ui_state, "liveCalibration"),
++    }
++    if ui_state.sm.recv_frame["liveCalibration"] >= ui_state.started_frame:
++      live_calibration = ui_state.sm["liveCalibration"]
++      payload.update({
++        "rpyCalib": _float_list(live_calibration.rpyCalib),
++        "height": _float_list(live_calibration.height),
++        "calStatus": _safe_int(live_calibration.calStatus),
++        "calPerc": _safe_int(live_calibration.calPerc),
++        "wideFromDeviceEuler": _float_list(getattr(live_calibration, "wideFromDeviceEuler", [])),
++      })
++    return payload
++
++  def _car_output_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "actuatorsOutput": {"torque": 0.0},
++      "logMonoTime": self._service_log_mono(ui_state, "carOutput"),
++    }
++    if ui_state.sm.recv_frame["carOutput"] >= ui_state.started_frame:
++      payload["actuatorsOutput"] = {
++        "torque": _safe_float(ui_state.sm["carOutput"].actuatorsOutput.torque),
++      }
++    return payload
++
++  def _car_control_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "latActive": False,
++      "longActive": False,
++      "logMonoTime": self._service_log_mono(ui_state, "carControl"),
++    }
++    if ui_state.sm.recv_frame["carControl"] >= ui_state.started_frame:
++      car_control = ui_state.sm["carControl"]
++      payload.update({
++        "latActive": bool(car_control.latActive),
++        "longActive": bool(car_control.longActive),
++      })
++    return payload
++
++  def _live_parameters_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "roll": 0.0,
++      "logMonoTime": self._service_log_mono(ui_state, "liveParameters"),
++    }
++    if ui_state.sm.recv_frame["liveParameters"] >= ui_state.started_frame:
++      payload["roll"] = _safe_float(ui_state.sm["liveParameters"].roll)
++    return payload
++
++  def _longitudinal_plan_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "allowThrottle": False,
++      "logMonoTime": self._service_log_mono(ui_state, "longitudinalPlan"),
++    }
++    if ui_state.sm.recv_frame["longitudinalPlan"] >= ui_state.started_frame:
++      payload["allowThrottle"] = bool(getattr(ui_state.sm["longitudinalPlan"], "allowThrottle", False))
++    return payload
++
++  def _car_params_payload(self, ui_state) -> dict:
++    car_params = getattr(ui_state, "CP", None)
++    return {
++      "exportVersion": 1,
++      "openpilotLongitudinalControl": bool(getattr(car_params, "openpilotLongitudinalControl", False)) if car_params is not None else False,
++      "maxLateralAccel": _safe_float(getattr(car_params, "maxLateralAccel", COMMAVIEW_DEFAULT_MAX_LAT_ACCEL)) if car_params is not None else COMMAVIEW_DEFAULT_MAX_LAT_ACCEL,
++      "logMonoTime": 0,
++    }
++
++  def _device_state_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "started": False,
++      "deviceType": "",
++      "logMonoTime": self._service_log_mono(ui_state, "deviceState"),
++    }
++    if ui_state.sm.recv_frame["deviceState"] >= 0:
++      device_state = ui_state.sm["deviceState"]
++      payload.update({
++        "started": bool(device_state.started),
++        "deviceType": _safe_str(device_state.deviceType),
++      })
++    return payload
++
++  def _road_camera_state_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "sensor": "",
++      "frameId": 0,
++      "logMonoTime": self._service_log_mono(ui_state, "roadCameraState"),
++    }
++    if ui_state.sm.recv_frame["roadCameraState"] >= 0:
++      road_camera_state = ui_state.sm["roadCameraState"]
++      payload.update({
++        "sensor": _safe_str(getattr(road_camera_state, "sensor", "")),
++        "frameId": _safe_int(getattr(road_camera_state, "frameId", 0)),
++      })
++    return payload
++
++  def _panda_states_summary_payload(self, ui_state) -> dict:
++    ignition_line, ignition_can, ignition = _panda_states_summary(ui_state)
++    return {
++      "exportVersion": 1,
++      "ignitionLine": ignition_line,
++      "ignitionCan": ignition_can,
++      "ignition": ignition,
++      "logMonoTime": self._service_log_mono(ui_state, "pandaStates"),
++    }
 diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
 index f7a5d44..f18fe6c 100644
 --- a/selfdrive/ui/ui_state.py

@@ -72,11 +72,26 @@ static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;
 static constexpr int PORT_DRIVER = 8202;
 
-// Runtime policy defaults favor only the services we currently trust on-road.
-static constexpr std::array<const char*, 3> kTelemetryServices = {
-  "commaViewControl",
-  "commaViewScene",
-  "commaViewStatus",
+// Runtime policy defaults favor the upstream-organized onroad domains we export over the UI socket.
+static constexpr std::array<const char*, 18> kTelemetryServices = {
+  "uiStateOnroad",
+  "selfdriveState",
+  "carState",
+  "controlsState",
+  "onroadEvents",
+  "driverMonitoringState",
+  "driverStateV2",
+  "modelV2",
+  "radarState",
+  "liveCalibration",
+  "carOutput",
+  "carControl",
+  "liveParameters",
+  "longitudinalPlan",
+  "carParams",
+  "deviceState",
+  "roadCameraState",
+  "pandaStatesSummary",
 };
 static constexpr int NUM_TELEM = static_cast<int>(kTelemetryServices.size());
 static constexpr int TELEMETRY_EMIT_MS_DEFAULT = 50;  // 20 Hz base poll for PASS and future SAMPLE modes

@@ -11,7 +11,7 @@
 namespace commaview::ui_export {
 
 inline constexpr uint8_t kFrameVersion = 1;
-inline constexpr uint8_t kServiceCount = 3;
+inline constexpr uint8_t kServiceCount = 18;
 inline constexpr uint64_t kFreshFrameWindowMs = 750;
 
 struct LatestFrame {

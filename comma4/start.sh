@@ -21,7 +21,7 @@ if [ ! -s "$RUNTIME_DEBUG_CONFIG" ]; then
   if [ -s "$DEFAULTS_FILE" ]; then
     cp "$DEFAULTS_FILE" "$RUNTIME_DEBUG_CONFIG"
   else
-    printf "%s\n" '{"configVersion":1,"instrumentationLevel":"standard","services":{"commaViewControl":{"mode":"pass"},"commaViewScene":{"mode":"pass"},"commaViewStatus":{"mode":"pass"}}}' > "$RUNTIME_DEBUG_CONFIG"
+    printf "%s\n" '{"configVersion":1,"instrumentationLevel":"standard","services":{"uiStateOnroad":{"mode":"pass"},"selfdriveState":{"mode":"pass"},"carState":{"mode":"pass"},"controlsState":{"mode":"pass"},"onroadEvents":{"mode":"pass"},"driverMonitoringState":{"mode":"pass"},"driverStateV2":{"mode":"pass"},"modelV2":{"mode":"pass"},"radarState":{"mode":"pass"},"liveCalibration":{"mode":"pass"},"carOutput":{"mode":"pass"},"carControl":{"mode":"pass"},"liveParameters":{"mode":"pass"},"longitudinalPlan":{"mode":"pass"},"carParams":{"mode":"pass"},"deviceState":{"mode":"pass"},"roadCameraState":{"mode":"pass"},"pandaStatesSummary":{"mode":"pass"}}}' > "$RUNTIME_DEBUG_CONFIG"
   fi
 fi
 

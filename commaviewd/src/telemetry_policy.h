@@ -18,9 +18,24 @@ struct NamedServicePolicy {
 };
 
 inline constexpr NamedServicePolicy kDefaultServicePolicies[] = {
-  {"commaViewControl", {ServiceMode::Pass, 0}},
-  {"commaViewScene", {ServiceMode::Pass, 0}},
-  {"commaViewStatus", {ServiceMode::Pass, 0}},
+  {"uiStateOnroad", {ServiceMode::Pass, 0}},
+  {"selfdriveState", {ServiceMode::Pass, 0}},
+  {"carState", {ServiceMode::Pass, 0}},
+  {"controlsState", {ServiceMode::Pass, 0}},
+  {"onroadEvents", {ServiceMode::Pass, 0}},
+  {"driverMonitoringState", {ServiceMode::Pass, 0}},
+  {"driverStateV2", {ServiceMode::Pass, 0}},
+  {"modelV2", {ServiceMode::Pass, 0}},
+  {"radarState", {ServiceMode::Pass, 0}},
+  {"liveCalibration", {ServiceMode::Pass, 0}},
+  {"carOutput", {ServiceMode::Pass, 0}},
+  {"carControl", {ServiceMode::Pass, 0}},
+  {"liveParameters", {ServiceMode::Pass, 0}},
+  {"longitudinalPlan", {ServiceMode::Pass, 0}},
+  {"carParams", {ServiceMode::Pass, 0}},
+  {"deviceState", {ServiceMode::Pass, 0}},
+  {"roadCameraState", {ServiceMode::Pass, 0}},
+  {"pandaStatesSummary", {ServiceMode::Pass, 0}},
 };
 
 inline constexpr size_t kDefaultServicePolicyCount = sizeof(kDefaultServicePolicies) / sizeof(kDefaultServicePolicies[0]);
