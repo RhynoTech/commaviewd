@@ -15,9 +15,24 @@ def test_runtime_debug_defaults_match_policy_contract():
     assert data["instrumentationLevel"] == "standard"
     services = data["services"]
     assert services == {
-        "commaViewControl": {"mode": "pass"},
-        "commaViewScene": {"mode": "pass"},
-        "commaViewStatus": {"mode": "pass"},
+        "uiStateOnroad": {"mode": "pass"},
+        "selfdriveState": {"mode": "pass"},
+        "carState": {"mode": "pass"},
+        "controlsState": {"mode": "pass"},
+        "onroadEvents": {"mode": "pass"},
+        "driverMonitoringState": {"mode": "pass"},
+        "driverStateV2": {"mode": "pass"},
+        "modelV2": {"mode": "pass"},
+        "radarState": {"mode": "pass"},
+        "liveCalibration": {"mode": "pass"},
+        "carOutput": {"mode": "pass"},
+        "carControl": {"mode": "pass"},
+        "liveParameters": {"mode": "pass"},
+        "longitudinalPlan": {"mode": "pass"},
+        "carParams": {"mode": "pass"},
+        "deviceState": {"mode": "pass"},
+        "roadCameraState": {"mode": "pass"},
+        "pandaStatesSummary": {"mode": "pass"},
     }
 
 
@@ -32,19 +47,30 @@ def test_start_script_seeds_direct_v2_runtime_debug_defaults_and_exports_paths()
     assert "COMMAVIEWD_RUNTIME_DEBUG_EFFECTIVE" in text
     assert "COMMAVIEWD_RUNTIME_STATS" in text
     assert "invalid runtime debug config JSON" in text
-    assert '"commaViewControl":{"mode":"pass"}' in text
-    assert '"commaViewScene":{"mode":"pass"}' in text
-    assert '"commaViewStatus":{"mode":"pass"}' in text
+    assert '"uiStateOnroad":{"mode":"pass"}' in text
+    assert '"selfdriveState":{"mode":"pass"}' in text
+    assert '"carState":{"mode":"pass"}' in text
+    assert '"controlsState":{"mode":"pass"}' in text
+    assert '"onroadEvents":{"mode":"pass"}' in text
+    assert '"driverMonitoringState":{"mode":"pass"}' in text
+    assert '"driverStateV2":{"mode":"pass"}' in text
+    assert '"modelV2":{"mode":"pass"}' in text
+    assert '"radarState":{"mode":"pass"}' in text
+    assert '"liveCalibration":{"mode":"pass"}' in text
+    assert '"carOutput":{"mode":"pass"}' in text
+    assert '"carControl":{"mode":"pass"}' in text
+    assert '"liveParameters":{"mode":"pass"}' in text
+    assert '"longitudinalPlan":{"mode":"pass"}' in text
+    assert '"carParams":{"mode":"pass"}' in text
+    assert '"deviceState":{"mode":"pass"}' in text
+    assert '"roadCameraState":{"mode":"pass"}' in text
+    assert '"pandaStatesSummary":{"mode":"pass"}' in text
 
     for forbidden in (
         '"commaViewHudLite"',
-        '"carState"',
-        '"selfdriveState"',
-        '"liveCalibration"',
-        '"radarState"',
-        '"modelV2"',
-        '"driverMonitoringState"',
-        '"roadCameraState"',
+        '"commaViewControl"',
+        '"commaViewScene"',
+        '"commaViewStatus"',
     ):
         assert forbidden not in text
 
