@@ -160,6 +160,9 @@ jobs:
           set -euxo pipefail
           commaviewd/scripts/run-verification.sh
 
+      - name: "CI guard: enforce telemetry mode is production-hardening safe"
+        run: ./scripts/verify-telemetry-hardening.sh
+
       - name: Verification summary
         if: always()
         run: |

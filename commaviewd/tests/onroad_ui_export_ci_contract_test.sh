@@ -39,6 +39,7 @@ for file in "$CI" "$CANARY_OPENPILOT" "$CANARY_SUNNYPILOT"; do
   assert_contains_fixed "apply_onroad_ui_export_patch.sh" "$file" "$file should validate direct v2 patch applicability"
   assert_contains_fixed "verify_onroad_ui_export_patch.sh" "$file" "$file should verify direct v2 patch applicability"
   assert_contains_fixed "onroad-ui-export-status.json" "$file" "$file should surface direct v2 status artifacts"
+  assert_contains_fixed "verify-telemetry-hardening.sh" "$file" "$file should run the telemetry hardening guard"
 done
 
 echo "PASS: workflows are aligned to direct v2 validation"
