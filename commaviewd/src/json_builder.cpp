@@ -87,9 +87,29 @@ template <typename T>
 struct has_left_eye_prob<T, std::void_t<decltype(std::declval<T>().getLeftEyeProb())>> : std::true_type {};
 
 template <typename T, typename = void>
+struct has_left_eye_prob_deprecated_method : std::false_type {};
+template <typename T>
+struct has_left_eye_prob_deprecated_method<T, std::void_t<decltype(std::declval<T>().getLeftEyeProbDEPRECATED())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_left_eye_prob_deprecated_group : std::false_type {};
+template <typename T>
+struct has_left_eye_prob_deprecated_group<T, std::void_t<decltype(std::declval<T>().getDeprecated().getLeftEyeProb())>> : std::true_type {};
+
+template <typename T, typename = void>
 struct has_right_eye_prob : std::false_type {};
 template <typename T>
 struct has_right_eye_prob<T, std::void_t<decltype(std::declval<T>().getRightEyeProb())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_right_eye_prob_deprecated_method : std::false_type {};
+template <typename T>
+struct has_right_eye_prob_deprecated_method<T, std::void_t<decltype(std::declval<T>().getRightEyeProbDEPRECATED())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_right_eye_prob_deprecated_group : std::false_type {};
+template <typename T>
+struct has_right_eye_prob_deprecated_group<T, std::void_t<decltype(std::declval<T>().getDeprecated().getRightEyeProb())>> : std::true_type {};
 
 template <typename T, typename = void>
 struct has_left_blink_prob : std::false_type {};
@@ -97,21 +117,55 @@ template <typename T>
 struct has_left_blink_prob<T, std::void_t<decltype(std::declval<T>().getLeftBlinkProb())>> : std::true_type {};
 
 template <typename T, typename = void>
+struct has_left_blink_prob_deprecated_method : std::false_type {};
+template <typename T>
+struct has_left_blink_prob_deprecated_method<T, std::void_t<decltype(std::declval<T>().getLeftBlinkProbDEPRECATED())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_left_blink_prob_deprecated_group : std::false_type {};
+template <typename T>
+struct has_left_blink_prob_deprecated_group<T, std::void_t<decltype(std::declval<T>().getDeprecated().getLeftBlinkProb())>> : std::true_type {};
+
+template <typename T, typename = void>
 struct has_right_blink_prob : std::false_type {};
 template <typename T>
 struct has_right_blink_prob<T, std::void_t<decltype(std::declval<T>().getRightBlinkProb())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_right_blink_prob_deprecated_method : std::false_type {};
+template <typename T>
+struct has_right_blink_prob_deprecated_method<T, std::void_t<decltype(std::declval<T>().getRightBlinkProbDEPRECATED())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_right_blink_prob_deprecated_group : std::false_type {};
+template <typename T>
+struct has_right_blink_prob_deprecated_group<T, std::void_t<decltype(std::declval<T>().getDeprecated().getRightBlinkProb())>> : std::true_type {};
 
 template <typename T, typename = void>
 struct has_sunglasses_prob : std::false_type {};
 template <typename T>
 struct has_sunglasses_prob<T, std::void_t<decltype(std::declval<T>().getSunglassesProb())>> : std::true_type {};
 
+template <typename T, typename = void>
+struct has_sunglasses_prob_deprecated_method : std::false_type {};
+template <typename T>
+struct has_sunglasses_prob_deprecated_method<T, std::void_t<decltype(std::declval<T>().getSunglassesProbDEPRECATED())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_sunglasses_prob_deprecated_group : std::false_type {};
+template <typename T>
+struct has_sunglasses_prob_deprecated_group<T, std::void_t<decltype(std::declval<T>().getDeprecated().getSunglassesProb())>> : std::true_type {};
+
 template <typename DriverDataReader>
 auto driver_data_left_eye_prob(const DriverDataReader& d) {
   if constexpr (has_left_eye_prob<const DriverDataReader&>::value) {
     return d.getLeftEyeProb();
-  } else {
+  } else if constexpr (has_left_eye_prob_deprecated_method<const DriverDataReader&>::value) {
     return d.getLeftEyeProbDEPRECATED();
+  } else if constexpr (has_left_eye_prob_deprecated_group<const DriverDataReader&>::value) {
+    return d.getDeprecated().getLeftEyeProb();
+  } else {
+    return 0.0f;
   }
 }
 
@@ -119,8 +173,12 @@ template <typename DriverDataReader>
 auto driver_data_right_eye_prob(const DriverDataReader& d) {
   if constexpr (has_right_eye_prob<const DriverDataReader&>::value) {
     return d.getRightEyeProb();
-  } else {
+  } else if constexpr (has_right_eye_prob_deprecated_method<const DriverDataReader&>::value) {
     return d.getRightEyeProbDEPRECATED();
+  } else if constexpr (has_right_eye_prob_deprecated_group<const DriverDataReader&>::value) {
+    return d.getDeprecated().getRightEyeProb();
+  } else {
+    return 0.0f;
   }
 }
 
@@ -128,8 +186,12 @@ template <typename DriverDataReader>
 auto driver_data_left_blink_prob(const DriverDataReader& d) {
   if constexpr (has_left_blink_prob<const DriverDataReader&>::value) {
     return d.getLeftBlinkProb();
-  } else {
+  } else if constexpr (has_left_blink_prob_deprecated_method<const DriverDataReader&>::value) {
     return d.getLeftBlinkProbDEPRECATED();
+  } else if constexpr (has_left_blink_prob_deprecated_group<const DriverDataReader&>::value) {
+    return d.getDeprecated().getLeftBlinkProb();
+  } else {
+    return 0.0f;
   }
 }
 
@@ -137,8 +199,12 @@ template <typename DriverDataReader>
 auto driver_data_right_blink_prob(const DriverDataReader& d) {
   if constexpr (has_right_blink_prob<const DriverDataReader&>::value) {
     return d.getRightBlinkProb();
-  } else {
+  } else if constexpr (has_right_blink_prob_deprecated_method<const DriverDataReader&>::value) {
     return d.getRightBlinkProbDEPRECATED();
+  } else if constexpr (has_right_blink_prob_deprecated_group<const DriverDataReader&>::value) {
+    return d.getDeprecated().getRightBlinkProb();
+  } else {
+    return 0.0f;
   }
 }
 
@@ -146,8 +212,12 @@ template <typename DriverDataReader>
 auto driver_data_sunglasses_prob(const DriverDataReader& d) {
   if constexpr (has_sunglasses_prob<const DriverDataReader&>::value) {
     return d.getSunglassesProb();
-  } else {
+  } else if constexpr (has_sunglasses_prob_deprecated_method<const DriverDataReader&>::value) {
     return d.getSunglassesProbDEPRECATED();
+  } else if constexpr (has_sunglasses_prob_deprecated_group<const DriverDataReader&>::value) {
+    return d.getDeprecated().getSunglassesProb();
+  } else {
+    return 0.0f;
   }
 }
 

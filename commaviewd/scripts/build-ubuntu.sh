@@ -61,6 +61,18 @@ if [[ -f "$PATCHED_MSGQ_LOCAL" ]]; then
   MSGQ_SOURCE="$PATCHED_MSGQ_LOCAL"
 fi
 
+DEPRECATED_SCHEMA_NAME=""
+if [[ -f "$OP_ROOT/cereal/deprecated.capnp" ]]; then
+  DEPRECATED_SCHEMA_NAME="deprecated"
+elif [[ -f "$OP_ROOT/cereal/legacy.capnp" ]]; then
+  DEPRECATED_SCHEMA_NAME="legacy"
+else
+  echo "[ERR] Missing required file: expected $OP_ROOT/cereal/deprecated.capnp or $OP_ROOT/cereal/legacy.capnp" >&2
+  exit 2
+fi
+DEPRECATED_SCHEMA_PATH="$OP_ROOT/cereal/${DEPRECATED_SCHEMA_NAME}.capnp"
+DEPRECATED_SCHEMA_CPP="$OP_ROOT/cereal/gen/cpp/${DEPRECATED_SCHEMA_NAME}.capnp.c++"
+
 require_file() {
   local p="$1"
   [[ -f "$p" ]] || { echo "[ERR] Missing required file: $p" >&2; exit 2; }
@@ -90,7 +102,7 @@ echo "[1/5] Generating cereal headers/sources..."
 capnpc --src-prefix="$OP_ROOT/cereal" \
   "$OP_ROOT/cereal/log.capnp" \
   "$OP_ROOT/cereal/car.capnp" \
-  "$OP_ROOT/cereal/legacy.capnp" \
+  "$DEPRECATED_SCHEMA_PATH" \
   "$OP_ROOT/cereal/custom.capnp" \
   -o c++:"$OP_ROOT/cereal/gen/cpp/"
 python3 "$OP_ROOT/cereal/services.py" > "$OP_ROOT/cereal/services.h"
@@ -106,7 +118,7 @@ COMMON_SRCS=(
   "$OP_ROOT/msgq_repo/msgq/event.cc" "$OP_ROOT/msgq_repo/msgq/impl_fake.cc"
   "$OP_ROOT/msgq_repo/msgq/impl_msgq.cc" "$OP_ROOT/msgq_repo/msgq/ipc.cc"
   "$OP_ROOT/cereal/gen/cpp/log.capnp.c++" "$OP_ROOT/cereal/gen/cpp/car.capnp.c++"
-  "$OP_ROOT/cereal/gen/cpp/legacy.capnp.c++" "$OP_ROOT/cereal/gen/cpp/custom.capnp.c++"
+  "$DEPRECATED_SCHEMA_CPP" "$OP_ROOT/cereal/gen/cpp/custom.capnp.c++"
 )
 
 echo "[2/5] Building host sanity binary (x86_64)..."

@@ -20,6 +20,16 @@ fi
 TMP="$(mktemp -d)"
 trap "rm -rf \"$TMP\"" EXIT
 
+if [[ -f "$OP_ROOT/cereal/deprecated.capnp" ]]; then
+  DEPRECATED_SCHEMA_NAME="deprecated"
+elif [[ -f "$OP_ROOT/cereal/legacy.capnp" ]]; then
+  DEPRECATED_SCHEMA_NAME="legacy"
+else
+  echo "[ERR] Missing required file: expected $OP_ROOT/cereal/deprecated.capnp or $OP_ROOT/cereal/legacy.capnp" >&2
+  exit 2
+fi
+DEPRECATED_SCHEMA_CPP="$OP_ROOT/cereal/gen/cpp/${DEPRECATED_SCHEMA_NAME}.capnp.c++"
+
 OP_ROOT="$OP_ROOT" "$ROOT/scripts/build-ubuntu.sh" >/dev/null
 
 if [[ -n "${CXX:-}" ]]; then
@@ -58,7 +68,7 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
   "$ROOT/src/json_builder.cpp" \
   "$OP_ROOT/cereal/gen/cpp/log.capnp.c++" \
   "$OP_ROOT/cereal/gen/cpp/car.capnp.c++" \
-  "$OP_ROOT/cereal/gen/cpp/legacy.capnp.c++" \
+  "$DEPRECATED_SCHEMA_CPP" \
   "$OP_ROOT/cereal/gen/cpp/custom.capnp.c++" \
   -lcapnp -lkj -lpthread \
   -o "$TMP/test_telemetry_json"
