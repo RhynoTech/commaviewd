@@ -65,6 +65,7 @@ risk_markers=(
   '"sensor": _safe_str(getattr(road_camera_state, "sensor", ""))'
   '"startedFrame": _safe_int(getattr(ui_state, "started_frame", 0))'
   '"startedTime": _safe_float(getattr(ui_state, "started_time", 0.0))'
+  '"runtimeFlavor": self._flavor'
   '_panda_states_summary(ui_state)'
 )
 

@@ -240,6 +240,7 @@ index 0000000..8136a25
 +      "hasLongitudinalControl": bool(getattr(ui_state, "has_longitudinal_control", False)),
 +      "startedFrame": _safe_int(getattr(ui_state, "started_frame", 0)),
 +      "startedTime": _safe_float(getattr(ui_state, "started_time", 0.0)),
++      "runtimeFlavor": self._flavor,
 +      "logMonoTime": self._service_log_mono(ui_state, "deviceState", "pandaStates", "selfdriveState"),
 +    }
 +
