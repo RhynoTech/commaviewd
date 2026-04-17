@@ -65,7 +65,6 @@ using commaview::telemetry::service_policy_subscribes;
 static constexpr uint8_t MSG_VIDEO = 0x01;
 static constexpr uint8_t MSG_CONTROL = 0x03;
 static constexpr uint8_t MSG_META_RAW = 0x04;
-static constexpr uint8_t RAW_META_ENVELOPE_V4 = 0x04;
 static constexpr uint8_t RAW_META_ENVELOPE_V5 = 0x05;
 
 static constexpr int PORT_ROAD = 8200;
@@ -136,22 +135,6 @@ static void put_be32(uint8_t* buf, uint32_t val) {
 }
 
 
-static void put_be16(uint8_t* buf, uint16_t val) {
-  buf[0] = (val >> 8) & 0xFF;
-  buf[1] = val & 0xFF;
-}
-
-static void put_be64(uint8_t* buf, uint64_t val) {
-  buf[0] = (val >> 56) & 0xFF;
-  buf[1] = (val >> 48) & 0xFF;
-  buf[2] = (val >> 40) & 0xFF;
-  buf[3] = (val >> 32) & 0xFF;
-  buf[4] = (val >> 24) & 0xFF;
-  buf[5] = (val >> 16) & 0xFF;
-  buf[6] = (val >> 8) & 0xFF;
-  buf[7] = val & 0xFF;
-}
-
 
 static void telemetry_loop(int client_fd,
                            const char* video_service,
@@ -177,20 +160,6 @@ static bool send_meta_raw_payload_frame(int fd,
   }
   return commaview::net::send_meta_bytes(fd, payload.data(), payload.size(), MSG_META_RAW);
 }
-
-static bool send_meta_raw_frame(int fd,
-                                uint8_t service_index,
-                                const uint8_t* raw_data,
-                                size_t raw_size,
-                                std::mutex* send_mutex) {
-  return send_meta_raw_payload_frame(fd,
-                                     RAW_META_ENVELOPE_V4,
-                                     service_index,
-                                     raw_data,
-                                     raw_size,
-                                     send_mutex);
-}
-
 
 struct RuntimeServiceStats {
   uint64_t active_subscribers = 0;
@@ -339,51 +308,13 @@ static void initialize_runtime_state_once() {
   flush_runtime_state_locked();
 }
 
-static ServicePolicy runtime_policy_for_index(int idx) {
-  if (idx < 0 || idx >= NUM_TELEM) return {};
-  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  if (!g_runtime_state.initialized) return default_service_policy_for_name(kTelemetryServices[static_cast<size_t>(idx)]);
-  return policy_for_service(g_runtime_state.effective_config, kTelemetryServices[static_cast<size_t>(idx)]);
-}
-
-static void note_runtime_subscriber_delta(int idx, int delta) {
-  if (idx < 0 || idx >= NUM_TELEM) return;
-  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  RuntimeServiceStats& stats = g_runtime_state.services[static_cast<size_t>(idx)];
-  if (delta >= 0) {
-    stats.active_subscribers += static_cast<uint64_t>(delta);
-  } else if (stats.active_subscribers >= static_cast<uint64_t>(-delta)) {
-    stats.active_subscribers -= static_cast<uint64_t>(-delta);
-  } else {
-    stats.active_subscribers = 0;
-  }
-  flush_runtime_state_locked();
-}
-
 static void note_runtime_connect() {
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
   g_runtime_state.reconnect_count += 1;
   flush_runtime_state_locked();
 }
 
-static void note_runtime_receive(int idx, size_t bytes) {
-  if (idx < 0 || idx >= NUM_TELEM) return;
-  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  RuntimeServiceStats& stats = g_runtime_state.services[static_cast<size_t>(idx)];
-  stats.receive_count += 1;
-  stats.receive_bytes += static_cast<uint64_t>(bytes);
-  stats.last_receive_ms = runtime_now_ms();
-}
-
 static constexpr uint64_t kTelemetryEmitBackpressureThresholdMicros = 5000ULL;
-
-static void note_runtime_drain(int idx, uint64_t discarded, uint64_t burst) {
-  if (idx < 0 || idx >= NUM_TELEM) return;
-  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  RuntimeServiceStats& stats = g_runtime_state.services[static_cast<size_t>(idx)];
-  stats.drain_count += discarded;
-  stats.max_drained_burst = std::max(stats.max_drained_burst, burst);
-}
 
 static void note_runtime_emit(int idx, size_t bytes, bool sampled, bool ok, uint64_t stall_micros) {
   if (idx < 0 || idx >= NUM_TELEM) return;
