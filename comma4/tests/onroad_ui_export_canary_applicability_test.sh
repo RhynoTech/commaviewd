@@ -66,6 +66,8 @@ risk_markers=(
   '"startedFrame": _safe_int(getattr(ui_state, "started_frame", 0))'
   '"startedTime": _safe_float(getattr(ui_state, "started_time", 0.0))'
   '"runtimeFlavor": self._flavor'
+  '"setSpeed": _safe_float(getattr(hud_control, "setSpeed", 0.0))'
+  '"speedVisible": bool(getattr(hud_control, "speedVisible", False))'
   '_panda_states_summary(ui_state)'
 )
 
@@ -134,6 +136,12 @@ run_ref() {
   for marker in "${risk_markers[@]}"; do
     grep -Fq "$marker" "$helper_path" || fail "risk-field marker missing for ${label}: $marker"
   done
+
+  if [[ "$expected_runtime_flavor" == 'SUNNYPILOT' ]]; then
+    grep -Fq '"rainbowPathEnabled": bool(getattr(ui_state, "rainbow_path", ui_state.params.get_bool("RainbowMode")))' "$helper_path" || fail "$label missing truthful sunnypilot rainbow export"
+  else
+    grep -Fq '"rainbowPathEnabled": False' "$helper_path" || fail "$label should pin rainbowPathEnabled false for openpilot"
+  fi
 
   for marker in "${legacy_markers[@]}"; do
     ! grep -Fq "$marker" "$helper_path" || fail "legacy marker still present for ${label}: $marker"

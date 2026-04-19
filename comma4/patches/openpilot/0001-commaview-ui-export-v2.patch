@@ -241,6 +241,7 @@ index 0000000..8136a25
 +      "startedFrame": _safe_int(getattr(ui_state, "started_frame", 0)),
 +      "startedTime": _safe_float(getattr(ui_state, "started_time", 0.0)),
 +      "runtimeFlavor": self._flavor,
++      "rainbowPathEnabled": False,
 +      "logMonoTime": self._service_log_mono(ui_state, "deviceState", "pandaStates", "selfdriveState"),
 +    }
 +
@@ -519,13 +520,22 @@ index 0000000..8136a25
 +      "exportVersion": 1,
 +      "latActive": False,
 +      "longActive": False,
++      "hudControl": {
++        "setSpeed": 0.0,
++        "speedVisible": False,
++      },
 +      "logMonoTime": self._service_log_mono(ui_state, "carControl"),
 +    }
 +    if ui_state.sm.recv_frame["carControl"] >= ui_state.started_frame:
 +      car_control = ui_state.sm["carControl"]
++      hud_control = getattr(car_control, "hudControl", None)
 +      payload.update({
 +        "latActive": bool(car_control.latActive),
 +        "longActive": bool(car_control.longActive),
++        "hudControl": {
++          "setSpeed": _safe_float(getattr(hud_control, "setSpeed", 0.0)),
++          "speedVisible": bool(getattr(hud_control, "speedVisible", False)),
++        },
 +      })
 +    return payload
 +
