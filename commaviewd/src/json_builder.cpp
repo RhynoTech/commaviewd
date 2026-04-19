@@ -3,6 +3,10 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <cctype>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <type_traits>
 #include <utility>
 
@@ -65,6 +69,38 @@ std::string unix_ts_json() {
   char buf[32];
   snprintf(buf, sizeof(buf), "%.3f", static_cast<double>(time(nullptr)));
   return std::string(buf);
+}
+
+std::string trim_copy(const std::string& in) {
+  size_t s = 0;
+  while (s < in.size() && std::isspace(static_cast<unsigned char>(in[s]))) s++;
+  size_t e = in.size();
+  while (e > s && std::isspace(static_cast<unsigned char>(in[e - 1]))) e--;
+  return in.substr(s, e - s);
+}
+
+std::string read_text_file(const std::string& path) {
+  std::ifstream f(path);
+  if (!f) return "";
+  std::stringstream ss;
+  ss << f.rdbuf();
+  return ss.str();
+}
+
+const char* params_dir() {
+  const char* env = std::getenv("COMMAVIEW_PARAMS_DIR");
+  if (env != nullptr && *env != '\0') return env;
+  return "/data/params/d";
+}
+
+float camera_offset_param() {
+  const std::string path = std::string(params_dir()) + "/CameraOffset";
+  const std::string raw = trim_copy(read_text_file(path));
+  if (raw.empty()) return 0.0f;
+  char* end = nullptr;
+  const float parsed = std::strtof(raw.c_str(), &end);
+  if (end == raw.c_str()) return 0.0f;
+  return std::isfinite(parsed) ? parsed : 0.0f;
 }
 
 template<typename T>
@@ -433,10 +469,15 @@ std::string build_radar_state_json(cereal::RadarState::Reader r, uint64_t log_mo
 }
 
 std::string build_live_calibration_json(cereal::LiveCalibrationData::Reader c, uint64_t log_mono_time) {
+  const float camera_offset = camera_offset_param();
+
   std::string s = "{\"ts\":" + unix_ts_json() +
                   ",\"type\":\"liveCalibration\",\"data\":{";
   s += "\"rpyCalib\":" + json_float_array(c.getRpyCalib()) + ",";
+  s += "\"wideFromDeviceEuler\":" + json_float_array(c.getWideFromDeviceEuler()) + ",";
   s += "\"height\":" + json_float_array(c.getHeight()) + ",";
+  s += "\"cameraIntrinsics\":[],";
+  s += "\"cameraOffset\":[0," + json_num(camera_offset) + ",0],";
   s += "\"calStatus\":\"" + json_num(static_cast<int>(c.getCalStatus())) + "\",";
   s += "\"calStatusInt\":" + json_num(static_cast<int>(c.getCalStatus())) + ",";
   s += "\"calPerc\":" + json_num(c.getCalPerc()) + ",";

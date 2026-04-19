@@ -2,8 +2,12 @@
 
 #include <capnp/message.h>
 #include <cassert>
+#include <cstdlib>
+#include <cstdio>
+#include <fstream>
 #include <limits>
 #include <string>
+#include <unistd.h>
 
 #include "cereal/gen/cpp/log.capnp.h"
 
@@ -173,13 +177,51 @@ void test_live_calibration_log_mono_time() {
   rpy.set(0, 0.0f);
   rpy.set(1, 0.01f);
   rpy.set(2, -0.02f);
+  auto wide = calib.initWideFromDeviceEuler(3);
+  wide.set(0, 0.0f);
+  wide.set(1, 0.02f);
+  wide.set(2, 0.01f);
   auto height = calib.initHeight(1);
   height.set(0, 1.22f);
 
   std::string out = commaview::telemetry::build_telemetry_json(evt.asReader());
   assert(has(out, "\"type\":\"liveCalibration\""));
+  assert(has(out, "\"wideFromDeviceEuler\":[0,0.02,0.01]"));
+  assert(has(out, "\"cameraOffset\":[0,0,0]"));
   assert(has(out, "\"logMonoTime\":31415"));
   assert(has(out, "\"calPerc\":88"));
+}
+
+void test_live_calibration_camera_offset_from_params() {
+  char tmp_template[] = "/tmp/commaviewd-params-XXXXXX";
+  char* tmp_dir = mkdtemp(tmp_template);
+  assert(tmp_dir != nullptr);
+
+  const std::string params_dir(tmp_dir);
+  const std::string camera_offset_path = params_dir + "/CameraOffset";
+  {
+    std::ofstream out(camera_offset_path, std::ios::trunc);
+    assert(out.good());
+    out << "0.35\n";
+  }
+
+  setenv("COMMAVIEW_PARAMS_DIR", params_dir.c_str(), 1);
+
+  capnp::MallocMessageBuilder mb;
+  auto evt = mb.initRoot<cereal::Event>();
+  evt.setLogMonoTime(31416);
+
+  auto calib = evt.initLiveCalibration();
+  calib.setCalStatus(cereal::LiveCalibrationData::Status::CALIBRATED);
+  calib.setCalPerc(89);
+
+  std::string payload = commaview::telemetry::build_telemetry_json(evt.asReader());
+  assert(has(payload, "\"cameraOffset\":[0,0.35,0]"));
+  assert(has(payload, "\"logMonoTime\":31416"));
+
+  unsetenv("COMMAVIEW_PARAMS_DIR");
+  std::remove(camera_offset_path.c_str());
+  rmdir(params_dir.c_str());
 }
 
 void test_car_control_and_output_json() {
@@ -417,6 +459,7 @@ int main() {
   test_model_v2_parity_contract_fields();
   test_radar_contract_fields();
   test_live_calibration_log_mono_time();
+  test_live_calibration_camera_offset_from_params();
   test_car_control_and_output_json();
   test_live_parameters_json();
   test_driver_monitoring_and_driver_state_v2_json();
