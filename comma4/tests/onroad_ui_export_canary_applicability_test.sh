@@ -65,6 +65,9 @@ risk_markers=(
   '"sensor": _safe_str(getattr(road_camera_state, "sensor", ""))'
   '"startedFrame": _safe_int(getattr(ui_state, "started_frame", 0))'
   '"startedTime": _safe_float(getattr(ui_state, "started_time", 0.0))'
+  '"activeCamera": active_camera'
+  '"wideCameraAvailable": wide_camera_available'
+  'def set_onroad_camera(self, active_camera: str, wide_camera_available: bool) -> None:'
   '"runtimeFlavor": self._flavor'
   '"setSpeed": _safe_float(getattr(hud_control, "setSpeed", 0.0))'
   '"speedVisible": bool(getattr(hud_control, "speedVisible", False))'
@@ -110,11 +113,15 @@ run_ref() {
 
   helper_path="$checkout/selfdrive/ui/commaview_export.py"
   ui_state_path="$checkout/selfdrive/ui/ui_state.py"
+  augmented_road_path="$checkout/selfdrive/ui/mici/onroad/augmented_road_view.py"
 
   grep -Fq 'from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR' "$ui_state_path" || fail "ui_state exporter import missing for ${label}"
   grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$ui_state_path" || fail "ui_state exporter install missing for ${label}"
   grep -Fq 'self._commaview_exporter.publish(self)' "$ui_state_path" || fail "ui_state exporter publish missing for ${label}"
   grep -Fq 'cloudlog.exception("commaview ui export publish failed")' "$ui_state_path" || fail "ui_state exporter guardrail missing for ${label}"
+  grep -Fq 'self._update_commaview_camera_export()' "$augmented_road_path" || fail "onroad camera relay call missing for ${label}"
+  grep -Fq 'def _update_commaview_camera_export(self):' "$augmented_road_path" || fail "onroad camera relay helper missing for ${label}"
+  grep -Fq 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$augmented_road_path" || fail "onroad stream-type camera relay mapping missing for ${label}"
   grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$helper_path" || fail "runtime flavor constant missing for ${label}"
   grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$helper_path" || fail "frame version missing for ${label}"
   grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$helper_path" || fail "socket path missing for ${label}"

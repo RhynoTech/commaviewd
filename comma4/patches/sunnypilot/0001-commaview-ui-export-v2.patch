@@ -157,6 +157,14 @@ index 0000000..8136a25
 +    self._socket_path = os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT
 +    self._sock = None
 +    self._next_connect_attempt = 0.0
++    self._active_camera = "road"
++    self._active_camera_override = None
++    self._wide_camera_available_override = None
++
++  def set_onroad_camera(self, active_camera: str, wide_camera_available: bool) -> None:
++    camera = _safe_str(active_camera)
++    self._active_camera_override = "wideRoad" if camera in ("wideRoad", "wide") else "road"
++    self._wide_camera_available_override = bool(wide_camera_available)
 +
 +  def publish(self, ui_state) -> None:
 +    try:
@@ -228,8 +236,52 @@ index 0000000..8136a25
 +        values.append(0)
 +    return max(values) if values else 0
 +
++  def _wide_camera_available(self, ui_state) -> bool:
++    if self._wide_camera_available_override is not None:
++      return bool(self._wide_camera_available_override)
++    try:
++      return bool(ui_state.sm.alive["wideRoadCameraState"]) and bool(ui_state.sm.valid["wideRoadCameraState"])
++    except (AttributeError, KeyError, TypeError):
++      return False
++
++  def _active_camera_name(self, ui_state) -> str:
++    wide_available = self._wide_camera_available(ui_state)
++    if self._active_camera_override is not None:
++      self._active_camera = self._active_camera_override if wide_available else "road"
++      return self._active_camera
++
++    if not wide_available:
++      self._active_camera = "road"
++      return self._active_camera
++
++    if (
++      ui_state.sm.recv_frame["selfdriveState"] < ui_state.started_frame or
++      ui_state.sm.recv_frame["carState"] < ui_state.started_frame
++    ):
++      self._active_camera = "road"
++      return self._active_camera
++
++    selfdrive_state = ui_state.sm["selfdriveState"]
++    car_state = ui_state.sm["carState"]
++    experimental_mode = bool(getattr(selfdrive_state, "experimentalMode", False))
++    v_ego = _safe_float(getattr(car_state, "vEgo", 0.0))
++
++    if not experimental_mode:
++      target = "road"
++    elif v_ego < 5.0:
++      target = "wideRoad"
++    elif v_ego > 10.0:
++      target = "road"
++    else:
++      target = self._active_camera
++
++    self._active_camera = "wideRoad" if target == "wideRoad" else "road"
++    return self._active_camera
++
 +  def _ui_state_onroad_payload(self, ui_state) -> dict:
 +    _, _, ignition = _panda_states_summary(ui_state)
++    wide_camera_available = self._wide_camera_available(ui_state)
++    active_camera = self._active_camera_name(ui_state)
 +    return {
 +      "exportVersion": 1,
 +      "started": bool(ui_state.started),
@@ -240,6 +292,8 @@ index 0000000..8136a25
 +      "hasLongitudinalControl": bool(getattr(ui_state, "has_longitudinal_control", False)),
 +      "startedFrame": _safe_int(getattr(ui_state, "started_frame", 0)),
 +      "startedTime": _safe_float(getattr(ui_state, "started_time", 0.0)),
++      "activeCamera": active_camera,
++      "wideCameraAvailable": wide_camera_available,
 +      "runtimeFlavor": self._flavor,
 +      "rainbowPathEnabled": bool(getattr(ui_state, "rainbow_path", ui_state.params.get_bool("RainbowMode"))),
 +      "logMonoTime": self._service_log_mono(ui_state, "deviceState", "pandaStates", "selfdriveState"),
@@ -607,6 +661,37 @@ index 0000000..8136a25
 +      "ignition": ignition,
 +      "logMonoTime": self._service_log_mono(ui_state, "pandaStates"),
 +    }
+diff --git a/selfdrive/ui/mici/onroad/augmented_road_view.py b/selfdrive/ui/mici/onroad/augmented_road_view.py
+index 31f7648..28a151d 100644
+--- a/selfdrive/ui/mici/onroad/augmented_road_view.py
++++ b/selfdrive/ui/mici/onroad/augmented_road_view.py
+@@ -207,6 +207,7 @@ class AugmentedRoadView(CameraView):
+ 
+     # Render the base camera view
+     super()._render(self._content_rect)
++    self._update_commaview_camera_export()
+ 
+     # Draw all UI overlays
+     self._model_renderer.render(self._content_rect)
+@@ -271,6 +272,20 @@ class AugmentedRoadView(CameraView):
+     if self.stream_type != target:
+       self.switch_stream(target)
+ 
++  def _update_commaview_camera_export(self):
++    exporter = getattr(ui_state, "_commaview_exporter", None)
++    if exporter is None or not hasattr(exporter, "set_onroad_camera"):
++      return
++    try:
++      exporter.set_onroad_camera(
++        active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road",
++        wide_camera_available=bool(WIDE_CAM in self.available_streams),
++      )
++    except Exception:
++      pass
++
+   def _update_calibration(self):
+     # Update device camera if not already set
+     sm = ui_state.sm
 diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
 index f7a5d44..f18fe6c 100644
 --- a/selfdrive/ui/ui_state.py
@@ -619,18 +704,11 @@ index f7a5d44..f18fe6c 100644
  from openpilot.selfdrive.ui.lib.prime_state import PrimeState
  from openpilot.system.ui.lib.application import gui_app
  from openpilot.system.hardware import HARDWARE, PC
-@@ -91,6 +92,7 @@ class UIState(UIStateSP):
-     self._engaged_transition_callbacks: list[Callable[[], None]] = []
- 
-     self.update_params()
-+    self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)
- 
-   def add_offroad_transition_callback(self, callback: Callable[[], None]):
-     self._offroad_transition_callbacks.append(callback)
-@@ -117,6 +119,10 @@ class UIState(UIStateSP):
-       self.update_params()
+@@ -117,6 +119,13 @@ class UIState(UIStateSP):
      device.update()
      UIStateSP.update(self)
++    if not hasattr(self, "_commaview_exporter"):
++      self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)
 +    try:
 +      self._commaview_exporter.publish(self)
 +    except Exception:

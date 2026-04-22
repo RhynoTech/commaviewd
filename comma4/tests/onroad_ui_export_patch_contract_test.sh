@@ -62,6 +62,9 @@ risk_markers=(
   '"sensor": _safe_str(getattr(road_camera_state, "sensor", ""))'
   '"startedFrame": _safe_int(getattr(ui_state, "started_frame", 0))'
   '"startedTime": _safe_float(getattr(ui_state, "started_time", 0.0))'
+  '"activeCamera": active_camera'
+  '"wideCameraAvailable": wide_camera_available'
+  'def set_onroad_camera(self, active_camera: str, wide_camera_available: bool) -> None:'
   '"runtimeFlavor": self._flavor'
   '"setSpeed": _safe_float(getattr(hud_control, "setSpeed", 0.0))'
   '"speedVisible": bool(getattr(hud_control, "speedVisible", False))'
@@ -91,6 +94,7 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   fi
 
   grep -Fq 'diff --git a/selfdrive/ui/commaview_export.py b/selfdrive/ui/commaview_export.py' "$patch" || fail "$patch missing helper file diff"
+  grep -Fq 'diff --git a/selfdrive/ui/mici/onroad/augmented_road_view.py b/selfdrive/ui/mici/onroad/augmented_road_view.py' "$patch" || fail "$patch missing augmented_road_view camera relay diff"
   grep -Fq 'from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR' "$patch" || fail "$patch missing ui_state exporter import"
   grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$patch" || fail "$patch missing runtime flavor constant"
   grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$patch" || fail "$patch missing frame version"
@@ -101,6 +105,9 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   grep -Fq 'json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")' "$patch" || fail "$patch missing compact json encoding"
   grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$patch" || fail "$patch missing exporter installation"
   grep -Fq 'self._commaview_exporter.publish(self)' "$patch" || fail "$patch missing exporter publish call"
+  grep -Fq 'self._update_commaview_camera_export()' "$patch" || fail "$patch missing onroad camera relay call"
+  grep -Fq 'def _update_commaview_camera_export(self):' "$patch" || fail "$patch missing onroad camera relay helper"
+  grep -Fq 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$patch" || fail "$patch missing stream-type camera relay mapping"
   grep -Fq 'cloudlog.exception("commaview ui export publish failed")' "$patch" || fail "$patch missing publish guardrail"
   grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$patch" || fail "$patch missing torque helper import"
   grep -Fq 'def _torque_bar_value(ui_state) -> float:' "$patch" || fail "$patch missing torque bar helper"
