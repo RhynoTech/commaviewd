@@ -364,6 +364,16 @@ index 0000000..8136a25
 +  def _controls_state_payload(self, ui_state) -> dict:
 +    payload = {
 +      "exportVersion": 1,
++      "enabled": False,
++      "active": False,
++      "engageable": False,
++      "alertText1": "",
++      "alertText2": "",
++      "alertType": "none",
++      "alertStatus": 0,
++      "alertSize": 0,
++      "alertHudVisual": 0,
++      "experimentalMode": False,
 +      "vCruiseDEPRECATED": 0.0,
 +      "lateralControlStateWhich": "",
 +      "curvature": 0.0,
@@ -376,6 +386,16 @@ index 0000000..8136a25
 +      lateral_control = getattr(controls_state, "lateralControlState", None)
 +      control_mode = lateral_control.which() if lateral_control is not None and hasattr(lateral_control, "which") else ""
 +      payload.update({
++        "enabled": bool(getattr(controls_state, "enabled", False)),
++        "active": bool(getattr(controls_state, "active", False)),
++        "engageable": bool(getattr(controls_state, "engageable", False)),
++        "alertText1": _safe_str(getattr(controls_state, "alertText1", "")),
++        "alertText2": _safe_str(getattr(controls_state, "alertText2", "")),
++        "alertType": _safe_str(getattr(controls_state, "alertType", "none")),
++        "alertStatus": _safe_int(getattr(controls_state, "alertStatus", 0)),
++        "alertSize": _safe_int(getattr(controls_state, "alertSize", 0)),
++        "alertHudVisual": _safe_int(getattr(controls_state, "alertHudVisual", 0)),
++        "experimentalMode": bool(getattr(controls_state, "experimentalMode", False)),
 +        "vCruiseDEPRECATED": _safe_float(getattr(controls_state, "vCruiseDEPRECATED", 0.0)),
 +        "lateralControlStateWhich": _safe_str(control_mode),
 +        "curvature": _safe_float(getattr(controls_state, "curvature", 0.0)),
