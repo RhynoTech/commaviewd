@@ -597,7 +597,6 @@ index 0000000..8136a25
 +      "hudControl": {
 +        "setSpeed": 0.0,
 +        "speedVisible": False,
-+        "visualAlert": 0,
 +      },
 +      "logMonoTime": self._service_log_mono(ui_state, "carControl"),
 +    }
@@ -610,7 +609,6 @@ index 0000000..8136a25
 +        "hudControl": {
 +          "setSpeed": _safe_float(getattr(hud_control, "setSpeed", 0.0)),
 +          "speedVisible": bool(getattr(hud_control, "speedVisible", False)),
-+          "visualAlert": _safe_int(getattr(hud_control, "visualAlert", 0)),
 +        },
 +      })
 +    return payload
