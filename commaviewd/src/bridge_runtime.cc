@@ -15,8 +15,7 @@
  *
  * Framing:
  *   [4-byte big-endian length][payload]
- *   payload[0] = 0x01 (video legacy): [type][header_len_be32][header][data]
- *   payload[0] = 0x05 (video v2): [type][timestamp_ns_be64][width_be32][height_be32][header_len_be32][header][data]
+ *   payload[0] = 0x05 (video): [type][timestamp_ns_be64][width_be32][height_be32][header_len_be32][header][data]
  *   payload[0] = 0x02 (meta):  [type][json bytes]
  *   payload[0] = 0x03 (control inbound): [type][json bytes]
  *   payload[0] = 0x04 (meta-raw): [type][version][service_idx][raw_len_be32][raw_event]
@@ -63,8 +62,7 @@ using commaview::telemetry::default_service_policy_for_name;
 using commaview::telemetry::service_policy_subscribes;
 
 
-static constexpr uint8_t MSG_VIDEO = 0x01;
-static constexpr uint8_t MSG_VIDEO_V2 = 0x05;
+static constexpr uint8_t MSG_VIDEO = 0x05;
 static constexpr uint8_t MSG_CONTROL = 0x03;
 static constexpr uint8_t MSG_META_RAW = 0x04;
 static constexpr uint8_t RAW_META_ENVELOPE_V4 = 0x04;
@@ -531,7 +529,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
           const size_t payload_len = 1 + 8 + 4 + 4 + 4 + header_len + data_len;
           std::vector<uint8_t> payload(payload_len);
-          payload[0] = MSG_VIDEO_V2;
+          payload[0] = MSG_VIDEO;
           put_be64(&payload[1], timestamp_ns);
           put_be32(&payload[9], video_width);
           put_be32(&payload[13], video_height);
