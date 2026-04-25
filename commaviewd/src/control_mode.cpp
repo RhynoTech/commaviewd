@@ -131,6 +131,16 @@ std::string telemetry_mode() {
   return "direct-v2-ui-export";
 }
 
+std::string device_dongle_id() {
+  const std::string dongle_id = read_file_trimmed(std::string(kParamsDir) + "/DongleId");
+  if (dongle_id.empty() || dongle_id == "UnregisteredDevice") return "";
+  return dongle_id;
+}
+
+std::string device_hardware_serial() {
+  return read_file_trimmed(std::string(kParamsDir) + "/HardwareSerial");
+}
+
 bool write_file(const std::string& path, const std::string& value, mode_t mode = 0644) {
   int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, mode);
   if (fd < 0) return false;
@@ -314,6 +324,8 @@ std::string live_onroad_ui_export_status_json(bool allow_self_heal) {
 std::string runtime_status_json() {
   const std::string version = runtime_version();
   const std::string telemetryMode = telemetry_mode();
+  const std::string dongleId = device_dongle_id();
+  const std::string hardwareSerial = device_hardware_serial();
   const auto persisted = load_persisted_runtime_debug_config();
   const auto effective = load_effective_runtime_debug_config_state();
   const std::vector<std::string> warnings = !effective.warnings.empty() ? effective.warnings : persisted.warnings;
@@ -321,6 +333,9 @@ std::string runtime_status_json() {
   out << "{";
   out << "\"version\":\"" << json_escape(version) << "\",";
   out << "\"runtimeVersion\":\"" << json_escape(version) << "\",";
+  out << "\"dongleId\":\"" << json_escape(dongleId) << "\",";
+  out << "\"dongle_id\":\"" << json_escape(dongleId) << "\",";
+  out << "\"hardwareSerial\":\"" << json_escape(hardwareSerial) << "\",";
   out << "\"api_port\":" << kDefaultApiPort << ",";
   out << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\",";
   out << "\"onroadUiExport\":" << live_onroad_ui_export_status_json(false) << ",";
@@ -651,9 +666,14 @@ int run_control_mode(int argc, char* argv[]) {
       if (req.path == "/commaview/version") {
         const std::string version = runtime_version();
         const std::string telemetryMode = telemetry_mode();
+        const std::string dongleId = device_dongle_id();
+        const std::string hardwareSerial = device_hardware_serial();
         std::ostringstream body;
         body << "{\"version\":\"" << json_escape(version) << "\",";
         body << "\"runtimeVersion\":\"" << json_escape(version) << "\",";
+        body << "\"dongleId\":\"" << json_escape(dongleId) << "\",";
+        body << "\"dongle_id\":\"" << json_escape(dongleId) << "\",";
+        body << "\"hardwareSerial\":\"" << json_escape(hardwareSerial) << "\",";
         body << "\"api_port\":" << kDefaultApiPort << ",";
         body << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\"}";
         return make_json(200, body.str());

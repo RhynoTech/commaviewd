@@ -23,6 +23,10 @@ grep -Fq "warnings" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should exp
 grep -Fq "safeFallback" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose safeFallback state"; exit 1; }
 grep -Fq "onroadUiExport" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose onroadUiExport"; exit 1; }
 grep -Fq "runtimeVersion" "$CONTROL_CPP" || { echo "FAIL: control mode should expose runtimeVersion alias"; exit 1; }
+grep -Fq "device_dongle_id" "$CONTROL_CPP" || { echo "FAIL: control mode should read openpilot DongleId"; exit 1; }
+grep -Fq "DongleId" "$CONTROL_CPP" || { echo "FAIL: control mode should read upstream DongleId param"; exit 1; }
+grep -Fq "dongleId" "$CONTROL_CPP" || { echo "FAIL: control mode should expose dongleId"; exit 1; }
+grep -Fq "dongle_id" "$CONTROL_CPP" || { echo "FAIL: control mode should expose dongle_id compatibility alias"; exit 1; }
 grep -Fq "live_onroad_ui_export_status_json(false)" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should use live onroad UI export verification"; exit 1; }
 grep -Fq "/commaview/onroad-ui-export/status" "$CONTROL_CPP" || { echo "FAIL: missing /commaview/onroad-ui-export/status route"; exit 1; }
 grep -Fq "/commaview/onroad-ui-export/repair" "$CONTROL_CPP" || { echo "FAIL: missing /commaview/onroad-ui-export/repair route"; exit 1; }
