@@ -15,7 +15,8 @@
  *
  * Framing:
  *   [4-byte big-endian length][payload]
- *   payload[0] = 0x01 (video): [type][header_len_be32][header][data]
+ *   payload[0] = 0x01 (video legacy): [type][header_len_be32][header][data]
+ *   payload[0] = 0x05 (video v2): [type][timestamp_ns_be64][width_be32][height_be32][header_len_be32][header][data]
  *   payload[0] = 0x02 (meta):  [type][json bytes]
  *   payload[0] = 0x03 (control inbound): [type][json bytes]
  *   payload[0] = 0x04 (meta-raw): [type][version][service_idx][raw_len_be32][raw_event]
@@ -63,8 +64,10 @@ using commaview::telemetry::service_policy_subscribes;
 
 
 static constexpr uint8_t MSG_VIDEO = 0x01;
+static constexpr uint8_t MSG_VIDEO_V2 = 0x05;
 static constexpr uint8_t MSG_CONTROL = 0x03;
 static constexpr uint8_t MSG_META_RAW = 0x04;
+static constexpr uint8_t RAW_META_ENVELOPE_V4 = 0x04;
 static constexpr uint8_t RAW_META_ENVELOPE_V5 = 0x05;
 
 static constexpr int PORT_ROAD = 8200;
@@ -134,6 +137,12 @@ static void put_be32(uint8_t* buf, uint32_t val) {
   commaview::net::put_be32(buf, val);
 }
 
+static void put_be64(uint8_t* buf, uint64_t val) {
+  for (int i = 7; i >= 0; --i) {
+    buf[7 - i] = static_cast<uint8_t>((val >> (i * 8)) & 0xFF);
+  }
+}
+
 
 
 static void telemetry_loop(int client_fd,
@@ -141,7 +150,7 @@ static void telemetry_loop(int client_fd,
                            std::atomic<bool>* disconnect_requested,
                            std::mutex* send_mutex);
 
-static bool send_meta_raw_payload_frame(int fd,
+static bool send_meta_raw_frame(int fd,
                                         uint8_t envelope_version,
                                         uint8_t service_index,
                                         const uint8_t* raw_data,
@@ -495,6 +504,9 @@ static void handle_client(int client_fd, const char* video_service, int port) {
 
           const uint32_t header_len = header.size();
           const size_t data_len = data.size();
+          const uint64_t timestamp_ns = ed.getUnixTimestampNanos();
+          const uint32_t video_width = ed.getWidth();
+          const uint32_t video_height = ed.getHeight();
           if (data_len == 0) continue;
 
           bool suppress_video = false;
@@ -517,12 +529,15 @@ static void handle_client(int client_fd, const char* video_service, int port) {
             continue;
           }
 
-          const size_t payload_len = 1 + 4 + header_len + data_len;
+          const size_t payload_len = 1 + 8 + 4 + 4 + 4 + header_len + data_len;
           std::vector<uint8_t> payload(payload_len);
-          payload[0] = MSG_VIDEO;
-          put_be32(&payload[1], header_len);
-          if (header_len > 0) memcpy(&payload[5], header.begin(), header_len);
-          memcpy(&payload[5 + header_len], data.begin(), data_len);
+          payload[0] = MSG_VIDEO_V2;
+          put_be64(&payload[1], timestamp_ns);
+          put_be32(&payload[9], video_width);
+          put_be32(&payload[13], video_height);
+          put_be32(&payload[17], header_len);
+          if (header_len > 0) memcpy(&payload[21], header.begin(), header_len);
+          memcpy(&payload[21 + header_len], data.begin(), data_len);
 
           if (!send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex)) goto disconnect;
 
@@ -625,7 +640,7 @@ static void telemetry_loop(int client_fd,
         if (frame.updated_at_ms <= last_ui_emit_ms[static_cast<size_t>(i)]) continue;
 
         const auto send_started = std::chrono::steady_clock::now();
-        const bool sent = send_meta_raw_payload_frame(client_fd,
+        const bool sent = send_meta_raw_frame(client_fd,
                                                       RAW_META_ENVELOPE_V5,
                                                       static_cast<uint8_t>(i),
                                                       frame.payload.data(),
