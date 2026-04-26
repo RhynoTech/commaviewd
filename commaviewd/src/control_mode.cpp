@@ -20,6 +20,10 @@
 #include <vector>
 #include <mutex>
 #include <ctime>
+#include <thread>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 namespace commaview::runtime {
 namespace {
@@ -27,6 +31,8 @@ namespace {
 constexpr const char* kInstallDir = "/data/commaview";
 constexpr const char* kParamsDir = "/data/params/d";
 constexpr int kDefaultApiPort = 5002;
+constexpr int kDiscoveryPort = 5004;
+constexpr const char* kDiscoveryQuery = "COMMAVIEW_DISCOVER_V1";
 constexpr const char* kVersionFile = "/data/commaview/VERSION";
 constexpr const char* kPairingScheme = "commaview://pair";
 constexpr int kPairingCodeTtlSec = 300;
@@ -139,6 +145,23 @@ std::string device_dongle_id() {
 
 std::string device_hardware_serial() {
   return read_file_trimmed(std::string(kParamsDir) + "/HardwareSerial");
+}
+
+std::string device_model() {
+  const std::string model = read_file_trimmed(std::string(kParamsDir) + "/HardwareModel");
+  return model.empty() ? "comma" : model;
+}
+
+std::string discovery_device_name() {
+  const std::string dongle_id = device_dongle_id();
+  if (!dongle_id.empty()) return std::string("comma-") + dongle_id;
+  const std::string serial = device_hardware_serial();
+  if (!serial.empty()) return std::string("comma-") + serial;
+  char hostname[128] = {0};
+  if (gethostname(hostname, sizeof(hostname) - 1) == 0 && hostname[0] != '\0') {
+    return hostname;
+  }
+  return "comma-device";
 }
 
 bool write_file(const std::string& path, const std::string& value, mode_t mode = 0644) {
@@ -319,6 +342,73 @@ std::string live_onroad_ui_export_status_json(bool allow_self_heal) {
   const std::string repaired = run_onroad_ui_export_apply_status_json(&repair_rc, &repair_err);
   if (repair_rc == 0 || json_field_true(repaired, "patchVerified")) return repaired;
   return status;
+}
+
+std::string discovery_response_json() {
+  const std::string version = runtime_version();
+  const std::string dongleId = device_dongle_id();
+  const std::string hardwareSerial = device_hardware_serial();
+  const std::string model = device_model();
+  std::ostringstream out;
+  out << "{";
+  out << "\"type\":\"commaview.discovery.v1\",";
+  out << "\"name\":\"" << json_escape(discovery_device_name()) << "\",";
+  out << "\"version\":\"" << json_escape(version) << "\",";
+  out << "\"dongleId\":\"" << json_escape(dongleId) << "\",";
+  out << "\"dongle_id\":\"" << json_escape(dongleId) << "\",";
+  out << "\"deviceModel\":\"" << json_escape(model) << "\",";
+  out << "\"device\":\"" << json_escape(model) << "\",";
+  out << "\"hardwareSerial\":\"" << json_escape(hardwareSerial) << "\",";
+  out << "\"apiPort\":" << kDefaultApiPort << ",";
+  out << "\"api_port\":" << kDefaultApiPort << ",";
+  out << "\"videoPorts\":{\"road\":8200,\"wide\":8201,\"driver\":8202}";
+  out << "}";
+  return out.str();
+}
+
+void discovery_responder_loop() {
+  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd < 0) {
+    std::perror("commaviewd discovery socket");
+    return;
+  }
+
+  int opt = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#ifdef SO_REUSEPORT
+  setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+#endif
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(static_cast<uint16_t>(kDiscoveryPort));
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    std::perror("commaviewd discovery bind");
+    ::close(fd);
+    return;
+  }
+
+  std::printf("commaviewd discovery: listening on udp :%d\n", kDiscoveryPort);
+  std::fflush(stdout);
+
+  std::array<char, 512> buf{};
+  while (true) {
+    sockaddr_in peer{};
+    socklen_t peer_len = sizeof(peer);
+    const ssize_t n = ::recvfrom(fd, buf.data(), buf.size() - 1, 0, reinterpret_cast<sockaddr*>(&peer), &peer_len);
+    if (n <= 0) continue;
+    std::string query(buf.data(), static_cast<size_t>(n));
+    query = trim_copy(query);
+    if (query != kDiscoveryQuery) continue;
+
+    const std::string response = discovery_response_json();
+    ::sendto(fd, response.data(), response.size(), 0, reinterpret_cast<sockaddr*>(&peer), peer_len);
+  }
+}
+
+void start_discovery_responder() {
+  std::thread(discovery_responder_loop).detach();
 }
 
 std::string runtime_status_json() {
@@ -674,6 +764,8 @@ int run_control_mode(int argc, char* argv[]) {
         body << "\"dongleId\":\"" << json_escape(dongleId) << "\",";
         body << "\"dongle_id\":\"" << json_escape(dongleId) << "\",";
         body << "\"hardwareSerial\":\"" << json_escape(hardwareSerial) << "\",";
+        body << "\"deviceModel\":\"" << json_escape(device_model()) << "\",";
+        body << "\"device\":\"" << json_escape(device_model()) << "\",";
         body << "\"api_port\":" << kDefaultApiPort << ",";
         body << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\"}";
         return make_json(200, body.str());
@@ -746,6 +838,7 @@ int run_control_mode(int argc, char* argv[]) {
 
   std::printf("commaviewd control: listening on :%d\n", port);
   std::fflush(stdout);
+  start_discovery_responder();
 
   server.serve_forever();
   return 0;
