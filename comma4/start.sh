@@ -13,6 +13,7 @@ RESTART_REASON="${COMMAVIEWD_RESTART_REASON:-startup}"
 ONROAD_UI_EXPORT_VERIFY="$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
 ONROAD_UI_EXPORT_APPLY="$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh"
 ONROAD_UI_EXPORT_LOG="$LOG_DIR/onroad-ui-export-startup.log"
+ONROAD_UI_EXPORT_RESTART_MARKER="$RUN_DIR/onroad-ui-export-ui-restart-needed"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR" "$CONFIG_DIR"
 echo "$RESTART_REASON" > "$RUN_DIR/last-restart-reason.txt"
@@ -33,6 +34,34 @@ PY
 if [ $? -ne 0 ]; then
   echo "WARN: invalid runtime debug config JSON; bridge/control will fall back to safe defaults" >> "$LOG_DIR/commaviewd-control.log"
 fi
+
+restart_openpilot_ui_if_pending() {
+  if [ ! -f "$ONROAD_UI_EXPORT_RESTART_MARKER" ]; then
+    return 0
+  fi
+
+  is_onroad="$(cat /data/params/d/IsOnroad 2>/dev/null | tr -d "\000\r\n" || echo 0)"
+  if [ "$is_onroad" = "1" ]; then
+    echo "WARN: deferred onroad UI export restart still pending while onroad" >> "$ONROAD_UI_EXPORT_LOG"
+    return 0
+  fi
+
+  if ! command -v pkill >/dev/null 2>&1; then
+    echo "WARN: pkill unavailable; deferred onroad UI export restart remains pending" >> "$ONROAD_UI_EXPORT_LOG"
+    return 0
+  fi
+
+  if command -v pgrep >/dev/null 2>&1 && ! pgrep -f "selfdrive.ui.ui" >/dev/null 2>&1; then
+    echo "INFO: openpilot UI not running; clearing deferred onroad UI export restart" >> "$ONROAD_UI_EXPORT_LOG"
+    rm -f "$ONROAD_UI_EXPORT_RESTART_MARKER"
+    return 0
+  fi
+
+  echo "INFO: consuming deferred onroad UI export restart" >> "$ONROAD_UI_EXPORT_LOG"
+  pkill -INT -f "selfdrive.ui.ui" 2>/dev/null || true
+  sleep 2
+  rm -f "$ONROAD_UI_EXPORT_RESTART_MARKER"
+}
 
 refresh_onroad_ui_export_status() {
   if [ ! -x "$ONROAD_UI_EXPORT_VERIFY" ]; then
@@ -63,6 +92,7 @@ refresh_onroad_ui_export_status() {
 }
 
 refresh_onroad_ui_export_status
+restart_openpilot_ui_if_pending
 
 # Stop stale runtime processes first
 bash /data/commaview/stop.sh >/dev/null 2>&1 || true

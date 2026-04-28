@@ -6,6 +6,7 @@ OP_ROOT="${COMMAVIEWD_OP_ROOT:-/data/openpilot}"
 PATCH_ROOT="$INSTALL_DIR/patches"
 VERIFY_SCRIPT="$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
 STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
+RESTART_MARKER="$INSTALL_DIR/run/onroad-ui-export-ui-restart-needed"
 PARAMS_DIR="/data/params/d"
 FORCE_OFFROAD=0
 FORCE_OFFROAD_OWNED=0
@@ -20,6 +21,11 @@ read_param() {
 write_param() {
   mkdir -p "$PARAMS_DIR"
   printf '%s' "$2" > "$PARAMS_DIR/$1"
+}
+
+request_openpilot_ui_restart() {
+  mkdir -p "$(dirname "$RESTART_MARKER")"
+  printf 'pending\n' > "$RESTART_MARKER"
 }
 
 restore_force_offroad_mode() {
@@ -38,23 +44,27 @@ restart_openpilot_ui_if_offroad() {
 
   is_onroad="$(read_param IsOnroad)"
   if [ "$is_onroad" = "1" ]; then
-    echo "WARN: skipping openpilot UI restart while onroad" >&2
+    request_openpilot_ui_restart
+    echo "WARN: deferring openpilot UI restart while onroad" >&2
     return 0
   fi
 
   if ! command -v pkill >/dev/null 2>&1; then
-    echo "WARN: pkill unavailable; unable to restart openpilot UI" >&2
+    request_openpilot_ui_restart
+    echo "WARN: pkill unavailable; deferring openpilot UI restart" >&2
     return 0
   fi
 
   if command -v pgrep >/dev/null 2>&1 && ! pgrep -f "selfdrive.ui.ui" >/dev/null 2>&1; then
     echo "INFO: openpilot UI process not running; no restart needed" >&2
+    rm -f "$RESTART_MARKER"
     return 0
   fi
 
   echo "INFO: restarting openpilot UI to load CommaView onroad UI export patch" >&2
   pkill -INT -f "selfdrive.ui.ui" 2>/dev/null || true
   sleep 2
+  rm -f "$RESTART_MARKER"
 }
 
 cleanup() {
@@ -195,6 +205,7 @@ patch="$PATCH_ROOT/$flavor/0001-commaview-ui-export-v2.patch"
 [ -f "$patch" ] || { echo "ERROR: missing socket UI export patch asset: $patch" >&2; exit 1; }
 
 if [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then
+  request_openpilot_ui_restart
   restart_openpilot_ui_if_offroad
   exit 0
 fi
@@ -216,8 +227,10 @@ ONROAD_UI_EXPORT_OP_ROOT=%s
 ' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
 
 if [ -x "$VERIFY_SCRIPT" ]; then
+  request_openpilot_ui_restart
   restart_openpilot_ui_if_offroad
   exec "$VERIFY_SCRIPT" --json
 fi
 
+request_openpilot_ui_restart
 restart_openpilot_ui_if_offroad
