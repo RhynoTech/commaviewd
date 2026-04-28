@@ -75,6 +75,7 @@ risk_markers=(
   '"engageable": bool(getattr(controls_state, "engageable", False))'
   '"setSpeed": _safe_float(getattr(hud_control, "setSpeed", 0.0))'
   '"speedVisible": bool(getattr(hud_control, "speedVisible", False))'
+  '"valid": bool(ui_state.sm.valid["radarState"])'
   '_panda_states_summary(ui_state)'
 )
 

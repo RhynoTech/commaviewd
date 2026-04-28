@@ -563,6 +563,7 @@ index 0000000..8136a25
 +  def _radar_state_payload(self, ui_state) -> dict:
 +    payload = {
 +      "exportVersion": 1,
++      "valid": bool(ui_state.sm.valid["radarState"]),
 +      "leadOne": _lead_dict(None),
 +      "leadTwo": _lead_dict(None),
 +      "logMonoTime": self._service_log_mono(ui_state, "radarState"),
