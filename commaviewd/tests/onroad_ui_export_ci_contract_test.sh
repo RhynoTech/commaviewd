@@ -42,4 +42,14 @@ for file in "$CI" "$CANARY_OPENPILOT" "$CANARY_SUNNYPILOT"; do
   assert_contains_fixed "verify-telemetry-hardening.sh" "$file" "$file should run the telemetry hardening guard"
 done
 
+
+for patch in "$REPO_ROOT/comma4/patches/openpilot/0001-commaview-ui-export-v2.patch" "$REPO_ROOT/comma4/patches/sunnypilot/0001-commaview-ui-export-v2.patch"; do
+  [[ -f "$patch" ]] || fail "missing patch $patch"
+  assert_contains_fixed '"faceOrientationStd"' "$patch" "$patch should export driverStateV2 faceOrientationStd for DMOji parity"
+  assert_contains_fixed '"facePosition"' "$patch" "$patch should export driverStateV2 facePosition for upstream face_orientation_from_net parity"
+  assert_contains_fixed '"facePositionStd"' "$patch" "$patch should export driverStateV2 facePositionStd for telemetry completeness"
+  assert_contains_fixed '"faceProb"' "$patch" "$patch should export driverStateV2 faceProb for face detection parity"
+  assert_contains_fixed '"wheelOnRightProb"' "$patch" "$patch should export driverStateV2 wheelOnRightProb"
+done
+
 echo "PASS: workflows are aligned to direct v2 validation"

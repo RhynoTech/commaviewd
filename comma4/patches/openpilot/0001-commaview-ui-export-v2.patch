@@ -458,22 +458,41 @@ index 0000000..8136a25
 +      })
 +    return payload
 +
++  def _driver_data_payload(self, driver_data) -> dict:
++    return {
++      "faceOrientation": _float_list(getattr(driver_data, "faceOrientation", [])),
++      "faceOrientationStd": _float_list(getattr(driver_data, "faceOrientationStd", [])),
++      "facePosition": _float_list(getattr(driver_data, "facePosition", [])),
++      "facePositionStd": _float_list(getattr(driver_data, "facePositionStd", [])),
++      "faceProb": _safe_float(getattr(driver_data, "faceProb", 0.0)),
++      "leftEyeProb": _safe_float(getattr(driver_data, "leftEyeProb", 0.0)),
++      "rightEyeProb": _safe_float(getattr(driver_data, "rightEyeProb", 0.0)),
++      "leftBlinkProb": _safe_float(getattr(driver_data, "leftBlinkProb", 0.0)),
++      "rightBlinkProb": _safe_float(getattr(driver_data, "rightBlinkProb", 0.0)),
++      "sunglassesProb": _safe_float(getattr(driver_data, "sunglassesProb", 0.0)),
++      "phoneProb": _safe_float(getattr(driver_data, "phoneProb", 0.0)),
++    }
++
 +  def _driver_state_v2_payload(self, ui_state) -> dict:
 +    payload = {
 +      "exportVersion": 1,
-+      "leftDriverData": {"faceOrientation": []},
-+      "rightDriverData": {"faceOrientation": []},
++      "frameId": 0,
++      "modelExecutionTime": 0.0,
++      "gpuExecutionTime": 0.0,
++      "wheelOnRightProb": 0.0,
++      "leftDriverData": self._driver_data_payload(None),
++      "rightDriverData": self._driver_data_payload(None),
 +      "logMonoTime": self._service_log_mono(ui_state, "driverStateV2"),
 +    }
 +    if ui_state.sm.recv_frame["driverStateV2"] >= ui_state.started_frame:
 +      driver_state = ui_state.sm["driverStateV2"]
 +      payload.update({
-+        "leftDriverData": {
-+          "faceOrientation": _float_list(getattr(driver_state.leftDriverData, "faceOrientation", [])),
-+        },
-+        "rightDriverData": {
-+          "faceOrientation": _float_list(getattr(driver_state.rightDriverData, "faceOrientation", [])),
-+        },
++        "frameId": _safe_int(getattr(driver_state, "frameId", 0)),
++        "modelExecutionTime": _safe_float(getattr(driver_state, "modelExecutionTime", 0.0)),
++        "gpuExecutionTime": _safe_float(getattr(driver_state, "gpuExecutionTime", 0.0)),
++        "wheelOnRightProb": _safe_float(getattr(driver_state, "wheelOnRightProb", 0.0)),
++        "leftDriverData": self._driver_data_payload(driver_state.leftDriverData),
++        "rightDriverData": self._driver_data_payload(driver_state.rightDriverData),
 +      })
 +    return payload
 +
