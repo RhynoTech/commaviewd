@@ -42,8 +42,8 @@ jobs:
             echo "No tag resolved" >&2
             exit 1
           fi
-          if [[ "$TAG" != v* ]]; then
-            echo "Tag must start with v (got: $TAG)" >&2
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha$ ]]; then
+            echo "Tag must match v<major>.<minor>.<patch>-alpha (got: $TAG)" >&2
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -168,6 +168,16 @@ jobs:
           path: openpilot-src
           submodules: recursive
 
+
+      - name: Run release verification pipeline
+        env:
+          OP_ROOT: ${{ github.workspace }}/openpilot-src
+          ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
+          ARM_KJ_SO: ${{ steps.armcapnp.outputs.arm_kj_so }}
+          RELEASE_SMOKE_TAG: release-smoke-${{ steps.vars.outputs.tag }}-${{ github.run_id }}
+        run: |
+          set -euxo pipefail
+          commaviewd/scripts/run-verification.sh
 
       - name: Build release bundle
         env:

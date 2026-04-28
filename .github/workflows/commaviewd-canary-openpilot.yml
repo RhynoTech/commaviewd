@@ -136,7 +136,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: commaai/openpilot
-          ref: ${{ matrix.upstream_ref }}
+          ref: ${{ steps.upstream.outputs.sha }}
           path: openpilot-src
           submodules: recursive
       - name: Direct v2 onroad UI export patch applicability check
