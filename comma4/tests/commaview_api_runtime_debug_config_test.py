@@ -113,6 +113,19 @@ def test_apply_patch_script_resets_managed_patch_targets_before_retry():
     assert 'write_param "OffroadMode" "1"' in text
 
 
+def test_apply_patch_script_restarts_openpilot_ui_after_patch_lifecycle_offroad_only():
+    text = APPLY_PATCH_SH.read_text()
+    assert "restart_openpilot_ui_if_offroad" in text
+    assert "COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART" in text
+    assert 'read_param IsOnroad' in text
+    assert 'skipping openpilot UI restart while onroad' in text
+    assert 'pkill -INT -f "selfdrive.ui.ui"' in text
+    assert 'restarting openpilot UI to load CommaView onroad UI export patch' in text
+    assert text.index('restart_openpilot_ui_if_offroad') < text.index('if [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then')
+    assert 'restart_openpilot_ui_if_offroad\n  exit 0' in text
+    assert 'restart_openpilot_ui_if_offroad\n  exec "$VERIFY_SCRIPT" --json' in text
+
+
 def test_control_mode_routes_present_for_runtime_debug_config():
     text = CONTROL_CPP.read_text()
     assert "/commaview/runtime-debug/config" in text

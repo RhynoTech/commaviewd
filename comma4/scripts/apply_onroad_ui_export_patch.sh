@@ -28,6 +28,35 @@ restore_force_offroad_mode() {
   fi
 }
 
+restart_openpilot_ui_if_offroad() {
+  local is_onroad=""
+
+  if [ "${COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART:-0}" = "1" ]; then
+    echo "INFO: skipping openpilot UI restart by request" >&2
+    return 0
+  fi
+
+  is_onroad="$(read_param IsOnroad)"
+  if [ "$is_onroad" = "1" ]; then
+    echo "WARN: skipping openpilot UI restart while onroad" >&2
+    return 0
+  fi
+
+  if ! command -v pkill >/dev/null 2>&1; then
+    echo "WARN: pkill unavailable; unable to restart openpilot UI" >&2
+    return 0
+  fi
+
+  if command -v pgrep >/dev/null 2>&1 && ! pgrep -f "selfdrive.ui.ui" >/dev/null 2>&1; then
+    echo "INFO: openpilot UI process not running; no restart needed" >&2
+    return 0
+  fi
+
+  echo "INFO: restarting openpilot UI to load CommaView onroad UI export patch" >&2
+  pkill -INT -f "selfdrive.ui.ui" 2>/dev/null || true
+  sleep 2
+}
+
 cleanup() {
   restore_force_offroad_mode
 }
@@ -166,6 +195,7 @@ patch="$PATCH_ROOT/$flavor/0001-commaview-ui-export-v2.patch"
 [ -f "$patch" ] || { echo "ERROR: missing socket UI export patch asset: $patch" >&2; exit 1; }
 
 if [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then
+  restart_openpilot_ui_if_offroad
   exit 0
 fi
 
@@ -186,5 +216,8 @@ ONROAD_UI_EXPORT_OP_ROOT=%s
 ' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
 
 if [ -x "$VERIFY_SCRIPT" ]; then
+  restart_openpilot_ui_if_offroad
   exec "$VERIFY_SCRIPT" --json
 fi
+
+restart_openpilot_ui_if_offroad
