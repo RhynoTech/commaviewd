@@ -6,7 +6,7 @@ OPENPILOT_PATCH="$REPO_ROOT/comma4/patches/openpilot/0001-commaview-ui-export-v2
 SUNNYPILOT_PATCH="$REPO_ROOT/comma4/patches/sunnypilot/0001-commaview-ui-export-v2.patch"
 CACHE_ROOT="${COMMAVIEWD_CANARY_CACHE_ROOT:-$HOME/.cache/ci-ref-checkouts}"
 OPENPILOT_REPO="${COMMAVIEWD_OPENPILOT_REPO:-https://github.com/commaai/openpilot.git}"
-SUNNYPILOT_REPO="${COMMAVIEWD_SUNNYPILOT_REPO:-https://github.com/sunnyhaibin/sunnypilot.git}"
+SUNNYPILOT_REPO="${COMMAVIEWD_SUNNYPILOT_REPO:-https://github.com/sunnypilot/sunnypilot.git}"
 
 fail() {
   echo "FAIL: $1" >&2
@@ -103,6 +103,7 @@ run_ref() {
   echo "=== ${label} ==="
   mkdir -p "$(dirname "$checkout")"
   if [[ -e "$checkout/.git" ]]; then
+    git -C "$checkout" remote set-url origin "$repo"
     git -C "$checkout" fetch --depth 1 origin "$ref"
     git -C "$checkout" checkout -q FETCH_HEAD
   else

@@ -43,20 +43,28 @@ check_token() {
 required_files=(
   "$OP_ROOT/cereal/log.capnp"
   "$OP_ROOT/cereal/services.py"
-  "$OP_ROOT/cereal/messaging/socketmaster.cc"
-  "$OP_ROOT/msgq_repo/msgq/msgq.cc"
-  "$OP_ROOT/msgq_repo/msgq/event.cc"
-  "$OP_ROOT/msgq_repo/msgq/impl_fake.cc"
-  "$OP_ROOT/msgq_repo/msgq/impl_msgq.cc"
-  "$OP_ROOT/msgq_repo/msgq/ipc.cc"
 )
 
 for f in "${required_files[@]}"; do
   check_file "$f"
 done
 
+if [[ ${#missing[@]} -eq 0 ]]; then
+  remote="$(git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true)"
+  patch_flavor="openpilot"
+  if printf '%s' "$remote" | grep -qi 'sunnypilot'; then
+    patch_flavor="sunnypilot"
+  fi
+  patch_file="$REPO_ROOT/comma4/patches/$patch_flavor/0001-commaview-ui-export-v2.patch"
+  check_file "$patch_file"
+  if [[ -f "$patch_file" ]] && ! git -C "$OP_ROOT" apply --recount --check "$patch_file" >/dev/null 2>&1 && \
+     ! git -C "$OP_ROOT" apply --recount --reverse --check "$patch_file" >/dev/null 2>&1; then
+    missing+=("direct-v2-patch:$patch_flavor@$OP_ROOT")
+  fi
+fi
+
 [[ ${#missing[@]} -eq 0 ]] || {
-  printf 'FAIL: upstream interface guard missing prerequisites:\n' >&2
+  printf 'FAIL: upstream interface guard missing current direct-v2 prerequisites:\n' >&2
   printf '  - %s\n' "${missing[@]}" >&2
   exit 1
 }
@@ -115,6 +123,7 @@ cat > "$MANIFEST" <<JSON
   "opRoot": "${OP_ROOT}",
   "upstreamSha": "${upstream_sha}",
   "checks": {
+    "directV2PatchFlavor": "${patch_flavor}",
     "requiredServices": ${#required_services[@]},
     "requiredCapnpFields": ${#required_capnp_fields[@]},
     "requiredFiles": ${#required_files[@]}
