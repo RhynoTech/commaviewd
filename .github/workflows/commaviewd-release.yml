@@ -10,6 +10,11 @@ on:
         description: 'Release tag to package (e.g., v0.0.35-alpha)'
         required: true
         type: string
+      allow_overwrite:
+        description: 'Allow manual dispatch to overwrite assets on an existing release'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -19,7 +24,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  OPENPILOT_REF: a27efe5796e31f77e97efb33762522f2ddc3b0d0
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
@@ -152,19 +156,31 @@ jobs:
           echo "arm_capnp_so=$ARM_CAPNP_SO" >> "$GITHUB_OUTPUT"
           echo "arm_kj_so=$ARM_KJ_SO" >> "$GITHUB_OUTPUT"
 
+      - name: Load release upstream ref
+        id: release-upstream
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . ci/upstream-refs.env
+          [[ -n "${COMMAVIEWD_RELEASE_OPENPILOT_REF:-}" ]] || {
+            echo "Missing COMMAVIEWD_RELEASE_OPENPILOT_REF in ci/upstream-refs.env" >&2
+            exit 1
+          }
+          echo "openpilot_ref=${COMMAVIEWD_RELEASE_OPENPILOT_REF}" >> "$GITHUB_OUTPUT"
+
       - name: Restore upstream source cache
         id: upstream-cache
         uses: actions/cache@v5
         with:
           path: openpilot-src
-          key: upstream-src-${{ runner.os }}-commaai-openpilot-${{ env.OPENPILOT_REF }}
+          key: upstream-src-${{ runner.os }}-commaai-openpilot-${{ steps.release-upstream.outputs.openpilot_ref }}
 
       - name: Checkout openpilot source
         if: steps.upstream-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v6
         with:
           repository: commaai/openpilot
-          ref: ${{ env.OPENPILOT_REF }}
+          ref: ${{ steps.release-upstream.outputs.openpilot_ref }}
           path: openpilot-src
           submodules: recursive
 
@@ -198,7 +214,17 @@ jobs:
           ASSET_TGZ="release/${TAG}/commaview-comma4-${TAG}.tar.gz"
           ASSET_SHA="${ASSET_TGZ}.sha256"
 
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          release_exists=0
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            release_exists=1
+          fi
+
+          if [[ "$release_exists" = "1" && "${{ github.event_name }}" = "workflow_dispatch" && "${{ inputs.allow_overwrite }}" != "true" ]]; then
+            echo "Release $TAG already exists; manual overwrite requires allow_overwrite=true" >&2
+            exit 1
+          fi
+
+          if [[ "$release_exists" = "0" ]]; then
             gh release create "$TAG"               --repo "$GITHUB_REPOSITORY"               --title "$TAG"               --notes "Automated release for $TAG"               --prerelease
           fi
 

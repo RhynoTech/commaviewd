@@ -8,14 +8,16 @@ on:
       - 'comma4/**'
       - 'tools/**'
       - 'scripts/**'
-      - '.github/workflows/commaviewd-ci.yml'
+      - 'ci/**'
+      - '.github/workflows/**'
   pull_request:
     paths:
       - 'commaviewd/**'
       - 'comma4/**'
       - 'tools/**'
       - 'scripts/**'
-      - '.github/workflows/commaviewd-ci.yml'
+      - 'ci/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 
