@@ -90,14 +90,30 @@ def test_start_script_refreshes_and_self_heals_onroad_ui_export_status_offroad_o
     assert "IsOnroad" in text
 
 
-def test_install_script_cleans_managed_artifacts_before_extracting_bundle():
+def test_install_script_stages_release_and_refreshes_pinned_companions_before_mutating_live_tree():
+    text = INSTALL_SH.read_text()
+    assert "refresh_required_files" in text
+    assert 'COMPANION_DIR="$tmpdir/companions"' in text
+    assert 'Fetching installer companion:' in text
+    assert 'local src="$COMPANION_DIR/$src_rel"' in text
+    assert "Staging and validating bundle" in text
+    assert 'tar -xzf "$tmpdir/$ASSET_NAME" -C "$STAGED_BUNDLE" --strip-components=1' in text
+    assert "backup_managed_install_tree" in text
+    assert "restore_previous_install_tree" in text
+    assert 'INSTALL_SUCCESS=1' in text
+    assert text.index('echo "Staging and validating bundle..."') < text.index('echo "Stopping existing CommaView processes..."')
+    assert text.index('backup_managed_install_tree') < text.index('echo "Stopping existing CommaView processes..."')
+
+
+def test_install_script_cleans_transient_patch_state_and_supports_explicit_current_reinstall():
     text = INSTALL_SH.read_text()
     assert "clean_managed_install_tree" in text
-    assert 'rm -rf \\\n    "$INSTALL_DIR/lib"' in text
-    assert '"$INSTALL_DIR/scripts"' in text
-    assert '"$INSTALL_DIR/patches"' in text
-    assert '"$INSTALL_DIR/config"' in text
-    assert text.index('echo "Downloading release assets..."') < text.index('echo "Stopping existing CommaView processes..."')
+    assert '"$INSTALL_DIR/run"' in text
+    assert '"$INSTALL_DIR/config/onroad-ui-export-patch.env"' in text
+    assert '"$INSTALL_DIR/config/hud-lite-patch.env"' in text
+    assert "--current" in text
+    assert "USE_CURRENT_RELEASE" in text
+    assert 'RELEASE_TAG="$(resolve_latest_release_tag)"' in text
     assert "--force-offroad" in text
     assert 'write_param "OffroadMode" "1"' in text
     assert 'ensure_offroad_ready' in text
@@ -112,16 +128,24 @@ def test_install_script_prints_one_time_pair_code_after_starting_runtime():
     assert text.index('bash "$INSTALL_DIR/start.sh"') < text.rindex('print_pairing_code')
 
 
-def test_apply_patch_script_resets_managed_patch_targets_before_retry():
+def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_force_repair():
     text = APPLY_PATCH_SH.read_text()
     assert "patch_targets()" in text
+    assert "backup_patch_targets()" in text
+    assert "dirty_patch_targets()" in text
     assert "reset_patch_targets()" in text
+    assert "force_repair_patch_targets()" in text
     assert '--maintenance-mode' not in text
     assert 'COMMAVIEWD_MAINTENANCE_MODE' not in text
+    assert '--force-repair' in text
+    assert 'refusing to reset managed patch targets without --force-repair' in text
+    assert 'upstream may have changed; review patch compatibility before repairing' in text
+    assert 'onroad UI export patch target files have local changes' in text
+    assert 'refusing to modify dirty upstream files without --force-repair' in text
+    assert 'backups written to $backup_root' in text
     assert 'git -C "$OP_ROOT" reset -q HEAD -- "$rel"' in text
     assert 'git -C "$OP_ROOT" checkout -- "$rel"' in text
     assert 'rm -f "$OP_ROOT/$rel"' in text
-    assert 'resetting managed onroad UI export patch targets before apply' in text
     assert '--force-offroad' in text
     assert 'write_param "OffroadMode" "1"' in text
 

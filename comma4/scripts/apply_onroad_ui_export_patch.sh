@@ -11,6 +11,7 @@ PARAMS_DIR="/data/params/d"
 FORCE_OFFROAD=0
 FORCE_OFFROAD_OWNED=0
 FORCE_OFFROAD_PREV=""
+FORCE_REPAIR=0
 
 read_param() {
   local path="$PARAMS_DIR/$1"
@@ -115,7 +116,8 @@ ensure_offroad_ready() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --force-offroad) FORCE_OFFROAD=1; shift ;;
-    -h|--help) echo "Usage: apply_onroad_ui_export_patch.sh [--force-offroad]"; exit 0 ;;
+    --force-repair) FORCE_REPAIR=1; shift ;;
+    -h|--help) echo "Usage: apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair]"; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -133,6 +135,30 @@ patch_targets() {
   grep '^+++ b/' "$patch_file" | sed 's#^+++ b/##'
 }
 
+backup_patch_targets() {
+  local patch_file="$1"
+  local backup_root="$INSTALL_DIR/backups/onroad-ui-export/$(date -u +%Y%m%d-%H%M%S)"
+  local rel=""
+  mkdir -p "$backup_root"
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if [ -e "$OP_ROOT/$rel" ]; then
+      mkdir -p "$backup_root/$(dirname "$rel")"
+      cp -a "$OP_ROOT/$rel" "$backup_root/$rel"
+    fi
+  done < <(patch_targets "$patch_file")
+  printf '%s\n' "$backup_root"
+}
+
+dirty_patch_targets() {
+  local patch_file="$1"
+  local rel=""
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    git -C "$OP_ROOT" status --porcelain -- "$rel"
+  done < <(patch_targets "$patch_file")
+}
+
 reset_patch_targets() {
   local patch_file="$1"
   local rel=""
@@ -145,6 +171,15 @@ reset_patch_targets() {
       rm -f "$OP_ROOT/$rel"
     fi
   done < <(patch_targets "$patch_file")
+}
+
+force_repair_patch_targets() {
+  local patch_file="$1"
+  local backup_root=""
+  backup_root="$(backup_patch_targets "$patch_file")"
+  echo "WARN: force repairing managed onroad UI export patch targets" >&2
+  echo "WARN: backups written to $backup_root" >&2
+  reset_patch_targets "$patch_file"
 }
 
 detect_flavor() {
@@ -212,8 +247,22 @@ fi
 
 if ! git -C "$OP_ROOT" apply --recount --reverse --check "$patch" >/dev/null 2>&1; then
   if ! git -C "$OP_ROOT" apply --recount --check "$patch" >/dev/null 2>&1; then
-    echo "INFO: resetting managed onroad UI export patch targets before apply" >&2
-    reset_patch_targets "$patch"
+    if [ "$FORCE_REPAIR" != "1" ]; then
+      echo "ERROR: onroad UI export patch does not apply cleanly to $OP_ROOT" >&2
+      echo "ERROR: refusing to reset managed patch targets without --force-repair" >&2
+      echo "ERROR: upstream may have changed; review patch compatibility before repairing" >&2
+      exit 43
+    fi
+    force_repair_patch_targets "$patch"
+    git -C "$OP_ROOT" apply --recount --check "$patch"
+  elif dirty_targets="$(dirty_patch_targets "$patch")" && [ -n "$dirty_targets" ]; then
+    if [ "$FORCE_REPAIR" != "1" ]; then
+      echo "ERROR: onroad UI export patch target files have local changes:" >&2
+      printf '%s\n' "$dirty_targets" >&2
+      echo "ERROR: refusing to modify dirty upstream files without --force-repair" >&2
+      exit 44
+    fi
+    force_repair_patch_targets "$patch"
     git -C "$OP_ROOT" apply --recount --check "$patch"
   fi
   git -C "$OP_ROOT" apply --recount "$patch"

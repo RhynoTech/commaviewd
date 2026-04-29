@@ -12,34 +12,51 @@ resolve_latest_release_tag() {
   curl -fsSL --retry 3 --retry-delay 1 "$api_url"     | tr -d '\r'     | grep -m1 '"tag_name":'     | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/' || true
 }
 
+INSTALLED_VERSION=""
+INSTALLED_RELEASE_TAG=""
 if [ -f "$VERSION_ENV" ]; then
   # shellcheck disable=SC1090
   . "$VERSION_ENV"
+  INSTALLED_VERSION="${VERSION:-}"
+  INSTALLED_RELEASE_TAG="${RELEASE_TAG:-}"
 fi
 
-RELEASE_TAG="${COMMAVIEWD_RELEASE_TAG:-${RELEASE_TAG:-}}"
-if [ -z "$RELEASE_TAG" ] && [ -n "${COMMAVIEWD_DEFAULT_TAG:-}" ]; then
-  RELEASE_TAG="$COMMAVIEWD_DEFAULT_TAG"
-fi
-if [ -z "$RELEASE_TAG" ] && [ -n "${COMMAVIEWD_INSTALLER_REF:-}" ] && [[ "${COMMAVIEWD_INSTALLER_REF}" == v* ]]; then
-  RELEASE_TAG="$COMMAVIEWD_INSTALLER_REF"
-fi
-if [ -z "$RELEASE_TAG" ]; then
-  RELEASE_TAG="$(resolve_latest_release_tag)"
-fi
-if [ -z "$RELEASE_TAG" ]; then
-  RELEASE_TAG="v0.0.1-alpha"
-fi
+USE_CURRENT_RELEASE=0
+RELEASE_TAG="${COMMAVIEWD_RELEASE_TAG:-}"
+VERSION="${COMMAVIEWD_VERSION:-}"
+ASSET_NAME=""
+ASSET_SHA_NAME=""
+BASE_URL=""
+INSTALLER_REF=""
+INSTALLER_RAW_BASE=""
 
-VERSION="${COMMAVIEWD_VERSION:-${VERSION:-${RELEASE_TAG#v}}}"
+resolve_release_inputs() {
+  if [ -z "$RELEASE_TAG" ]; then
+    if [ "$USE_CURRENT_RELEASE" = "1" ] && [ -n "$INSTALLED_RELEASE_TAG" ]; then
+      RELEASE_TAG="$INSTALLED_RELEASE_TAG"
+    elif [ -n "${COMMAVIEWD_DEFAULT_TAG:-}" ]; then
+      RELEASE_TAG="$COMMAVIEWD_DEFAULT_TAG"
+    elif [ -n "${COMMAVIEWD_INSTALLER_REF:-}" ] && [[ "${COMMAVIEWD_INSTALLER_REF}" == v* ]]; then
+      RELEASE_TAG="$COMMAVIEWD_INSTALLER_REF"
+    else
+      RELEASE_TAG="$(resolve_latest_release_tag)"
+    fi
+  fi
+  if [ -z "$RELEASE_TAG" ]; then
+    RELEASE_TAG="v0.0.1-alpha"
+  fi
 
-ASSET_NAME="${COMMAVIEWD_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
-ASSET_SHA_NAME="${ASSET_NAME}.sha256"
-BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
-# Keep installer companions pinned to the same resolved release by default.
-# Falling back to master here mixes release assets with moving scripts/patches.
-INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-$RELEASE_TAG}"
-INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma4}"
+  VERSION="${COMMAVIEWD_VERSION:-${VERSION:-${RELEASE_TAG#v}}}"
+  ASSET_NAME="${COMMAVIEWD_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
+  ASSET_SHA_NAME="${ASSET_NAME}.sha256"
+  BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
+  # Keep installer companions pinned to the same resolved release by default.
+  # Falling back to master here mixes release assets with moving scripts/patches.
+  INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-$RELEASE_TAG}"
+  INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma4}"
+}
+
+resolve_release_inputs
 
 INSTALL_DIR="/data/commaview"
 CONTINUE_SH="/data/continue.sh"
@@ -49,16 +66,20 @@ FORCE_OFFROAD=0
 FORCE_OFFROAD_OWNED=0
 FORCE_OFFROAD_PREV=""
 tmpdir=""
+COMPANION_DIR="$SCRIPT_DIR"
+INSTALL_MUTATED=0
+INSTALL_SUCCESS=0
 
 usage() {
   cat <<USAGE
 CommaView installer ${VERSION}
 
 Usage:
-  install.sh [--tag <release-tag>] [--force-offroad] [--help]
+  install.sh [--tag <release-tag>] [--current] [--force-offroad] [--help]
 
 Options:
   --tag <release-tag>            Install or update to a specific release tag.
+  --current                      Reinstall the currently installed release instead of resolving latest.
   --force-offroad                Set OffroadMode and wait for an actual offroad transition before changing files.
   -h, --help                     Show this help and exit.
 USAGE
@@ -69,13 +90,16 @@ while [ "$#" -gt 0 ]; do
     --tag)
       [ "$#" -ge 2 ] || { echo "ERROR: --tag requires a value" >&2; exit 1; }
       RELEASE_TAG="$2"
-      VERSION="${COMMAVIEWD_VERSION:-${VERSION:-${RELEASE_TAG#v}}}"
-      ASSET_NAME="${COMMAVIEWD_ASSET_NAME:-commaview-comma4-${RELEASE_TAG}.tar.gz}"
-      ASSET_SHA_NAME="${ASSET_NAME}.sha256"
-      BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
-      INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-$RELEASE_TAG}"
-      INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma4}"
+      VERSION=""
+      resolve_release_inputs
       shift 2
+      ;;
+    --current)
+      USE_CURRENT_RELEASE=1
+      RELEASE_TAG=""
+      VERSION=""
+      resolve_release_inputs
+      shift
       ;;
     --force-offroad)
       FORCE_OFFROAD=1
@@ -115,7 +139,30 @@ restore_force_offroad_mode() {
   fi
 }
 
+restore_previous_install_tree() {
+  local backup_dir="$tmpdir/previous-install"
+  [ "$INSTALL_MUTATED" = "1" ] || return 0
+  [ "$INSTALL_SUCCESS" = "0" ] || return 0
+  [ -d "$backup_dir" ] || return 0
+
+  echo "WARN: install failed after modifying live tree; restoring previous CommaView files" >&2
+  rm -f \
+    "$INSTALL_DIR/commaviewd" \
+    "$INSTALL_DIR/VERSION" \
+    "$INSTALL_DIR/start.sh" \
+    "$INSTALL_DIR/stop.sh" \
+    "$INSTALL_DIR/uninstall.sh" \
+    "$INSTALL_DIR/runtime-debug.defaults.json" \
+    "$INSTALL_DIR/version.env"
+  rm -rf \
+    "$INSTALL_DIR/lib" \
+    "$INSTALL_DIR/scripts" \
+    "$INSTALL_DIR/patches"
+  cp -a "$backup_dir"/. "$INSTALL_DIR"/ 2>/dev/null || true
+}
+
 cleanup() {
+  restore_previous_install_tree
   restore_force_offroad_mode
   rm -rf "${tmpdir:-}"
 }
@@ -165,7 +212,7 @@ copy_required_file() {
   local src_rel="$1"
   local dst="$2"
   local mode="${3:-755}"
-  local src="$SCRIPT_DIR/$src_rel"
+  local src="$COMPANION_DIR/$src_rel"
 
   if [ ! -f "$src" ]; then
     echo "ERROR: missing required installer file: $src_rel" >&2
@@ -189,14 +236,15 @@ required_files=(
   "patches/sunnypilot/0001-commaview-ui-export-v2.patch"
 )
 
-fetch_missing_required_files() {
+refresh_required_files() {
   local rel dst url dir
   local failed=()
 
-  for rel in "${required_files[@]}"; do
-    dst="$SCRIPT_DIR/$rel"
-    [ -f "$dst" ] && continue
+  COMPANION_DIR="$tmpdir/companions"
+  mkdir -p "$COMPANION_DIR"
 
+  for rel in "${required_files[@]}"; do
+    dst="$COMPANION_DIR/$rel"
     url="${INSTALLER_RAW_BASE}/$rel"
     dir="$(dirname "$dst")"
 
@@ -206,7 +254,7 @@ fetch_missing_required_files() {
       continue
     fi
 
-    echo "Fetching missing installer companion: $rel"
+    echo "Fetching installer companion: $rel"
     if ! curl -fsSL --retry 3 --retry-delay 1 -o "$dst" "$url"; then
       rm -f "$dst"
       failed+=("$rel")
@@ -226,8 +274,8 @@ validate_required_files() {
   local missing=()
   local rel
   for rel in "${required_files[@]}"; do
-    if [ ! -f "$SCRIPT_DIR/$rel" ]; then
-      missing+=("$SCRIPT_DIR/$rel")
+    if [ ! -f "$COMPANION_DIR/$rel" ]; then
+      missing+=("$COMPANION_DIR/$rel")
     fi
   done
 
@@ -313,42 +361,67 @@ PYPAIR
   fi
 }
 
+backup_managed_install_tree() {
+  local backup_dir="$tmpdir/previous-install"
+  mkdir -p "$backup_dir"
+  for rel in \
+    commaviewd \
+    VERSION \
+    start.sh \
+    stop.sh \
+    uninstall.sh \
+    runtime-debug.defaults.json \
+    version.env \
+    lib \
+    scripts \
+    patches; do
+    [ -e "$INSTALL_DIR/$rel" ] || continue
+    cp -a "$INSTALL_DIR/$rel" "$backup_dir/$rel"
+  done
+}
+
 clean_managed_install_tree() {
   echo "Removing stale managed CommaView files..."
+  INSTALL_MUTATED=1
   rm -f \
     "$INSTALL_DIR/commaviewd" \
     "$INSTALL_DIR/VERSION" \
     "$INSTALL_DIR/start.sh" \
     "$INSTALL_DIR/stop.sh" \
     "$INSTALL_DIR/uninstall.sh" \
-    "$INSTALL_DIR/runtime-debug.defaults.json"
+    "$INSTALL_DIR/runtime-debug.defaults.json" \
+    "$INSTALL_DIR/version.env"
   rm -rf \
     "$INSTALL_DIR/lib" \
     "$INSTALL_DIR/scripts" \
-    "$INSTALL_DIR/patches"
+    "$INSTALL_DIR/patches" \
+    "$INSTALL_DIR/run"
   mkdir -p \
     "$INSTALL_DIR/logs" \
     "$INSTALL_DIR/run" \
     "$INSTALL_DIR/lib" \
     "$INSTALL_DIR/api" \
     "$INSTALL_DIR/config"
+  rm -f \
+    "$INSTALL_DIR/config/onroad-ui-export-patch.env" \
+    "$INSTALL_DIR/config/hud-lite-patch.env"
 }
 
 need_cmd curl
 need_cmd tar
 need_cmd sha256sum
+need_cmd cp
 
-fetch_missing_required_files
+tmpdir="$(mktemp -d /tmp/commaview-install.XXXXXX)"
+trap cleanup EXIT
+refresh_required_files
 validate_required_files
 
 echo "=== CommaView ${VERSION} Installer ==="
 echo "Release: ${RELEASE_TAG}"
 echo "Repo:    ${GITHUB_REPO}"
 
-trap cleanup EXIT
 ensure_offroad_ready
-
-tmpdir="$(mktemp -d /tmp/commaview-install.XXXXXX)"
 
 mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/run" "$INSTALL_DIR/lib" "$INSTALL_DIR/api"
 
@@ -369,14 +442,31 @@ if [ "$expected_sha" != "$actual_sha" ]; then
   exit 1
 fi
 
+STAGED_BUNDLE="$tmpdir/staged-bundle"
+mkdir -p "$STAGED_BUNDLE"
+echo "Staging and validating bundle..."
+tar -xzf "$tmpdir/$ASSET_NAME" -C "$STAGED_BUNDLE" --strip-components=1
+if [ ! -f "$STAGED_BUNDLE/commaviewd" ]; then
+  echo "ERROR: bundle missing commaviewd" >&2
+  exit 1
+fi
+staged_capnp_lib_count=$(find "$STAGED_BUNDLE/lib" -maxdepth 1 -type f -name 'libcapnp-*.so' 2>/dev/null | wc -l | tr -d ' ')
+staged_kj_lib_count=$(find "$STAGED_BUNDLE/lib" -maxdepth 1 -type f -name 'libkj-*.so' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$staged_capnp_lib_count" -eq 0 ] || [ "$staged_kj_lib_count" -eq 0 ]; then
+  echo "ERROR: bundle missing required runtime libs" >&2
+  exit 1
+fi
+
+backup_managed_install_tree
+
 echo "Stopping existing CommaView processes..."
 pkill -f "/data/commaview/commaviewd" 2>/dev/null || true
 sleep 1
 
 clean_managed_install_tree
 
-echo "Extracting bundle..."
-tar -xzf "$tmpdir/$ASSET_NAME" -C "$INSTALL_DIR" --strip-components=1
+echo "Installing staged bundle..."
+cp -a "$STAGED_BUNDLE"/. "$INSTALL_DIR"/
 
 deploy_required_scripts
 ensure_api_auth_token
@@ -416,6 +506,7 @@ echo "Starting CommaView runtime..."
 bash "$INSTALL_DIR/start.sh"
 sleep 1
 print_pairing_code
+INSTALL_SUCCESS=1
 
 echo ""
 echo "=== CommaView ${VERSION} installed ==="
@@ -423,5 +514,5 @@ echo "  Source:      ${BASE_URL}/${ASSET_NAME}"
 echo "  Binary:      $INSTALL_DIR/commaviewd ($BINARY_SIZE)"
 echo "  Runtime:     commaviewd dual-mode (bridge + control)"
 echo "  Direct v2 onroad UI export: install-time patch lifecycle enforced"
-echo "  Install/update: bash $INSTALL_DIR/install.sh [--tag <release-tag>] [--force-offroad]"
+echo "  Install/update: bash $INSTALL_DIR/install.sh [--tag <release-tag>] [--current] [--force-offroad]"
 echo "  Uninstall:   bash $INSTALL_DIR/uninstall.sh"
