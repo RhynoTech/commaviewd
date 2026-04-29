@@ -128,6 +128,15 @@ void test_model_v2_parity_contract_fields() {
   acceleration_x.set(0, -0.4f);
   acceleration_x.set(1, 0.7f);
 
+  auto meta = model.initMeta();
+  auto disengage_predictions = meta.initDisengagePredictions();
+  auto brake_probs = disengage_predictions.initBrakeDisengageProbs(2);
+  brake_probs.set(0, 0.1f);
+  brake_probs.set(1, 0.2f);
+  auto steer_probs = disengage_predictions.initSteerOverrideProbs(2);
+  steer_probs.set(0, 0.3f);
+  steer_probs.set(1, 0.4f);
+
   auto leads = model.initLeadsV3(1);
   leads[0].setProb(0.8f);
   auto lead_x = leads[0].initX(2);
@@ -145,6 +154,9 @@ void test_model_v2_parity_contract_fields() {
   assert(has(out, "\"laneLineStds\""));
   assert(has(out, "\"roadEdgeStds\""));
   assert(has(out, "\"accelerationX\":[-0.4,0.7]"));
+  assert(has(out, "\"disengagePredictions\""));
+  assert(has(out, "\"brakeDisengageProbs\":[0.1,0.2]"));
+  assert(has(out, "\"steerOverrideProbs\":[0.3,0.4]"));
   assert(has(out, "\"logMonoTime\":4242"));
   assert(has(out, "\"frameId\":77"));
   assert(has(out, "\"frameIdExtra\":88"));

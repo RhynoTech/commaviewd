@@ -438,9 +438,14 @@ std::string build_model_v2_json(cereal::ModelDataV2::Reader m, uint64_t log_mono
   }
   s += "],";
 
+  auto disengage_predictions = m.getMeta().getDisengagePredictions();
   s += "\"laneLineStds\":" + json_float_array(lane_stds) + ",";
   s += "\"roadEdgeStds\":" + json_float_array(edge_stds) + ",";
   s += "\"accelerationX\":" + json_float_array(m.getAcceleration().getX()) + ",";
+  s += "\"meta\":{\"disengagePredictions\":{";
+  s += "\"brakeDisengageProbs\":" + json_float_array(disengage_predictions.getBrakeDisengageProbs()) + ",";
+  s += "\"steerOverrideProbs\":" + json_float_array(disengage_predictions.getSteerOverrideProbs());
+  s += "}},";
   s += "\"logMonoTime\":" + json_num(log_mono_time);
   s += "}}";
 
