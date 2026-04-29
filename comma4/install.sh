@@ -275,6 +275,44 @@ PYTOKEN
   chmod 600 "$token_path" 2>/dev/null || true
 }
 
+print_pairing_code() {
+  local token_path="/data/commaview/api/auth.token"
+  local token=""
+  local response=""
+  local pair_code=""
+
+  if [ -r "$token_path" ]; then
+    token="$(tr -d '\r\n' < "$token_path")"
+  fi
+
+  if [ -z "$token" ]; then
+    echo "Pair code: unavailable (missing API token)"
+    return 0
+  fi
+
+  response="$(curl -fsS --retry 5 --retry-delay 1 -X POST \
+    -H "X-CommaView-Token: $token" \
+    http://127.0.0.1:5002/pairing/create 2>/dev/null || true)"
+  pair_code="$(PAIRING_RESPONSE="$response" python3 - <<'PYPAIR'
+import json
+import os
+try:
+    data = json.loads(os.environ.get("PAIRING_RESPONSE", ""))
+    print(data.get("pairCode", ""))
+except Exception:
+    print("")
+PYPAIR
+)"
+
+  if [ -n "$pair_code" ]; then
+    echo ""
+    echo "CommaView pair code: $pair_code"
+    echo "Enter this one-time pair code in the CommaView app."
+  else
+    echo "Pair code: unavailable (open CommaView settings to generate one after install)"
+  fi
+}
+
 clean_managed_install_tree() {
   echo "Removing stale managed CommaView files..."
   rm -f \
@@ -377,6 +415,7 @@ fi
 echo "Starting CommaView runtime..."
 bash "$INSTALL_DIR/start.sh"
 sleep 1
+print_pairing_code
 
 echo ""
 echo "=== CommaView ${VERSION} installed ==="

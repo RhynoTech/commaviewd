@@ -103,6 +103,15 @@ def test_install_script_cleans_managed_artifacts_before_extracting_bundle():
     assert 'ensure_offroad_ready' in text
 
 
+def test_install_script_prints_one_time_pair_code_after_starting_runtime():
+    text = INSTALL_SH.read_text()
+    assert 'print_pairing_code()' in text
+    assert 'http://127.0.0.1:5002/pairing/create' in text
+    assert 'X-CommaView-Token: $token' in text
+    assert 'CommaView pair code:' in text
+    assert text.index('bash "$INSTALL_DIR/start.sh"') < text.rindex('print_pairing_code')
+
+
 def test_apply_patch_script_resets_managed_patch_targets_before_retry():
     text = APPLY_PATCH_SH.read_text()
     assert "patch_targets()" in text
