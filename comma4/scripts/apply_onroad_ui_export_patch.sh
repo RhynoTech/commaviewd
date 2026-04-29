@@ -239,7 +239,7 @@ flavor="$(detect_flavor)" || {
 patch="$PATCH_ROOT/$flavor/0001-commaview-ui-export-v2.patch"
 [ -f "$patch" ] || { echo "ERROR: missing socket UI export patch asset: $patch" >&2; exit 1; }
 
-if [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then
+if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then
   request_openpilot_ui_restart
   restart_openpilot_ui_if_offroad
   exit 0

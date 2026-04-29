@@ -138,6 +138,7 @@ def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_for
     assert '--maintenance-mode' not in text
     assert 'COMMAVIEWD_MAINTENANCE_MODE' not in text
     assert '--force-repair' in text
+    assert 'if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ]' in text
     assert 'refusing to reset managed patch targets without --force-repair' in text
     assert 'upstream may have changed; review patch compatibility before repairing' in text
     assert 'onroad UI export patch target files have local changes' in text
@@ -161,7 +162,7 @@ def test_apply_patch_script_restarts_openpilot_ui_after_patch_lifecycle_offroad_
     assert 'pkill unavailable; deferring openpilot UI restart' in text
     assert 'pkill -INT -f "selfdrive.ui.ui"' in text
     assert 'restarting openpilot UI to load CommaView onroad UI export patch' in text
-    assert text.index('restart_openpilot_ui_if_offroad') < text.index('if [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then')
+    assert text.index('restart_openpilot_ui_if_offroad') < text.index('if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then')
     assert 'request_openpilot_ui_restart\n  restart_openpilot_ui_if_offroad\n  exit 0' in text
     assert 'request_openpilot_ui_restart\n  restart_openpilot_ui_if_offroad\n  exec "$VERIFY_SCRIPT" --json' in text
 
