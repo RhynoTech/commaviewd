@@ -440,6 +440,7 @@ std::string build_model_v2_json(cereal::ModelDataV2::Reader m, uint64_t log_mono
 
   s += "\"laneLineStds\":" + json_float_array(lane_stds) + ",";
   s += "\"roadEdgeStds\":" + json_float_array(edge_stds) + ",";
+  s += "\"accelerationX\":" + json_float_array(m.getAcceleration().getX()) + ",";
   s += "\"logMonoTime\":" + json_num(log_mono_time);
   s += "}}";
 

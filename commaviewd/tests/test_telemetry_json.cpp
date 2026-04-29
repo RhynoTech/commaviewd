@@ -123,6 +123,11 @@ void test_model_v2_parity_contract_fields() {
   auto pos = model.initPosition();
   set_xyz(pos, 0.0f, 1.0f, 0.0f, 0.1f, 0.0f, 0.0f);
 
+  auto acceleration = model.initAcceleration();
+  auto acceleration_x = acceleration.initX(2);
+  acceleration_x.set(0, -0.4f);
+  acceleration_x.set(1, 0.7f);
+
   auto leads = model.initLeadsV3(1);
   leads[0].setProb(0.8f);
   auto lead_x = leads[0].initX(2);
@@ -139,6 +144,7 @@ void test_model_v2_parity_contract_fields() {
   assert(has(out, "\"roadEdges\""));
   assert(has(out, "\"laneLineStds\""));
   assert(has(out, "\"roadEdgeStds\""));
+  assert(has(out, "\"accelerationX\":[-0.4,0.7]"));
   assert(has(out, "\"logMonoTime\":4242"));
   assert(has(out, "\"frameId\":77"));
   assert(has(out, "\"frameIdExtra\":88"));
