@@ -7,7 +7,9 @@
 #include <fstream>
 #include <limits>
 #include <string>
+#include <type_traits>
 #include <unistd.h>
+#include <utility>
 
 #include "cereal/gen/cpp/log.capnp.h"
 
@@ -15,6 +17,40 @@ namespace {
 
 bool has(const std::string& s, const std::string& needle) {
   return s.find(needle) != std::string::npos;
+}
+
+template <typename T, typename = void>
+struct has_dm_builder_vision_policy_state : std::false_type {};
+template <typename T>
+struct has_dm_builder_vision_policy_state<T, std::void_t<decltype(std::declval<T>().initVisionPolicyState())>> : std::true_type {};
+
+template <typename DriverMonitoringBuilder>
+void populate_driver_monitoring_contract_fields(DriverMonitoringBuilder dm) {
+  if constexpr (has_dm_builder_vision_policy_state<DriverMonitoringBuilder>::value) {
+    auto vision = dm.initVisionPolicyState();
+    vision.setFaceDetected(true);
+    vision.setIsDistracted(true);
+    vision.setAwarenessPercent(50);
+    vision.setAwarenessStep(0.05f);
+    auto distracted_types = vision.initDistractedTypes();
+    distracted_types.setPose(true);
+    auto pose = vision.initPose();
+    auto pitch_calib = pose.initPitchCalib();
+    pitch_calib.setCalibratedPercent(12);
+    pitch_calib.setOffset(0.1f);
+    auto yaw_calib = pose.initYawCalib();
+    yaw_calib.setCalibratedPercent(34);
+    yaw_calib.setOffset(-0.2f);
+    auto wheel = dm.initWheeltouchPolicyState();
+    wheel.setAwarenessPercent(75);
+  } else {
+    dm.setFaceDetected(true);
+    dm.setIsDistracted(true);
+    dm.setAwarenessStatus(0.5f);
+    auto events = dm.initEvents(1);
+    events[0].setWarning(true);
+    events[0].setPermanent(true);
+  }
 }
 
 void set_xyz(cereal::XYZTData::Builder xyz,
@@ -305,12 +341,7 @@ void test_driver_monitoring_and_driver_state_v2_json() {
     auto evt = mb.initRoot<cereal::Event>();
     evt.setLogMonoTime(999);
     auto dm = evt.initDriverMonitoringState();
-    dm.setFaceDetected(true);
-    dm.setIsDistracted(true);
-    dm.setAwarenessStatus(0.5f);
-    auto events = dm.initEvents(1);
-    events[0].setWarning(true);
-    events[0].setPermanent(true);
+    populate_driver_monitoring_contract_fields(dm);
 
     std::string out = commaview::telemetry::build_telemetry_json(evt.asReader());
     assert(has(out, "\"type\":\"driverMonitoringState\""));
@@ -416,8 +447,7 @@ void test_new_payload_defaults_and_empty_lists() {
     capnp::MallocMessageBuilder mb;
     auto evt = mb.initRoot<cereal::Event>();
     evt.setLogMonoTime(1616);
-    auto dm = evt.initDriverMonitoringState();
-    dm.setFaceDetected(false);
+    evt.initDriverMonitoringState();
 
     std::string out = commaview::telemetry::build_telemetry_json(evt.asReader());
     assert(has(out, "\"type\":\"driverMonitoringState\""));

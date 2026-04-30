@@ -117,6 +117,16 @@ std::string json_float_array(T list, int max_count = -1) {
   return s;
 }
 
+
+template <typename T, typename = void>
+struct has_driver_monitoring_vision_policy_state : std::false_type {};
+template <typename T>
+struct has_driver_monitoring_vision_policy_state<T, std::void_t<decltype(std::declval<T>().getVisionPolicyState())>> : std::true_type {};
+
+template <typename DriverMonitoringReader>
+std::string build_driver_monitoring_state_json_impl(DriverMonitoringReader dm,
+                                                    uint64_t log_mono_time);
+
 template <typename T, typename = void>
 struct has_left_eye_prob : std::false_type {};
 template <typename T>
@@ -615,36 +625,110 @@ std::string build_onroad_events_json(capnp::List<cereal::OnroadEvent>::Reader ev
   return s;
 }
 
-std::string build_driver_monitoring_state_json(cereal::DriverMonitoringState::Reader dm,
-                                               uint64_t log_mono_time) {
-  auto events = dm.getEvents();
+template <typename DriverMonitoringReader>
+std::string build_driver_monitoring_state_json_impl(DriverMonitoringReader dm,
+                                                    uint64_t log_mono_time) {
   std::string s = "{\"ts\":" + unix_ts_json() +
                   ",\"type\":\"driverMonitoringState\",\"data\":{";
-  s += "\"faceDetected\":" + json_bool(dm.getFaceDetected()) + ",";
-  s += "\"isDistracted\":" + json_bool(dm.getIsDistracted()) + ",";
-  s += "\"distractedType\":" + json_num(dm.getDistractedType()) + ",";
-  s += "\"awarenessStatus\":" + json_num(dm.getAwarenessStatus()) + ",";
-  s += "\"awarenessActive\":" + json_num(dm.getAwarenessActive()) + ",";
-  s += "\"awarenessPassive\":" + json_num(dm.getAwarenessPassive()) + ",";
-  s += "\"stepChange\":" + json_num(dm.getStepChange()) + ",";
-  s += "\"posePitchOffset\":" + json_num(dm.getPosePitchOffset()) + ",";
-  s += "\"posePitchValidCount\":" + json_num(dm.getPosePitchValidCount()) + ",";
-  s += "\"poseYawOffset\":" + json_num(dm.getPoseYawOffset()) + ",";
-  s += "\"poseYawValidCount\":" + json_num(dm.getPoseYawValidCount()) + ",";
-  s += "\"isLowStd\":" + json_bool(dm.getIsLowStd()) + ",";
-  s += "\"hiStdCount\":" + json_num(dm.getHiStdCount()) + ",";
-  s += "\"isActiveMode\":" + json_bool(dm.getIsActiveMode()) + ",";
-  s += "\"isRHD\":" + json_bool(dm.getIsRHD()) + ",";
-  s += "\"uncertainCount\":" + json_num(dm.getUncertainCount()) + ",";
-  s += "\"events\":[";
-  for (unsigned i = 0; i < events.size(); ++i) {
-    if (i > 0) s += ",";
-    s += build_onroad_event_json(events[i]);
+
+  if constexpr (has_driver_monitoring_vision_policy_state<DriverMonitoringReader>::value) {
+    auto vision = dm.getVisionPolicyState();
+    auto wheel = dm.getWheeltouchPolicyState();
+    auto distracted_types = vision.getDistractedTypes();
+    auto pose = vision.getPose();
+    auto pitch_calib = pose.getPitchCalib();
+    auto yaw_calib = pose.getYawCalib();
+    const unsigned distracted_type =
+        (distracted_types.getPose() ? 1u : 0u) |
+        (distracted_types.getEye() ? 2u : 0u) |
+        (distracted_types.getPhone() ? 4u : 0u);
+
+    // Keep the legacy flattened keys so older Android builds can keep parsing the
+    // JSON shape, while also exporting the new nightly policy-state structure.
+    s += "\"faceDetected\":" + json_bool(vision.getFaceDetected()) + ",";
+    s += "\"isDistracted\":" + json_bool(vision.getIsDistracted()) + ",";
+    s += "\"distractedType\":" + json_num(distracted_type) + ",";
+    s += "\"awarenessStatus\":" + json_num(static_cast<float>(vision.getAwarenessPercent()) / 100.0f) + ",";
+    s += "\"awarenessActive\":" + json_num(static_cast<float>(vision.getAwarenessPercent()) / 100.0f) + ",";
+    s += "\"awarenessPassive\":" + json_num(static_cast<float>(wheel.getAwarenessPercent()) / 100.0f) + ",";
+    s += "\"stepChange\":" + json_num(vision.getAwarenessStep()) + ",";
+    s += "\"posePitchOffset\":" + json_num(pitch_calib.getOffset()) + ",";
+    s += "\"posePitchValidCount\":" + json_num(pitch_calib.getCalibratedPercent()) + ",";
+    s += "\"poseYawOffset\":" + json_num(yaw_calib.getOffset()) + ",";
+    s += "\"poseYawValidCount\":" + json_num(yaw_calib.getCalibratedPercent()) + ",";
+    s += "\"isLowStd\":false,";
+    s += "\"hiStdCount\":0,";
+    s += "\"isActiveMode\":" + json_bool(static_cast<int>(dm.getActivePolicy()) == 1) + ",";
+    s += "\"isRHD\":" + json_bool(dm.getIsRHD()) + ",";
+    s += "\"uncertainCount\":" + json_num(vision.getUncertainOffroadAlertPercent()) + ",";
+    s += "\"events\":[],";
+    s += "\"lockout\":" + json_bool(dm.getLockout()) + ",";
+    s += "\"alertCountLockoutPercent\":" + json_num(dm.getAlertCountLockoutPercent()) + ",";
+    s += "\"alertTimeLockoutPercent\":" + json_num(dm.getAlertTimeLockoutPercent()) + ",";
+    s += "\"alwaysOn\":" + json_bool(dm.getAlwaysOn()) + ",";
+    s += "\"alwaysOnLockout\":" + json_bool(dm.getAlwaysOnLockout()) + ",";
+    s += "\"alertLevel\":" + json_num(static_cast<int>(dm.getAlertLevel())) + ",";
+    s += "\"activePolicy\":" + json_num(static_cast<int>(dm.getActivePolicy())) + ",";
+    s += "\"visionPolicyState\":{";
+    s += "\"awarenessPercent\":" + json_num(vision.getAwarenessPercent()) + ",";
+    s += "\"awarenessStep\":" + json_num(vision.getAwarenessStep()) + ",";
+    s += "\"isDistracted\":" + json_bool(vision.getIsDistracted()) + ",";
+    s += "\"faceDetected\":" + json_bool(vision.getFaceDetected()) + ",";
+    s += "\"wheeltouchFallbackPercent\":" + json_num(vision.getWheeltouchFallbackPercent()) + ",";
+    s += "\"uncertainOffroadAlertPercent\":" + json_num(vision.getUncertainOffroadAlertPercent()) + ",";
+    s += "\"distractedTypes\":{";
+    s += "\"pose\":" + json_bool(distracted_types.getPose()) + ",";
+    s += "\"eye\":" + json_bool(distracted_types.getEye()) + ",";
+    s += "\"phone\":" + json_bool(distracted_types.getPhone()) + "},";
+    s += "\"pose\":{";
+    s += "\"pitch\":" + json_num(pose.getPitch()) + ",";
+    s += "\"yaw\":" + json_num(pose.getYaw()) + ",";
+    s += "\"pitchCalib\":{";
+    s += "\"calibratedPercent\":" + json_num(pitch_calib.getCalibratedPercent()) + ",";
+    s += "\"offset\":" + json_num(pitch_calib.getOffset()) + "},";
+    s += "\"yawCalib\":{";
+    s += "\"calibratedPercent\":" + json_num(yaw_calib.getCalibratedPercent()) + ",";
+    s += "\"offset\":" + json_num(yaw_calib.getOffset()) + "},";
+    s += "\"calibrated\":" + json_bool(pose.getCalibrated()) + ",";
+    s += "\"uncertainty\":" + json_num(pose.getUncertainty()) + "}},";
+    s += "\"wheeltouchPolicyState\":{";
+    s += "\"awarenessPercent\":" + json_num(wheel.getAwarenessPercent()) + ",";
+    s += "\"awarenessStep\":" + json_num(wheel.getAwarenessStep()) + ",";
+    s += "\"driverInteracting\":" + json_bool(wheel.getDriverInteracting()) + "},";
+  } else {
+    auto events = dm.getEvents();
+    s += "\"faceDetected\":" + json_bool(dm.getFaceDetected()) + ",";
+    s += "\"isDistracted\":" + json_bool(dm.getIsDistracted()) + ",";
+    s += "\"distractedType\":" + json_num(dm.getDistractedType()) + ",";
+    s += "\"awarenessStatus\":" + json_num(dm.getAwarenessStatus()) + ",";
+    s += "\"awarenessActive\":" + json_num(dm.getAwarenessActive()) + ",";
+    s += "\"awarenessPassive\":" + json_num(dm.getAwarenessPassive()) + ",";
+    s += "\"stepChange\":" + json_num(dm.getStepChange()) + ",";
+    s += "\"posePitchOffset\":" + json_num(dm.getPosePitchOffset()) + ",";
+    s += "\"posePitchValidCount\":" + json_num(dm.getPosePitchValidCount()) + ",";
+    s += "\"poseYawOffset\":" + json_num(dm.getPoseYawOffset()) + ",";
+    s += "\"poseYawValidCount\":" + json_num(dm.getPoseYawValidCount()) + ",";
+    s += "\"isLowStd\":" + json_bool(dm.getIsLowStd()) + ",";
+    s += "\"hiStdCount\":" + json_num(dm.getHiStdCount()) + ",";
+    s += "\"isActiveMode\":" + json_bool(dm.getIsActiveMode()) + ",";
+    s += "\"isRHD\":" + json_bool(dm.getIsRHD()) + ",";
+    s += "\"uncertainCount\":" + json_num(dm.getUncertainCount()) + ",";
+    s += "\"events\":[";
+    for (unsigned i = 0; i < events.size(); ++i) {
+      if (i > 0) s += ",";
+      s += build_onroad_event_json(events[i]);
+    }
+    s += "],";
   }
-  s += "],";
+
   s += "\"logMonoTime\":" + json_num(log_mono_time);
   s += "}}";
   return s;
+}
+
+std::string build_driver_monitoring_state_json(cereal::DriverMonitoringState::Reader dm,
+                                               uint64_t log_mono_time) {
+  return build_driver_monitoring_state_json_impl(dm, log_mono_time);
 }
 
 std::string build_driver_data_json(cereal::DriverStateV2::DriverData::Reader d) {
