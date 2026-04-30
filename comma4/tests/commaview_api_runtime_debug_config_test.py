@@ -176,6 +176,9 @@ def test_control_mode_routes_present_for_runtime_debug_config():
     assert "runtime_debug_state_json" in text
     assert "runtime_debug_apply_response" in text
     assert "runtimeVersion" in text
+    assert "roadState" in text
+    assert "isOnroad" in text
+    assert "onroad" in text
     assert "maintenance_mode_requested" not in text
     assert "--maintenance-mode" not in text
     assert "live_onroad_ui_export_status_json(false)" in text

@@ -416,6 +416,7 @@ std::string runtime_status_json() {
   const std::string telemetryMode = telemetry_mode();
   const std::string dongleId = device_dongle_id();
   const std::string hardwareSerial = device_hardware_serial();
+  const bool onroad = is_onroad();
   const auto persisted = load_persisted_runtime_debug_config();
   const auto effective = load_effective_runtime_debug_config_state();
   const std::vector<std::string> warnings = !effective.warnings.empty() ? effective.warnings : persisted.warnings;
@@ -428,6 +429,9 @@ std::string runtime_status_json() {
   out << "\"hardwareSerial\":\"" << json_escape(hardwareSerial) << "\",";
   out << "\"api_port\":" << kDefaultApiPort << ",";
   out << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\",";
+  out << "\"roadState\":\"" << (onroad ? "onroad" : "offroad") << "\",";
+  out << "\"isOnroad\":" << (onroad ? "true" : "false") << ",";
+  out << "\"onroad\":" << (onroad ? "true" : "false") << ",";
   out << "\"onroadUiExport\":" << live_onroad_ui_export_status_json(false) << ",";
   out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
   out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true) << ",";
