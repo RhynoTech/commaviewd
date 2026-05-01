@@ -777,6 +777,8 @@ index 0000000..8136a25
 +    }
 diff --git a/selfdrive/ui/mici/onroad/augmented_road_view.py b/selfdrive/ui/mici/onroad/augmented_road_view.py
 index 31f7648..28a151d 100644
+--- a/selfdrive/ui/mici/onroad/augmented_road_view.py
++++ b/selfdrive/ui/mici/onroad/augmented_road_view.py
 @@ -212,6 +212,7 @@
  
      # Render the base camera view

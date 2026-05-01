@@ -125,7 +125,9 @@ need_cmd() {
 }
 
 read_param() {
-  tr -d '\000\r\n' < "$PARAMS_DIR/$1" 2>/dev/null || true
+  local path="$PARAMS_DIR/$1"
+  [ -f "$path" ] || return 0
+  tr -d '\000\r\n' < "$path" 2>/dev/null || true
 }
 
 write_param() {

@@ -6,6 +6,8 @@ DEFAULTS = REPO_ROOT / "comma4" / "runtime-debug.defaults.json"
 START_SH = REPO_ROOT / "comma4" / "start.sh"
 INSTALL_SH = REPO_ROOT / "comma4" / "install.sh"
 APPLY_PATCH_SH = REPO_ROOT / "comma4" / "scripts" / "apply_onroad_ui_export_patch.sh"
+VERIFY_PATCH_SH = REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh"
+SUNNYPILOT_PATCH = REPO_ROOT / "comma4" / "patches" / "sunnypilot" / "0001-commaview-ui-export-v2.patch"
 CONTROL_CPP = REPO_ROOT / "commaviewd" / "src" / "control_mode.cpp"
 
 
@@ -127,6 +129,24 @@ def test_install_script_prints_one_time_pair_code_after_starting_runtime():
     assert 'X-CommaView-Token: $token' in text
     assert 'CommaView pair code:' in text
     assert text.index('bash "$INSTALL_DIR/start.sh"') < text.rindex('print_pairing_code')
+
+
+def test_sunnypilot_patch_declares_every_managed_target_for_force_repair():
+    text = SUNNYPILOT_PATCH.read_text()
+    assert "+++ b/selfdrive/ui/commaview_export.py" in text
+    assert "+++ b/selfdrive/ui/ui_state.py" in text
+    assert "+++ b/selfdrive/ui/mici/onroad/augmented_road_view.py" in text
+    assert text.index("+++ b/selfdrive/ui/mici/onroad/augmented_road_view.py") < text.index("self._update_commaview_camera_export()")
+    assert "exporter.set_onroad_projection(" in text
+
+
+def test_verify_patch_script_requires_onroad_projection_markers():
+    text = VERIFY_PATCH_SH.read_text()
+    assert "onroad_projection_present=false" in text
+    assert '"onroadProjectionPresent"' in text
+    assert "exporter.set_onroad_projection(" in text
+    assert "video_frame_matrix=self._cached_matrix" in text
+    assert "$onroad_projection_present" in text
 
 
 def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_force_repair():

@@ -115,6 +115,7 @@ legacy_bucket_markers_absent=false
 exporter_install_present=false
 exporter_publish_present=false
 onroad_camera_relay_present=false
+onroad_projection_present=false
 fingerprint=""
 service_marker_count=0
 
@@ -177,6 +178,8 @@ risk_markers=(
   '"activeCamera": active_camera'
   '"wideCameraAvailable": wide_camera_available'
   'def set_onroad_camera(self, active_camera: str, wide_camera_available: bool) -> None:'
+  'def set_onroad_projection('
+  '"projection": self._onroad_projection'
   '"runtimeFlavor": self._flavor'
   '"enabled": bool(getattr(controls_state, "enabled", False))'
   '"active": bool(getattr(controls_state, "active", False))'
@@ -227,6 +230,12 @@ else
      check_fixed 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$AUGMENTED_ROAD_PATH"; then
     onroad_camera_relay_present=true
   fi
+  if check_fixed 'model_transform = video_transform @ calib_transform' "$AUGMENTED_ROAD_PATH" && \
+     check_fixed 'exporter.set_onroad_projection(' "$AUGMENTED_ROAD_PATH" && \
+     check_fixed 'video_frame_matrix=self._cached_matrix' "$AUGMENTED_ROAD_PATH" && \
+     check_fixed 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$AUGMENTED_ROAD_PATH"; then
+    onroad_projection_present=true
+  fi
 
   payload_helpers_present=true
   for marker in "${payload_markers[@]}"; do
@@ -266,7 +275,7 @@ else
      $socket_path_present && $socket_env_present && $frame_version_present && $unix_socket_present && \
      $framing_present && $compact_json_present && $payload_helpers_present && $publish_paths_present && \
      $risk_fields_present && $legacy_bucket_markers_absent && $exporter_install_present && \
-     $exporter_publish_present && $onroad_camera_relay_present; then
+     $exporter_publish_present && $onroad_camera_relay_present && $onroad_projection_present; then
     state="patch-verified"
     reason="upstream-organized socket UI export markers verified; runtime telemetry not proven"
     patch_verified=true
@@ -277,7 +286,7 @@ else
   fi
 fi
 
-json=$(printf '{"healthy":%s,"patchVerified":%s,"statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","patch":"%s","patchFingerprint":"%s","helperPresent":%s,"uiStateHookPresent":%s,"runtimeFlavorConstantPresent":%s,"socketPathPresent":%s,"socketEnvPresent":%s,"frameVersionPresent":%s,"unixSocketPresent":%s,"framingPresent":%s,"compactJsonPresent":%s,"payloadHelpersPresent":%s,"publishPathsPresent":%s,"riskFieldsPresent":%s,"legacyBucketMarkersAbsent":%s,"exporterInstallPresent":%s,"exporterPublishPresent":%s,"onroadCameraRelayPresent":%s,"serviceMarkerCount":%s}' "$healthy" "$patch_verified" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$helper_present" "$ui_state_hook_present" "$runtime_flavor_constant_present" "$socket_path_present" "$socket_env_present" "$frame_version_present" "$unix_socket_present" "$framing_present" "$compact_json_present" "$payload_helpers_present" "$publish_paths_present" "$risk_fields_present" "$legacy_bucket_markers_absent" "$exporter_install_present" "$exporter_publish_present" "$onroad_camera_relay_present" "$service_marker_count")
+json=$(printf '{"healthy":%s,"patchVerified":%s,"statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","patch":"%s","patchFingerprint":"%s","helperPresent":%s,"uiStateHookPresent":%s,"runtimeFlavorConstantPresent":%s,"socketPathPresent":%s,"socketEnvPresent":%s,"frameVersionPresent":%s,"unixSocketPresent":%s,"framingPresent":%s,"compactJsonPresent":%s,"payloadHelpersPresent":%s,"publishPathsPresent":%s,"riskFieldsPresent":%s,"legacyBucketMarkersAbsent":%s,"exporterInstallPresent":%s,"exporterPublishPresent":%s,"onroadCameraRelayPresent":%s,"onroadProjectionPresent":%s,"serviceMarkerCount":%s}' "$healthy" "$patch_verified" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$patch" "$fingerprint" "$helper_present" "$ui_state_hook_present" "$runtime_flavor_constant_present" "$socket_path_present" "$socket_env_present" "$frame_version_present" "$unix_socket_present" "$framing_present" "$compact_json_present" "$payload_helpers_present" "$publish_paths_present" "$risk_fields_present" "$legacy_bucket_markers_absent" "$exporter_install_present" "$exporter_publish_present" "$onroad_camera_relay_present" "$onroad_projection_present" "$service_marker_count")
 printf '%s\n' "$json" > "$STATE_JSON"
 if [ -n "$fingerprint" ]; then
   printf 'ONROAD_UI_EXPORT_FLAVOR=%s\nONROAD_UI_EXPORT_PATCH_SHA=%s\nONROAD_UI_EXPORT_OP_ROOT=%s\n' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
