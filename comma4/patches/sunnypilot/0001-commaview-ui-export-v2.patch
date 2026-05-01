@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..8136a25
 --- /dev/null
 +++ b/selfdrive/ui/commaview_export.py
-@@ -0,0 +1,592 @@
+@@ -0,0 +1,771 @@
 +import json
 +import math
 +import os
@@ -33,6 +33,8 @@ index 0000000..8136a25
 +COMMAVIEW_DEVICE_STATE_SERVICE_INDEX = 15
 +COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX = 16
 +COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX = 17
++COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX = 18
++COMMAVIEW_WIDE_ROAD_CAMERA_STATE_SERVICE_INDEX = 19
 +COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"
 +COMMAVIEW_CONNECT_RETRY_SEC = 1.0
 +COMMAVIEW_SOCKET_TIMEOUT_SEC = 0.05
@@ -62,6 +64,29 @@ index 0000000..8136a25
 +
 +def _float_list(values) -> list[float]:
 +  return [_safe_float(v) for v in values]
++
++
++def _matrix3_list(values) -> list[float]:
++  if values is None:
++    return []
++  try:
++    if hasattr(values, "reshape"):
++      values = values.reshape(-1).tolist()
++    elif hasattr(values, "flatten"):
++      values = values.flatten().tolist()
++  except (TypeError, ValueError):
++    pass
++  flat = []
++  try:
++    iterator = list(values)
++  except TypeError:
++    iterator = []
++  for value in iterator:
++    if isinstance(value, (list, tuple)):
++      flat.extend(_safe_float(v) for v in value)
++    else:
++      flat.append(_safe_float(value))
++  return flat[:9]
 +
 +
 +def _path_dict(source) -> dict:
@@ -160,11 +185,52 @@ index 0000000..8136a25
 +    self._active_camera = "road"
 +    self._active_camera_override = None
 +    self._wide_camera_available_override = None
++    self._latest_onroad_projection = None
 +
 +  def set_onroad_camera(self, active_camera: str, wide_camera_available: bool) -> None:
 +    camera = _safe_str(active_camera)
 +    self._active_camera_override = "wideRoad" if camera in ("wideRoad", "wide") else "road"
 +    self._wide_camera_available_override = bool(wide_camera_available)
++
++  def set_onroad_projection(
++    self,
++    ui_state,
++    active_camera: str,
++    content_rect,
++    video_frame_matrix,
++    model_transform,
++    camera_offset: float = 0.0,
++  ) -> None:
++    camera = _safe_str(active_camera)
++    camera = "wideRoad" if camera in ("wideRoad", "wide") else "road"
++    road_camera = self._service_msg(ui_state, "roadCameraState")
++    wide_camera = self._service_msg(ui_state, "wideRoadCameraState")
++    model = self._service_msg(ui_state, "modelV2")
++    road_log_mono = self._service_log_mono(ui_state, "roadCameraState")
++    wide_log_mono = self._service_log_mono(ui_state, "wideRoadCameraState")
++    model_log_mono = self._service_log_mono(ui_state, "modelV2")
++    live_calib_log_mono = self._service_log_mono(ui_state, "liveCalibration")
++    self._latest_onroad_projection = {
++      "valid": True,
++      "camera": camera,
++      "contentRect": {
++        "x": _safe_float(getattr(content_rect, "x", 0.0)),
++        "y": _safe_float(getattr(content_rect, "y", 0.0)),
++        "width": _safe_float(getattr(content_rect, "width", 0.0)),
++        "height": _safe_float(getattr(content_rect, "height", 0.0)),
++      },
++      "videoFrameMatrix": _matrix3_list(video_frame_matrix),
++      "modelTransform": _matrix3_list(model_transform),
++      "cameraOffset": [0.0, _safe_float(camera_offset), 0.0],
++      "roadFrameId": _safe_int(getattr(road_camera, "frameId", 0)),
++      "roadTimestampEof": _safe_int(getattr(road_camera, "timestampEof", 0)),
++      "wideFrameId": _safe_int(getattr(wide_camera, "frameId", 0)),
++      "wideTimestampEof": _safe_int(getattr(wide_camera, "timestampEof", 0)),
++      "modelFrameId": _safe_int(getattr(model, "frameId", 0)),
++      "modelTimestampEof": _safe_int(getattr(model, "timestampEof", 0)),
++      "liveCalibrationLogMonoTime": live_calib_log_mono,
++      "logMonoTime": max(road_log_mono, wide_log_mono, model_log_mono, live_calib_log_mono),
++    }
 +
 +  def publish(self, ui_state) -> None:
 +    try:
@@ -186,6 +252,8 @@ index 0000000..8136a25
 +      self._send_json(COMMAVIEW_DEVICE_STATE_SERVICE_INDEX, self._device_state_payload(ui_state))
 +      self._send_json(COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX, self._road_camera_state_payload(ui_state))
 +      self._send_json(COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX, self._panda_states_summary_payload(ui_state))
++      if self._latest_onroad_projection is not None:
++        self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)
 +    except OSError:
 +      self._close()
 +
@@ -226,6 +294,12 @@ index 0000000..8136a25
 +    except OSError:
 +      self._close()
 +      raise
++
++  def _service_msg(self, ui_state, service: str):
++    try:
++      return ui_state.sm[service]
++    except (KeyError, TypeError, IndexError):
++      return None
 +
 +  def _service_log_mono(self, ui_state, *services: str) -> int:
 +    values = []
@@ -703,9 +777,7 @@ index 0000000..8136a25
 +    }
 diff --git a/selfdrive/ui/mici/onroad/augmented_road_view.py b/selfdrive/ui/mici/onroad/augmented_road_view.py
 index 31f7648..28a151d 100644
---- a/selfdrive/ui/mici/onroad/augmented_road_view.py
-+++ b/selfdrive/ui/mici/onroad/augmented_road_view.py
-@@ -207,6 +207,7 @@ class AugmentedRoadView(CameraView):
+@@ -212,6 +212,7 @@
  
      # Render the base camera view
      super()._render(self._content_rect)
@@ -713,7 +785,7 @@ index 31f7648..28a151d 100644
  
      # Draw all UI overlays
      self._model_renderer.render(self._content_rect)
-@@ -271,6 +272,20 @@ class AugmentedRoadView(CameraView):
+@@ -274,6 +275,18 @@
      if self.stream_type != target:
        self.switch_stream(target)
  
@@ -732,6 +804,29 @@ index 31f7648..28a151d 100644
    def _update_calibration(self):
      # Update device camera if not already set
      sm = ui_state.sm
+@@ -351,6 +364,20 @@
+       [0.0, zoom, (h / 2 + y - y_offset) - (cy * zoom)],
+       [0.0, 0.0, 1.0]
+     ])
+-    self._model_renderer.set_transform(video_transform @ calib_transform)
+-
++    model_transform = video_transform @ calib_transform
++    self._model_renderer.set_transform(model_transform)
++    exporter = getattr(ui_state, "_commaview_exporter", None)
++    if exporter is not None and hasattr(exporter, "set_onroad_projection"):
++      try:
++        exporter.set_onroad_projection(
++          ui_state=ui_state,
++          active_camera="wideRoad" if is_wide_camera else "road",
++          content_rect=self._content_rect,
++          video_frame_matrix=self._cached_matrix,
++          model_transform=model_transform,
++          camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0),
++        )
++      except Exception:
++        pass
++
+     return self._cached_matrix
 diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
 index f7a5d44..f18fe6c 100644
 --- a/selfdrive/ui/ui_state.py
@@ -744,7 +839,7 @@ index f7a5d44..f18fe6c 100644
  from openpilot.selfdrive.ui.lib.prime_state import PrimeState
  from openpilot.system.ui.lib.application import gui_app
  from openpilot.system.hardware import HARDWARE, PC
-@@ -117,6 +119,13 @@ class UIState(UIStateSP):
+@@ -117,6 +119,12 @@ class UIState(UIStateSP):
      device.update()
      UIStateSP.update(self)
 +    if not hasattr(self, "_commaview_exporter"):
@@ -756,3 +851,4 @@ index f7a5d44..f18fe6c 100644
  
    def _update_state(self) -> None:
      # Handle panda states updates
+     if self.sm.updated["pandaStates"]:
