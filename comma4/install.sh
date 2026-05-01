@@ -159,6 +159,11 @@ restore_previous_install_tree() {
     "$INSTALL_DIR/scripts" \
     "$INSTALL_DIR/patches"
   cp -a "$backup_dir"/. "$INSTALL_DIR"/ 2>/dev/null || true
+  if [ -x "$INSTALL_DIR/start.sh" ]; then
+    echo "WARN: restarting restored CommaView runtime after failed install" >&2
+    COMMAVIEWD_RESTART_REASON=install-rollback bash "$INSTALL_DIR/start.sh" >/dev/null 2>&1 || \
+      echo "WARN: failed to restart restored CommaView runtime" >&2
+  fi
 }
 
 cleanup() {
@@ -403,7 +408,6 @@ clean_managed_install_tree() {
     "$INSTALL_DIR/api" \
     "$INSTALL_DIR/config"
   rm -f \
-    "$INSTALL_DIR/config/onroad-ui-export-patch.env" \
     "$INSTALL_DIR/config/hud-lite-patch.env"
 }
 
@@ -472,7 +476,7 @@ deploy_required_scripts
 ensure_api_auth_token
 echo "Applying direct v2 onroad UI export patch lifecycle..."
 if [ -x "$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh" ]; then
-  COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh"
+  COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh" --force-repair
 else
   echo "ERROR: missing onroad UI export patch apply helper" >&2
   exit 1

@@ -49,6 +49,10 @@ detect_flavor() {
       preferred='sunnypilot'
     elif printf '%s' "$remote" | grep -qi 'openpilot'; then
       preferred='openpilot'
+    elif grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"' "$HELPER_PATH" 2>/dev/null || [ -d "$OP_ROOT/selfdrive/ui/mici" ]; then
+      preferred='sunnypilot'
+    elif grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR = "OPENPILOT"' "$HELPER_PATH" 2>/dev/null; then
+      preferred='openpilot'
     fi
   fi
 
@@ -63,6 +67,10 @@ detect_flavor() {
   done
 
   set -- $matches
+  if [ "$#" -eq 0 ] && [ -n "$preferred" ] && [ -f "$PATCH_ROOT/$preferred/0001-commaview-ui-export-v2.patch" ]; then
+    printf '%s\n' "$preferred"
+    return 0
+  fi
   if [ "$#" -eq 1 ]; then
     printf '%s\n' "$1"
     return 0

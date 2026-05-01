@@ -105,11 +105,11 @@ def test_install_script_stages_release_and_refreshes_pinned_companions_before_mu
     assert text.index('backup_managed_install_tree') < text.index('echo "Stopping existing CommaView processes..."')
 
 
-def test_install_script_cleans_transient_patch_state_and_supports_explicit_current_reinstall():
+def test_install_script_preserves_patch_flavor_state_and_supports_explicit_current_reinstall():
     text = INSTALL_SH.read_text()
     assert "clean_managed_install_tree" in text
     assert '"$INSTALL_DIR/run"' in text
-    assert '"$INSTALL_DIR/config/onroad-ui-export-patch.env"' in text
+    assert '"$INSTALL_DIR/config/onroad-ui-export-patch.env"' not in text
     assert '"$INSTALL_DIR/config/hud-lite-patch.env"' in text
     assert "--current" in text
     assert "USE_CURRENT_RELEASE" in text
@@ -117,6 +117,7 @@ def test_install_script_cleans_transient_patch_state_and_supports_explicit_curre
     assert "--force-offroad" in text
     assert 'write_param "OffroadMode" "1"' in text
     assert 'ensure_offroad_ready' in text
+    assert 'apply_onroad_ui_export_patch.sh" --force-repair' in text
 
 
 def test_install_script_prints_one_time_pair_code_after_starting_runtime():
@@ -144,6 +145,8 @@ def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_for
     assert 'onroad UI export patch target files have local changes' in text
     assert 'refusing to modify dirty upstream files without --force-repair' in text
     assert 'backups written to $backup_root' in text
+    assert 'COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"' in text
+    assert 'selfdrive/ui/mici' in text
     assert 'git -C "$OP_ROOT" reset -q HEAD -- "$rel"' in text
     assert 'git -C "$OP_ROOT" checkout -- "$rel"' in text
     assert 'rm -f "$OP_ROOT/$rel"' in text
