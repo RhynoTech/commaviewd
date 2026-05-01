@@ -135,6 +135,68 @@ write_param() {
   printf '%s' "$2" > "$PARAMS_DIR/$1"
 }
 
+commaview_pids() {
+  local proc pid cmd
+  for proc in /proc/[0-9]*; do
+    pid="${proc##*/}"
+    [ "$pid" = "$$" ] && continue
+    [ -r "$proc/cmdline" ] || continue
+    cmd="$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+    case "$cmd" in
+      *"/data/commaview/commaviewd bridge"*|*"/data/commaview/commaviewd control"*)
+        printf '%s\n' "$pid"
+        ;;
+    esac
+  done | sort -nu
+}
+
+stop_commaview_processes() {
+  local pids remaining pid
+  pids="$(commaview_pids | tr '\n' ' ')"
+  [ -n "$pids" ] || return 0
+
+  # shellcheck disable=SC2086
+  kill $pids 2>/dev/null || true
+  for _ in $(seq 1 25); do
+    remaining=""
+    for pid in $pids; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining="$remaining $pid"
+      fi
+    done
+    [ -z "$remaining" ] && return 0
+    sleep 0.2
+  done
+
+  # shellcheck disable=SC2086
+  kill -9 $pids 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    remaining=""
+    for pid in $pids; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining="$remaining $pid"
+      fi
+    done
+    [ -z "$remaining" ] && return 0
+    sleep 0.2
+  done
+
+  return 1
+}
+
+ensure_commaview_stopped() {
+  if ! stop_commaview_processes; then
+    echo "ERROR: failed to stop existing CommaView runtime processes: $(commaview_pids | tr '\n' ' ')" >&2
+    exit 1
+  fi
+  leftover="$(commaview_pids | tr '\n' ' ')"
+  if [ -n "$leftover" ]; then
+    echo "ERROR: CommaView runtime processes still running after stop: $leftover" >&2
+    exit 1
+  fi
+  rm -f "$INSTALL_DIR/run/bridge.pid" "$INSTALL_DIR/run/control.pid"
+}
+
 restore_force_offroad_mode() {
   if [ "$FORCE_OFFROAD_OWNED" = "1" ]; then
     write_param "OffroadMode" "${FORCE_OFFROAD_PREV:-0}"
@@ -466,8 +528,7 @@ fi
 backup_managed_install_tree
 
 echo "Stopping existing CommaView processes..."
-pkill -f "/data/commaview/commaviewd" 2>/dev/null || true
-sleep 1
+ensure_commaview_stopped
 
 clean_managed_install_tree
 

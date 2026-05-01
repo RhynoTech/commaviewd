@@ -4,6 +4,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULTS = REPO_ROOT / "comma4" / "runtime-debug.defaults.json"
 START_SH = REPO_ROOT / "comma4" / "start.sh"
+STOP_SH = REPO_ROOT / "comma4" / "stop.sh"
 INSTALL_SH = REPO_ROOT / "comma4" / "install.sh"
 APPLY_PATCH_SH = REPO_ROOT / "comma4" / "scripts" / "apply_onroad_ui_export_patch.sh"
 VERIFY_PATCH_SH = REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh"
@@ -102,9 +103,35 @@ def test_install_script_stages_release_and_refreshes_pinned_companions_before_mu
     assert 'tar -xzf "$tmpdir/$ASSET_NAME" -C "$STAGED_BUNDLE" --strip-components=1' in text
     assert "backup_managed_install_tree" in text
     assert "restore_previous_install_tree" in text
+    assert "ensure_commaview_stopped" in text
+    assert 'pkill -f "/data/commaview/commaviewd"' not in text
     assert 'INSTALL_SUCCESS=1' in text
     assert text.index('echo "Staging and validating bundle..."') < text.index('echo "Stopping existing CommaView processes..."')
     assert text.index('backup_managed_install_tree') < text.index('echo "Stopping existing CommaView processes..."')
+    assert text.index('ensure_commaview_stopped') < text.index('clean_managed_install_tree')
+
+
+def test_stop_script_kills_only_runtime_processes_without_pkill_self_match():
+    text = STOP_SH.read_text()
+    assert "commaview_pids()" in text
+    assert '/proc/[0-9]*' in text
+    assert '"/data/commaview/commaviewd bridge"' in text
+    assert '"/data/commaview/commaviewd control"' in text
+    assert 'pkill -f' not in text
+    assert 'kill -9 $pids' in text
+    assert 'ERROR: CommaView runtime processes still running' in text
+
+
+def test_install_script_uses_robust_runtime_stop_before_mutating_live_tree():
+    text = INSTALL_SH.read_text()
+    assert "commaview_pids()" in text
+    assert "stop_commaview_processes()" in text
+    assert "ensure_commaview_stopped" in text
+    assert 'kill -9 $pids' in text
+    assert 'rm -f "$INSTALL_DIR/run/bridge.pid" "$INSTALL_DIR/run/control.pid"' in text
+    stop_call = text.index('echo "Stopping existing CommaView processes..."')
+    clean_call = text.index('\nclean_managed_install_tree', stop_call)
+    assert stop_call < clean_call
 
 
 def test_install_script_preserves_patch_flavor_state_and_supports_explicit_current_reinstall():
