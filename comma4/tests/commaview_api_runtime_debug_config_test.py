@@ -145,6 +145,8 @@ def test_verify_patch_script_requires_onroad_projection_markers():
     assert "onroad_projection_present=false" in text
     assert '"onroadProjectionPresent"' in text
     assert "exporter.set_onroad_projection(" in text
+    assert "self._latest_onroad_projection = {" in text
+    assert '"modelTransform": _matrix3_list(model_transform)' in text
     assert "video_frame_matrix=self._cached_matrix" in text
     assert "$onroad_projection_present" in text
 
