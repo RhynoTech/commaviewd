@@ -36,6 +36,7 @@ inline constexpr NamedServicePolicy kDefaultServicePolicies[] = {
   {"deviceState", {ServiceMode::Pass, 0}},
   {"roadCameraState", {ServiceMode::Pass, 0}},
   {"pandaStatesSummary", {ServiceMode::Pass, 0}},
+  {"onroadProjection", {ServiceMode::Pass, 0}},
 };
 
 inline constexpr size_t kDefaultServicePolicyCount = sizeof(kDefaultServicePolicies) / sizeof(kDefaultServicePolicies[0]);

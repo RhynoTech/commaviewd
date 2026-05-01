@@ -36,6 +36,7 @@ def test_runtime_debug_defaults_match_policy_contract():
         "deviceState": {"mode": "pass"},
         "roadCameraState": {"mode": "pass"},
         "pandaStatesSummary": {"mode": "pass"},
+        "onroadProjection": {"mode": "pass"},
     }
 
 
@@ -68,6 +69,7 @@ def test_start_script_seeds_direct_v2_runtime_debug_defaults_and_exports_paths()
     assert '"deviceState":{"mode":"pass"}' in text
     assert '"roadCameraState":{"mode":"pass"}' in text
     assert '"pandaStatesSummary":{"mode":"pass"}' in text
+    assert '"onroadProjection":{"mode":"pass"}' in text
 
     for forbidden in (
         '"commaViewHudLite"',

@@ -29,6 +29,8 @@ assert_contains_fixed '"carParams"' "$BRIDGE_CPP" 'missing carParams subscriptio
 assert_contains_fixed '"deviceState"' "$BRIDGE_CPP" 'missing deviceState subscription'
 assert_contains_fixed '"roadCameraState"' "$BRIDGE_CPP" 'missing roadCameraState subscription'
 assert_contains_fixed '"pandaStatesSummary"' "$BRIDGE_CPP" 'missing pandaStatesSummary subscription'
+assert_contains_fixed '"onroadProjection"' "$BRIDGE_CPP" 'missing onroadProjection subscription'
+assert_contains_fixed 'std::array<const char*, 19> kTelemetryServices' "$BRIDGE_CPP" 'telemetry service table must include service index 18 onroadProjection'
 assert_not_contains_fixed '"commaViewHudLite"' "$BRIDGE_CPP" 'HUD-lite service should be gone'
 assert_not_contains_fixed 'telemetry_index_for_which' "$BRIDGE_CPP" 'legacy event->service index mapping should be removed'
 assert_not_contains_fixed 'car_state_idx' "$BRIDGE_CPP" 'legacy carState sample special-case should be removed'

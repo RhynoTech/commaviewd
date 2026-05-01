@@ -48,6 +48,7 @@ runtime_debug_policy_contract_main() {
   assert_contains_fixed '{"deviceState", {ServiceMode::Pass, 0}}' "$policy_header" 'deviceState telemetry should default to pass'
   assert_contains_fixed '{"roadCameraState", {ServiceMode::Pass, 0}}' "$policy_header" 'roadCameraState telemetry should default to pass'
   assert_contains_fixed '{"pandaStatesSummary", {ServiceMode::Pass, 0}}' "$policy_header" 'pandaStatesSummary telemetry should default to pass'
+  assert_contains_fixed '{"onroadProjection", {ServiceMode::Pass, 0}}' "$policy_header" 'onroadProjection telemetry should default to pass'
   assert_not_contains_fixed '{"commaViewControl", {ServiceMode::Pass, 0}}' "$policy_header" 'legacy commaViewControl runtime policy should be removed'
   assert_not_contains_fixed '{"commaViewScene", {ServiceMode::Pass, 0}}' "$policy_header" 'legacy commaViewScene runtime policy should be removed'
   assert_not_contains_fixed '{"commaViewStatus", {ServiceMode::Pass, 0}}' "$policy_header" 'legacy commaViewStatus runtime policy should be removed'

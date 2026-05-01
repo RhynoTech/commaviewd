@@ -19,6 +19,7 @@
     "carParams": {"mode": "pass"},
     "deviceState": {"mode": "pass"},
     "roadCameraState": {"mode": "pass"},
-    "pandaStatesSummary": {"mode": "pass"}
+    "pandaStatesSummary": {"mode": "pass"},
+    "onroadProjection": {"mode": "pass"}
   }
 }
