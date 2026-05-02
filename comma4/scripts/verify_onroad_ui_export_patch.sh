@@ -138,6 +138,7 @@ service_consts=(
   COMMAVIEW_DEVICE_STATE_SERVICE_INDEX
   COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX
   COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX
+  COMMAVIEW_WIDE_ROAD_CAMERA_STATE_SERVICE_INDEX
 )
 
 payload_markers=(
@@ -159,6 +160,8 @@ payload_markers=(
   'def _device_state_payload(self, ui_state) -> dict:'
   'def _road_camera_state_payload(self, ui_state) -> dict:'
   'def _panda_states_summary_payload(self, ui_state) -> dict:'
+  'def set_onroad_projection('
+  'def _wide_road_camera_state_payload(self, ui_state) -> dict:'
 )
 
 risk_markers=(
@@ -173,6 +176,7 @@ risk_markers=(
   '"wheelOnRightProb": _safe_float(getattr(driver_state, "wheelOnRightProb", 0.0))'
   '"deviceType": _safe_str(device_state.deviceType)'
   '"sensor": _safe_str(getattr(road_camera_state, "sensor", ""))'
+  '"sensor": _safe_str(getattr(wide_camera_state, "sensor", ""))'
   '"startedFrame": _safe_int(getattr(ui_state, "started_frame", 0))'
   '"startedTime": _safe_float(getattr(ui_state, "started_time", 0.0))'
   '"activeCamera": active_camera'

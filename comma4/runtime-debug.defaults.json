@@ -20,6 +20,7 @@
     "deviceState": {"mode": "pass"},
     "roadCameraState": {"mode": "pass"},
     "pandaStatesSummary": {"mode": "pass"},
-    "onroadProjection": {"mode": "pass"}
+    "onroadProjection": {"mode": "pass"},
+    "wideRoadCameraState": {"mode": "pass"}
   }
 }

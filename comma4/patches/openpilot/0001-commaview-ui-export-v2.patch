@@ -254,6 +254,7 @@ index 0000000..8136a25
 +      self._send_json(COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX, self._panda_states_summary_payload(ui_state))
 +      if self._latest_onroad_projection is not None:
 +        self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)
++      self._send_json(COMMAVIEW_WIDE_ROAD_CAMERA_STATE_SERVICE_INDEX, self._wide_road_camera_state_payload(ui_state))
 +    except OSError:
 +      self._close()
 +
@@ -763,6 +764,21 @@ index 0000000..8136a25
 +      payload.update({
 +        "sensor": _safe_str(getattr(road_camera_state, "sensor", "")),
 +        "frameId": _safe_int(getattr(road_camera_state, "frameId", 0)),
++      })
++    return payload
++
++  def _wide_road_camera_state_payload(self, ui_state) -> dict:
++    payload = {
++      "exportVersion": 1,
++      "sensor": "",
++      "frameId": 0,
++      "logMonoTime": self._service_log_mono(ui_state, "wideRoadCameraState"),
++    }
++    if ui_state.sm.recv_frame["wideRoadCameraState"] >= 0:
++      wide_camera_state = ui_state.sm["wideRoadCameraState"]
++      payload.update({
++        "sensor": _safe_str(getattr(wide_camera_state, "sensor", "")),
++        "frameId": _safe_int(getattr(wide_camera_state, "frameId", 0)),
 +      })
 +    return payload
 +
