@@ -130,6 +130,8 @@ run_ref() {
   grep -Fq 'self._update_commaview_camera_export()' "$augmented_road_path" || fail "onroad camera relay call missing for ${label}"
   grep -Fq 'def _update_commaview_camera_export(self):' "$augmented_road_path" || fail "onroad camera relay helper missing for ${label}"
   grep -Fq 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$augmented_road_path" || fail "onroad stream-type camera relay mapping missing for ${label}"
+  grep -Fq 'active_camera="wideRoad" if is_wide_camera else "road"' "$augmented_road_path" || fail "wide onroad projection camera mapping missing for ${label}"
+  grep -Fq 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$helper_path" || fail "immediate onroad projection export missing for ${label}"
   grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$helper_path" || fail "runtime flavor constant missing for ${label}"
   grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$helper_path" || fail "frame version missing for ${label}"
   grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$helper_path" || fail "socket path missing for ${label}"

@@ -231,6 +231,10 @@ index 0000000..8136a25
 +      "liveCalibrationLogMonoTime": live_calib_log_mono,
 +      "logMonoTime": max(road_log_mono, wide_log_mono, model_log_mono, live_calib_log_mono),
 +    }
++    try:
++      self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)
++    except OSError:
++      self._close()
 +
 +  def publish(self, ui_state) -> None:
 +    try:

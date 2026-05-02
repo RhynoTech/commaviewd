@@ -120,6 +120,8 @@ for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
   grep -Fq 'self._update_commaview_camera_export()' "$patch" || fail "$patch missing onroad camera relay call"
   grep -Fq 'def _update_commaview_camera_export(self):' "$patch" || fail "$patch missing onroad camera relay helper"
   grep -Fq 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$patch" || fail "$patch missing stream-type camera relay mapping"
+  grep -Fq 'active_camera="wideRoad" if is_wide_camera else "road"' "$patch" || fail "$patch missing wide onroad projection camera mapping"
+  grep -Fq 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$patch" || fail "$patch missing immediate onroad projection export"
   grep -Fq 'cloudlog.exception("commaview ui export publish failed")' "$patch" || fail "$patch missing publish guardrail"
   grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$patch" || fail "$patch missing torque helper import"
   grep -Fq 'def _torque_bar_value(ui_state) -> float:' "$patch" || fail "$patch missing torque bar helper"

@@ -237,8 +237,10 @@ else
   fi
   if check_fixed 'model_transform = video_transform @ calib_transform' "$AUGMENTED_ROAD_PATH" && \
      check_fixed 'exporter.set_onroad_projection(' "$AUGMENTED_ROAD_PATH" && \
+     check_fixed 'active_camera="wideRoad" if is_wide_camera else "road"' "$AUGMENTED_ROAD_PATH" && \
      check_fixed 'video_frame_matrix=self._cached_matrix' "$AUGMENTED_ROAD_PATH" && \
-     check_fixed 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$AUGMENTED_ROAD_PATH"; then
+     check_fixed 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$AUGMENTED_ROAD_PATH" && \
+     check_fixed 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$HELPER_PATH"; then
     onroad_projection_present=true
   fi
 
