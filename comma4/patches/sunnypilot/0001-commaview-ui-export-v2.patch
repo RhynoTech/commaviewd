@@ -738,6 +738,9 @@ index 0000000..8136a25
 +      "exportVersion": 1,
 +      "openpilotLongitudinalControl": bool(getattr(car_params, "openpilotLongitudinalControl", False)) if car_params is not None else False,
 +      "maxLateralAccel": _safe_float(getattr(car_params, "maxLateralAccel", COMMAVIEW_DEFAULT_MAX_LAT_ACCEL)) if car_params is not None else COMMAVIEW_DEFAULT_MAX_LAT_ACCEL,
++      "carFingerprint": _safe_str(getattr(car_params, "carFingerprint", "")) if car_params is not None else "",
++      "carName": _safe_str(getattr(car_params, "carName", "")) if car_params is not None else "",
++      "carVin": _safe_str(getattr(car_params, "carVin", "")) if car_params is not None else "",
 +      "logMonoTime": 0,
 +    }
 +
@@ -826,9 +829,7 @@ index 31f7648..28a151d 100644
    def _update_calibration(self):
      # Update device camera if not already set
      sm = ui_state.sm
-@@ -351,6 +364,20 @@
-       [0.0, zoom, (h / 2 + y - y_offset) - (cy * zoom)],
-       [0.0, 0.0, 1.0]
+@@ -351,4 +364,17 @@
      ])
 -    self._model_renderer.set_transform(video_transform @ calib_transform)
 -
@@ -847,7 +848,6 @@ index 31f7648..28a151d 100644
 +        )
 +      except Exception:
 +        pass
-+
      return self._cached_matrix
 diff --git a/selfdrive/ui/ui_state.py b/selfdrive/ui/ui_state.py
 index f7a5d44..f18fe6c 100644
