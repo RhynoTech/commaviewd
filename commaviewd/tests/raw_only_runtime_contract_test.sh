@@ -44,6 +44,9 @@ assert_contains_fixed 'RAW_META_ENVELOPE_V4' "$BRIDGE_CPP" 'v4 capnp raw envelop
 assert_contains_fixed 'RAW_META_ENVELOPE_V5' "$BRIDGE_CPP" 'v5 json raw envelope constant missing'
 assert_contains_fixed 'payload[1] = service_index;' "$BRIDGE_CPP" 'raw envelope should store service index after version byte'
 assert_contains_fixed 'put_be32(&payload[2], raw_len);' "$BRIDGE_CPP" 'raw envelope should write length after version and service index'
+assert_contains_fixed 'memcpy(&payload[6], raw_data, raw_len);' "$BRIDGE_CPP" 'raw envelope should copy payload after 6-byte header'
+assert_contains_fixed 'send_meta_raw_frame(client_fd,' "$BRIDGE_CPP" 'telemetry loop should emit raw meta frames'
+assert_contains_fixed 'RAW_META_ENVELOPE_V5,' "$BRIDGE_CPP" 'runtime should emit JSON raw v5 envelopes from ui socket telemetry'
 assert_contains_fixed 'std::thread telemetry_thread' "$BRIDGE_CPP" 'telemetry should run in a dedicated thread'
 assert_contains_fixed "std::mutex send_mutex;" "$BRIDGE_CPP" "per-client send mutex missing"
 assert_contains_fixed "send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex)" "$BRIDGE_CPP" "video path must use locked send helper"
