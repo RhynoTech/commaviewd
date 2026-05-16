@@ -25,4 +25,6 @@ done
 "$LOCAL_DISCOVERY_CONTRACT" >/dev/null
 "$BUNDLE" --help >/dev/null
 
+grep -Fq 'local_discovery_contract_test.sh' "$RUNNER" || { echo "FAIL: run-unit-tests should execute local discovery contract"; exit 1; }
+
 echo "PASS: verification pipeline scripts exist and support --help"

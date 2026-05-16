@@ -98,5 +98,6 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
 
 "$ROOT/tests/control_mode_api_contract_test.sh"
 "$ROOT/tests/control_mode_pairing_integration_test.sh"
+"$ROOT/tests/local_discovery_contract_test.sh"
 "$ROOT/tests/raw_only_runtime_contract_test.sh"
 echo "PASS: commaviewd unit tests passed"

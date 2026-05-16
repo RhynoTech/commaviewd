@@ -354,6 +354,7 @@ std::string discovery_response_json() {
   out << "\"type\":\"commaview.discovery.v1\",";
   out << "\"name\":\"" << json_escape(discovery_device_name()) << "\",";
   out << "\"version\":\"" << json_escape(version) << "\",";
+  out << "\"runtimeVersion\":\"" << json_escape(version) << "\",";
   out << "\"dongleId\":\"" << json_escape(dongleId) << "\",";
   out << "\"dongle_id\":\"" << json_escape(dongleId) << "\",";
   out << "\"deviceModel\":\"" << json_escape(model) << "\",";
