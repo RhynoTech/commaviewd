@@ -145,6 +145,13 @@ jobs:
           TAG='${{ steps.vars.outputs.tag }}'
           ASSET_TGZ="release/${TAG}/commaview-comma4-${TAG}.tar.gz"
           ASSET_SHA="${ASSET_TGZ}.sha256"
+          NOTES_FILE="docs/release/${TAG}-user-facing.md"
+          if [[ ! -f "$NOTES_FILE" ]]; then
+            NOTES_FILE="release/${TAG}/github-release-notes.txt"
+            cat > "$NOTES_FILE" <<EOF
+          Automated release for $TAG
+          EOF
+          fi
 
           release_exists=0
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -157,10 +164,21 @@ jobs:
           fi
 
           if [[ "$release_exists" = "0" ]]; then
-            gh release create "$TAG"               --repo "$GITHUB_REPOSITORY"               --title "$TAG"               --notes "Automated release for $TAG"               --prerelease
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --notes-file "$NOTES_FILE" \
+              --prerelease
+          else
+            gh release edit "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --notes-file "$NOTES_FILE" \
+              --prerelease
           fi
 
-          gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA"             --repo "$GITHUB_REPOSITORY"             --clobber
+          gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
 
 
       - name: Update Firebase current release manifest
