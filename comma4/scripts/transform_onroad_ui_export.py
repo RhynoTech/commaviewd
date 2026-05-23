@@ -10,6 +10,12 @@ from pathlib import Path
 EXPORT_IMPORT = "from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR"
 EXPORT_INSTALL = "self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)"
 EXPORT_PUBLISH = "self._commaview_exporter.publish(self)"
+CAMERA_EXPORT_CALL = "self._update_commaview_camera_export()"
+CAMERA_EXPORT_HELPER = "def _update_commaview_camera_export(self):"
+PROJECTION_EXPORT_CALL = "exporter.set_onroad_projection("
+MODEL_TRANSFORM_ASSIGN = "model_transform = video_transform @ calib_transform"
+MODEL_TRANSFORM_SET = "self._model_renderer.set_transform(model_transform)"
+MODEL_TRANSFORM_ANCHOR = "self._model_renderer.set_transform(video_transform @ calib_transform)"
 
 
 def fail(message: str) -> None:
@@ -124,10 +130,103 @@ def transform_ui_state(ui_state_path: Path) -> bool:
     return changed
 
 
+def transform_augmented_road_view(augmented_path: Path) -> bool:
+    if not augmented_path.exists():
+        return False
+    if not augmented_path.is_file():
+        fail(f"augmented_road_view.py is not a file at {augmented_path}")
+
+    original = augmented_path.read_text()
+    lines = original.splitlines()
+    changed = False
+
+    render_idx = find_single(
+        lines,
+        lambda line: line.strip() == "super()._render(self._content_rect)",
+        "super()._render(self._content_rect) anchor",
+    )
+    camera_call_count = sum(1 for line in lines if line.strip() == CAMERA_EXPORT_CALL)
+    if camera_call_count == 0:
+        render_indent = lines[render_idx][: line_indent(lines[render_idx])]
+        lines.insert(render_idx + 1, f"{render_indent}{CAMERA_EXPORT_CALL}")
+        changed = True
+    elif camera_call_count != 1:
+        fail(f"expected at most one {CAMERA_EXPORT_CALL}, found {camera_call_count}")
+
+    helper_count = sum(1 for line in lines if line.strip().startswith(CAMERA_EXPORT_HELPER))
+    if helper_count == 0:
+        calibration_idx = find_single(
+            lines,
+            lambda line: line.lstrip().startswith("def _update_calibration(self") and line.rstrip().endswith(":"),
+            "_update_calibration method",
+        )
+        method_indent = lines[calibration_idx][: line_indent(lines[calibration_idx])]
+        body_indent = method_indent + "  "
+        helper_block = [
+            f"{method_indent}def _update_commaview_camera_export(self):",
+            f'{body_indent}exporter = getattr(ui_state, "_commaview_exporter", None)',
+            f'{body_indent}if exporter is None or not hasattr(exporter, "set_onroad_camera"):',
+            f"{body_indent}  return",
+            f"{body_indent}try:",
+            f"{body_indent}  exporter.set_onroad_camera(",
+            f'{body_indent}    active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road",',
+            f"{body_indent}    wide_camera_available=bool(WIDE_CAM in self.available_streams),",
+            f"{body_indent}  )",
+            f"{body_indent}except Exception:",
+            f"{body_indent}  pass",
+            "",
+        ]
+        lines[calibration_idx:calibration_idx] = helper_block
+        changed = True
+    elif helper_count != 1:
+        fail(f"expected at most one {CAMERA_EXPORT_HELPER}, found {helper_count}")
+
+    projection_already_transformed = (
+        any(line.strip() == MODEL_TRANSFORM_ASSIGN for line in lines)
+        and any(line.strip() == MODEL_TRANSFORM_SET for line in lines)
+        and any(PROJECTION_EXPORT_CALL in line for line in lines)
+    )
+    transform_matches = [idx for idx, line in enumerate(lines) if line.strip() == MODEL_TRANSFORM_ANCHOR]
+    if projection_already_transformed:
+        if transform_matches:
+            fail(f"unexpected raw {MODEL_TRANSFORM_ANCHOR} after projection export transform")
+    else:
+        if len(transform_matches) != 1:
+            fail(f"expected exactly one {MODEL_TRANSFORM_ANCHOR}, found {len(transform_matches)}")
+        transform_idx = transform_matches[0]
+        transform_indent = lines[transform_idx][: line_indent(lines[transform_idx])]
+        projection_block = [
+            f"{transform_indent}{MODEL_TRANSFORM_ASSIGN}",
+            f"{transform_indent}{MODEL_TRANSFORM_SET}",
+            f'{transform_indent}exporter = getattr(ui_state, "_commaview_exporter", None)',
+            f'{transform_indent}if exporter is not None and hasattr(exporter, "set_onroad_projection"):',
+            f"{transform_indent}  try:",
+            f"{transform_indent}    exporter.set_onroad_projection(",
+            f"{transform_indent}      ui_state=ui_state,",
+            f'{transform_indent}      active_camera="wideRoad" if is_wide_camera else "road",',
+            f"{transform_indent}      content_rect=self._content_rect,",
+            f"{transform_indent}      video_frame_matrix=self._cached_matrix,",
+            f"{transform_indent}      model_transform=model_transform,",
+            f'{transform_indent}      camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0),',
+            f"{transform_indent}    )",
+            f"{transform_indent}  except Exception:",
+            f"{transform_indent}    pass",
+        ]
+        lines[transform_idx : transform_idx + 1] = projection_block
+        changed = True
+
+    new_text = "\n".join(lines) + ("\n" if original.endswith("\n") else "")
+    if new_text != original:
+        augmented_path.write_text(new_text)
+        return True
+    return changed
+
+
 def transform(op_root: Path, flavor: str) -> None:
     if flavor not in {"openpilot", "sunnypilot"}:
         fail(f"unsupported flavor: {flavor}")
     transform_ui_state(op_root / "selfdrive" / "ui" / "ui_state.py")
+    transform_augmented_road_view(op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py")
 
 
 def main(argv: list[str] | None = None) -> int:
