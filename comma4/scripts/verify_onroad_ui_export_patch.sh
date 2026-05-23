@@ -9,7 +9,17 @@ STATE_JSON="$INSTALL_DIR/run/onroad-ui-export-status.json"
 STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
 HELPER_PATH="$OP_ROOT/selfdrive/ui/commaview_export.py"
 UI_STATE_PATH="$OP_ROOT/selfdrive/ui/ui_state.py"
-AUGMENTED_ROAD_PATH="$OP_ROOT/selfdrive/ui/mici/onroad/augmented_road_view.py"
+AUGMENTED_ROAD_PATHS=(
+  "$OP_ROOT/selfdrive/ui/mici/onroad/augmented_road_view.py"
+  "$OP_ROOT/selfdrive/ui/onroad/augmented_road_view.py"
+)
+AUGMENTED_ROAD_PATH="${AUGMENTED_ROAD_PATHS[0]}"
+for candidate in "${AUGMENTED_ROAD_PATHS[@]}"; do
+  if [ -f "$candidate" ]; then
+    AUGMENTED_ROAD_PATH="$candidate"
+    break
+  fi
+done
 JSON_ONLY=0
 
 while [ "$#" -gt 0 ]; do
@@ -218,7 +228,7 @@ else
   if check_fixed 'self._update_commaview_camera_export()' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'def _update_commaview_camera_export(self):' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$AUGMENTED_ROAD_PATH"; then
     onroad_camera_relay_present=true
   fi
-  if check_fixed 'model_transform = video_transform @ calib_transform' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'exporter.set_onroad_projection(' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'active_camera="wideRoad" if is_wide_camera else "road"' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'video_frame_matrix=self._cached_matrix' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$HELPER_PATH"; then
+  if check_fixed 'model_transform = video_transform @ calib_transform' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'exporter.set_onroad_projection(' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'active_camera="wideRoad" if is_wide_camera else "road"' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'video_frame_matrix=self._cached_matrix' "$AUGMENTED_ROAD_PATH" &&      { check_fixed 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$AUGMENTED_ROAD_PATH" || check_fixed 'camera_offset=getattr(self.model_renderer, "_camera_offset", 0.0)' "$AUGMENTED_ROAD_PATH"; } &&      check_fixed 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$HELPER_PATH"; then
     onroad_projection_present=true
   fi
 

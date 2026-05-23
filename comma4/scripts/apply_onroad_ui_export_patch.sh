@@ -218,7 +218,7 @@ flavor="$(detect_flavor)" || {
 }
 template="$SRC_ROOT/commaview_export.${flavor}.py"
 [ -f "$template" ] || { echo "ERROR: missing socket UI export helper template: $template" >&2; exit 1; }
-[ -x "$TRANSFORMER" ] || { echo "ERROR: missing socket UI export transformer: $TRANSFORMER" >&2; exit 1; }
+[ -f "$TRANSFORMER" ] || { echo "ERROR: missing socket UI export transformer: $TRANSFORMER" >&2; exit 1; }
 
 if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then
   request_openpilot_ui_restart

@@ -14,8 +14,12 @@ CAMERA_EXPORT_CALL = "self._update_commaview_camera_export()"
 CAMERA_EXPORT_HELPER = "def _update_commaview_camera_export(self):"
 PROJECTION_EXPORT_CALL = "exporter.set_onroad_projection("
 MODEL_TRANSFORM_ASSIGN = "model_transform = video_transform @ calib_transform"
-MODEL_TRANSFORM_SET = "self._model_renderer.set_transform(model_transform)"
-MODEL_TRANSFORM_ANCHOR = "self._model_renderer.set_transform(video_transform @ calib_transform)"
+MODEL_RENDERER_FIELDS = ("self._model_renderer", "self.model_renderer")
+MODEL_TRANSFORM_ANCHORS = tuple(f"{field}.set_transform(video_transform @ calib_transform)" for field in MODEL_RENDERER_FIELDS)
+AUGMENTED_ROAD_RELATIVE_PATHS = (
+    Path("selfdrive/ui/mici/onroad/augmented_road_view.py"),
+    Path("selfdrive/ui/onroad/augmented_road_view.py"),
+)
 
 
 def fail(message: str) -> None:
@@ -154,11 +158,17 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
     lines = original.splitlines()
     changed = False
 
-    render_idx = find_single(
-        lines,
-        lambda line: line.strip() == "super()._render(self._content_rect)",
-        "super()._render(self._content_rect) anchor",
-    )
+    render_matches = [
+        idx
+        for idx, line in enumerate(lines)
+        if line.strip() in {"super()._render(self._content_rect)", "super()._render(rect)"}
+    ]
+    if len(render_matches) != 1:
+        fail(
+            "expected exactly one augmented road render anchor "
+            f"(super()._render(self._content_rect) or super()._render(rect)), found {len(render_matches)}"
+        )
+    render_idx = render_matches[0]
     camera_call_count = sum(1 for line in lines if line.strip() == CAMERA_EXPORT_CALL)
     if camera_call_count == 0:
         render_indent = lines[render_idx][: line_indent(lines[render_idx])]
@@ -197,21 +207,26 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
 
     projection_already_transformed = (
         any(line.strip() == MODEL_TRANSFORM_ASSIGN for line in lines)
-        and any(line.strip() == MODEL_TRANSFORM_SET for line in lines)
+        and any(line.strip().endswith(".set_transform(model_transform)") for line in lines)
         and any(PROJECTION_EXPORT_CALL in line for line in lines)
     )
-    transform_matches = [idx for idx, line in enumerate(lines) if line.strip() == MODEL_TRANSFORM_ANCHOR]
+    transform_matches = [(idx, line.strip()) for idx, line in enumerate(lines) if line.strip() in MODEL_TRANSFORM_ANCHORS]
     if projection_already_transformed:
         if transform_matches:
-            fail(f"unexpected raw {MODEL_TRANSFORM_ANCHOR} after projection export transform")
+            fail("unexpected raw model renderer transform anchor after projection export transform")
     else:
         if len(transform_matches) != 1:
-            fail(f"expected exactly one {MODEL_TRANSFORM_ANCHOR}, found {len(transform_matches)}")
-        transform_idx = transform_matches[0]
+            fail(
+                "expected exactly one model renderer set_transform(video_transform @ calib_transform) anchor, "
+                f"found {len(transform_matches)}"
+            )
+        transform_idx, transform_anchor = transform_matches[0]
+        renderer_field = transform_anchor.split(".set_transform", 1)[0]
+        model_transform_set = f"{renderer_field}.set_transform(model_transform)"
         transform_indent = lines[transform_idx][: line_indent(lines[transform_idx])]
         projection_block = [
             f"{transform_indent}{MODEL_TRANSFORM_ASSIGN}",
-            f"{transform_indent}{MODEL_TRANSFORM_SET}",
+            f"{transform_indent}{model_transform_set}",
             f'{transform_indent}exporter = getattr(ui_state, "_commaview_exporter", None)',
             f'{transform_indent}if exporter is not None and hasattr(exporter, "set_onroad_projection"):',
             f"{transform_indent}  try:",
@@ -221,7 +236,7 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
             f"{transform_indent}      content_rect=self._content_rect,",
             f"{transform_indent}      video_frame_matrix=self._cached_matrix,",
             f"{transform_indent}      model_transform=model_transform,",
-            f'{transform_indent}      camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0),',
+            f'{transform_indent}      camera_offset=getattr({renderer_field}, "_camera_offset", 0.0),',
             f"{transform_indent}    )",
             f"{transform_indent}  except Exception:",
             f"{transform_indent}    pass",
@@ -241,7 +256,12 @@ def transform(op_root: Path, flavor: str) -> None:
         fail(f"unsupported flavor: {flavor}")
     install_helper_source(op_root, flavor)
     transform_ui_state(op_root / "selfdrive" / "ui" / "ui_state.py")
-    transform_augmented_road_view(op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py")
+
+    augmented_paths = [op_root / relpath for relpath in AUGMENTED_ROAD_RELATIVE_PATHS if (op_root / relpath).exists()]
+    if not augmented_paths:
+        augmented_paths = [op_root / AUGMENTED_ROAD_RELATIVE_PATHS[0]]
+    for augmented_path in augmented_paths:
+        transform_augmented_road_view(augmented_path)
 
 
 def main(argv: list[str] | None = None) -> int:
