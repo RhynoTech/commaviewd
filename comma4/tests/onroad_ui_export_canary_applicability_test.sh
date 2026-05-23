@@ -2,11 +2,11 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OPENPILOT_PATCH="$REPO_ROOT/comma4/patches/openpilot/0001-commaview-ui-export-v2.patch"
-SUNNYPILOT_PATCH="$REPO_ROOT/comma4/patches/sunnypilot/0001-commaview-ui-export-v2.patch"
 CACHE_ROOT="${COMMAVIEWD_CANARY_CACHE_ROOT:-$HOME/.cache/ci-ref-checkouts}"
 OPENPILOT_REPO="${COMMAVIEWD_OPENPILOT_REPO:-https://github.com/commaai/openpilot.git}"
 SUNNYPILOT_REPO="${COMMAVIEWD_SUNNYPILOT_REPO:-https://github.com/sunnypilot/sunnypilot.git}"
+APPLY_SCRIPT="$REPO_ROOT/comma4/scripts/apply_onroad_ui_export_patch.sh"
+VERIFY_SCRIPT="$REPO_ROOT/comma4/scripts/verify_onroad_ui_export_patch.sh"
 
 fail() {
   echo "FAIL: $1" >&2
@@ -32,6 +32,7 @@ service_consts=(
   COMMAVIEW_DEVICE_STATE_SERVICE_INDEX
   COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX
   COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX
+  COMMAVIEW_WIDE_ROAD_CAMERA_STATE_SERVICE_INDEX
 )
 
 payload_markers=(
@@ -53,6 +54,8 @@ payload_markers=(
   'def _device_state_payload(self, ui_state) -> dict:'
   'def _road_camera_state_payload(self, ui_state) -> dict:'
   'def _panda_states_summary_payload(self, ui_state) -> dict:'
+  'def set_onroad_projection('
+  'def _wide_road_camera_state_payload(self, ui_state) -> dict:'
 )
 
 risk_markers=(
@@ -70,11 +73,15 @@ risk_markers=(
   '"wheelOnRightProb": _safe_float(getattr(driver_state, "wheelOnRightProb", 0.0))'
   '"deviceType": _safe_str(device_state.deviceType)'
   '"sensor": _safe_str(getattr(road_camera_state, "sensor", ""))'
+  '"sensor": _safe_str(getattr(wide_camera_state, "sensor", ""))'
   '"startedFrame": _safe_int(getattr(ui_state, "started_frame", 0))'
   '"startedTime": _safe_float(getattr(ui_state, "started_time", 0.0))'
   '"activeCamera": active_camera'
   '"wideCameraAvailable": wide_camera_available'
   'def set_onroad_camera(self, active_camera: str, wide_camera_available: bool) -> None:'
+  'def set_onroad_projection('
+  'self._latest_onroad_projection = {'
+  '"modelTransform": _matrix3_list(model_transform)'
   '"runtimeFlavor": self._flavor'
   '"enabled": bool(getattr(controls_state, "enabled", False))'
   '"active": bool(getattr(controls_state, "active", False))'
@@ -104,8 +111,8 @@ run_ref() {
   local repo="$2"
   local ref="$3"
   local checkout="$4"
-  local patch="$5"
-  local expected_runtime_flavor="$6"
+  local expected_runtime_flavor="$5"
+  local status_json="$REPO_ROOT/comma4/run/onroad-ui-export-status.json"
 
   echo "=== ${label} ==="
   mkdir -p "$(dirname "$checkout")"
@@ -119,8 +126,23 @@ run_ref() {
 
   git -C "$checkout" reset --hard -q HEAD
   git -C "$checkout" clean -fdq
-  git -C "$checkout" apply --recount --check "$patch" || fail "patch does not apply cleanly for ${label}"
-  git -C "$checkout" apply --recount "$patch"
+
+  COMMAVIEWD_INSTALL_DIR="$REPO_ROOT/comma4" \
+    COMMAVIEWD_OP_ROOT="$checkout" \
+    COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART=1 \
+    "$APPLY_SCRIPT" || fail "transformer apply failed for ${label}"
+  COMMAVIEWD_INSTALL_DIR="$REPO_ROOT/comma4" \
+    COMMAVIEWD_OP_ROOT="$checkout" \
+    "$VERIFY_SCRIPT" --json >/dev/null || fail "transformer verify failed for ${label}"
+
+  python3 - <<'PY' "$status_json" "$label"
+import json, sys
+path, label = sys.argv[1:]
+with open(path) as f:
+    status = json.load(f)
+if status.get("method") != "transformer" or not status.get("patchVerified") or status.get("repairNeeded"):
+    raise SystemExit(f"bad transformer status for {label}: {status}")
+PY
 
   helper_path="$checkout/selfdrive/ui/commaview_export.py"
   ui_state_path="$checkout/selfdrive/ui/ui_state.py"
@@ -134,6 +156,8 @@ run_ref() {
   grep -Fq 'def _update_commaview_camera_export(self):' "$augmented_road_path" || fail "onroad camera relay helper missing for ${label}"
   grep -Fq 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$augmented_road_path" || fail "onroad stream-type camera relay mapping missing for ${label}"
   grep -Fq 'active_camera="wideRoad" if is_wide_camera else "road"' "$augmented_road_path" || fail "wide onroad projection camera mapping missing for ${label}"
+  grep -Fq 'model_transform = video_transform @ calib_transform' "$augmented_road_path" || fail "model transform assignment missing for ${label}"
+  grep -Fq 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$augmented_road_path" || fail "projection camera offset missing for ${label}"
   grep -Fq 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$helper_path" || fail "immediate onroad projection export missing for ${label}"
   grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$helper_path" || fail "runtime flavor constant missing for ${label}"
   grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$helper_path" || fail "frame version missing for ${label}"
@@ -167,15 +191,25 @@ run_ref() {
     ! grep -Fq "$marker" "$helper_path" || fail "legacy marker still present for ${label}: $marker"
   done
 
-  printf '%s\n' '{"healthy":false,"patchVerified":true,"statusScope":"patch-installation","repairNeeded":false,"state":"patch-verified","reason":"upstream-organized socket ui export verified on real canary ref"}'
+  printf '%s\n' "{\"healthy\":false,\"patchVerified\":true,\"method\":\"transformer\",\"statusScope\":\"patch-installation\",\"repairNeeded\":false,\"state\":\"patch-verified\",\"reason\":\"source transformer socket ui export verified on real canary ref\"}"
 
   git -C "$checkout" reset --hard -q HEAD
   git -C "$checkout" clean -fdq
 }
 
-run_ref 'openpilot release-mici-staging' "$OPENPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/openpilot-release-mici-staging" "$OPENPILOT_PATCH" 'OPENPILOT'
-run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-nightly" "$OPENPILOT_PATCH" 'OPENPILOT'
-run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" "$SUNNYPILOT_PATCH" 'SUNNYPILOT'
-run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" "$SUNNYPILOT_PATCH" 'SUNNYPILOT'
+run_ref 'openpilot master' "$OPENPILOT_REPO" 'master' "$CACHE_ROOT/openpilot-master" 'OPENPILOT'
+run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-nightly" 'OPENPILOT'
+run_ref 'openpilot release-mici' "$OPENPILOT_REPO" 'release-mici' "$CACHE_ROOT/openpilot-release-mici" 'OPENPILOT'
+run_ref 'openpilot release-mici-staging' "$OPENPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/openpilot-release-mici-staging" 'OPENPILOT'
+run_ref 'openpilot release-tizi' "$OPENPILOT_REPO" 'release-tizi' "$CACHE_ROOT/openpilot-release-tizi" 'OPENPILOT'
+run_ref 'openpilot release-tizi-staging' "$OPENPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/openpilot-release-tizi-staging" 'OPENPILOT'
 
-echo 'PASS: upstream-organized socket UI export patch applies and verifies on real canary refs'
+run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" 'SUNNYPILOT'
+run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" 'SUNNYPILOT'
+run_ref 'sunnypilot release-mici' "$SUNNYPILOT_REPO" 'release-mici' "$CACHE_ROOT/sunnypilot-release-mici" 'SUNNYPILOT'
+run_ref 'sunnypilot release-mici-staging' "$SUNNYPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/sunnypilot-release-mici-staging" 'SUNNYPILOT'
+run_ref 'sunnypilot release-tizi' "$SUNNYPILOT_REPO" 'release-tizi' "$CACHE_ROOT/sunnypilot-release-tizi" 'SUNNYPILOT'
+run_ref 'sunnypilot release-tizi-staging' "$SUNNYPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/sunnypilot-release-tizi-staging" 'SUNNYPILOT'
+run_ref 'sunnypilot master-tici' "$SUNNYPILOT_REPO" 'master-tici' "$CACHE_ROOT/sunnypilot-master-tici" 'SUNNYPILOT'
+
+echo 'PASS: source transformer socket UI export applies and verifies on real canary refs'
