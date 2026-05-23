@@ -304,8 +304,6 @@ required_files=(
   "scripts/transform_onroad_ui_export.py"
   "src/commaview_export.openpilot.py"
   "src/commaview_export.sunnypilot.py"
-  "patches/openpilot/0001-commaview-ui-export-v2.patch"
-  "patches/sunnypilot/0001-commaview-ui-export-v2.patch"
 )
 
 refresh_required_files() {
@@ -369,8 +367,6 @@ deploy_required_scripts() {
   copy_required_file "scripts/transform_onroad_ui_export.py" "$INSTALL_DIR/scripts/transform_onroad_ui_export.py"
   copy_required_file "src/commaview_export.openpilot.py" "$INSTALL_DIR/src/commaview_export.openpilot.py" 644
   copy_required_file "src/commaview_export.sunnypilot.py" "$INSTALL_DIR/src/commaview_export.sunnypilot.py" 644
-  copy_required_file "patches/openpilot/0001-commaview-ui-export-v2.patch" "$INSTALL_DIR/patches/openpilot/0001-commaview-ui-export-v2.patch" 644
-  copy_required_file "patches/sunnypilot/0001-commaview-ui-export-v2.patch" "$INSTALL_DIR/patches/sunnypilot/0001-commaview-ui-export-v2.patch" 644
   copy_required_file "stop.sh" "$INSTALL_DIR/stop.sh"
   copy_required_file "uninstall.sh" "$INSTALL_DIR/uninstall.sh"
 

@@ -3,7 +3,8 @@ set -euo pipefail
 
 INSTALL_DIR="${COMMAVIEWD_INSTALL_DIR:-/data/commaview}"
 OP_ROOT="${COMMAVIEWD_OP_ROOT:-/data/openpilot}"
-PATCH_ROOT="$INSTALL_DIR/patches"
+SRC_ROOT="$INSTALL_DIR/src"
+TRANSFORMER="$INSTALL_DIR/scripts/transform_onroad_ui_export.py"
 VERIFY_SCRIPT="$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
 STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
 RESTART_MARKER="$INSTALL_DIR/run/onroad-ui-export-ui-restart-needed"
@@ -62,7 +63,7 @@ restart_openpilot_ui_if_offroad() {
     return 0
   fi
 
-  echo "INFO: restarting openpilot UI to load CommaView onroad UI export patch" >&2
+  echo "INFO: restarting openpilot UI to load CommaView onroad UI export transformer output" >&2
   pkill -INT -f "selfdrive.ui.ui" 2>/dev/null || true
   sleep 2
   rm -f "$RESTART_MARKER"
@@ -95,13 +96,13 @@ ensure_offroad_ready() {
   fi
 
   if [ "$FORCE_OFFROAD" != "1" ]; then
-    echo "ERROR: socket UI export patch apply blocked while onroad" >&2
+    echo "ERROR: socket UI export transformer apply blocked while onroad" >&2
     exit 42
   fi
 
   FORCE_OFFROAD_PREV="$(read_param OffroadMode)"
   if [ "$FORCE_OFFROAD_PREV" != "1" ]; then
-    echo "INFO: requesting OffroadMode for patch apply" >&2
+    echo "INFO: requesting OffroadMode for transformer apply" >&2
     write_param "OffroadMode" "1"
     FORCE_OFFROAD_OWNED=1
   fi
@@ -130,13 +131,14 @@ if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 1
 fi
 
-patch_targets() {
-  local patch_file="$1"
-  grep '^+++ b/' "$patch_file" | sed 's#^+++ b/##'
+managed_targets() {
+  printf '%s\n' \
+    "selfdrive/ui/commaview_export.py" \
+    "selfdrive/ui/ui_state.py" \
+    "selfdrive/ui/mici/onroad/augmented_road_view.py"
 }
 
-backup_patch_targets() {
-  local patch_file="$1"
+backup_managed_targets() {
   local backup_root="$INSTALL_DIR/backups/onroad-ui-export/$(date -u +%Y%m%d-%H%M%S)"
   local rel=""
   mkdir -p "$backup_root"
@@ -146,21 +148,19 @@ backup_patch_targets() {
       mkdir -p "$backup_root/$(dirname "$rel")"
       cp -a "$OP_ROOT/$rel" "$backup_root/$rel"
     fi
-  done < <(patch_targets "$patch_file")
+  done < <(managed_targets)
   printf '%s\n' "$backup_root"
 }
 
-dirty_patch_targets() {
-  local patch_file="$1"
+dirty_managed_targets() {
   local rel=""
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     git -C "$OP_ROOT" status --porcelain -- "$rel"
-  done < <(patch_targets "$patch_file")
+  done < <(managed_targets)
 }
 
-reset_patch_targets() {
-  local patch_file="$1"
+reset_managed_targets() {
   local rel=""
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
@@ -170,31 +170,26 @@ reset_patch_targets() {
     else
       rm -f "$OP_ROOT/$rel"
     fi
-  done < <(patch_targets "$patch_file")
+  done < <(managed_targets)
 }
 
-force_repair_patch_targets() {
-  local patch_file="$1"
+force_repair_managed_targets() {
   local backup_root=""
-  backup_root="$(backup_patch_targets "$patch_file")"
-  echo "WARN: force repairing managed onroad UI export patch targets" >&2
+  backup_root="$(backup_managed_targets)"
+  echo "WARN: force repairing managed onroad UI export transformer targets" >&2
   echo "WARN: backups written to $backup_root" >&2
-  reset_patch_targets "$patch_file"
+  reset_managed_targets
 }
 
 detect_flavor() {
   local preferred=""
   local remote=""
-  local flavor=""
-  local patch=""
-  local matches=""
 
   if [ -f "$STATE_ENV" ]; then
     # shellcheck disable=SC1090
     . "$STATE_ENV" || true
-    if [ "${ONROAD_UI_EXPORT_OP_ROOT:-}" = "$OP_ROOT" ] && [ -n "${ONROAD_UI_EXPORT_FLAVOR:-}" ] && [ -f "$PATCH_ROOT/$ONROAD_UI_EXPORT_FLAVOR/0001-commaview-ui-export-v2.patch" ]; then
-      printf '%s
-' "$ONROAD_UI_EXPORT_FLAVOR"
+    if [ "${ONROAD_UI_EXPORT_OP_ROOT:-}" = "$OP_ROOT" ] && [ -n "${ONROAD_UI_EXPORT_FLAVOR:-}" ] && [ -f "$SRC_ROOT/commaview_export.${ONROAD_UI_EXPORT_FLAVOR}.py" ]; then
+      printf '%s\n' "$ONROAD_UI_EXPORT_FLAVOR"
       return 0
     fi
   fi
@@ -204,49 +199,26 @@ detect_flavor() {
     preferred='sunnypilot'
   elif printf '%s' "$remote" | grep -qi 'openpilot'; then
     preferred='openpilot'
-  elif grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"' "$OP_ROOT/selfdrive/ui/commaview_export.py" 2>/dev/null || [ -d "$OP_ROOT/selfdrive/ui/mici" ]; then
+  elif grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"' "$OP_ROOT/selfdrive/ui/commaview_export.py" 2>/dev/null; then
     preferred='sunnypilot'
   elif grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR = "OPENPILOT"' "$OP_ROOT/selfdrive/ui/commaview_export.py" 2>/dev/null; then
     preferred='openpilot'
   fi
 
-  for flavor in openpilot sunnypilot; do
-    patch="$PATCH_ROOT/$flavor/0001-commaview-ui-export-v2.patch"
-    [ -f "$patch" ] || continue
-    if git -C "$OP_ROOT" apply --recount --reverse --check "$patch" >/dev/null 2>&1 ||        git -C "$OP_ROOT" apply --recount --check "$patch" >/dev/null 2>&1; then
-      matches="$matches $flavor"
-    fi
-  done
-
-  set -- $matches
-  if [ "$#" -eq 0 ] && [ -n "$preferred" ] && [ -f "$PATCH_ROOT/$preferred/0001-commaview-ui-export-v2.patch" ]; then
-    printf '%s
-' "$preferred"
+  if [ -n "$preferred" ] && [ -f "$SRC_ROOT/commaview_export.${preferred}.py" ]; then
+    printf '%s\n' "$preferred"
     return 0
-  fi
-  if [ "$#" -eq 1 ]; then
-    printf '%s
-' "$1"
-    return 0
-  fi
-  if [ "$#" -gt 1 ] && [ -n "$preferred" ]; then
-    for flavor in "$@"; do
-      if [ "$flavor" = "$preferred" ]; then
-        printf '%s
-' "$preferred"
-        return 0
-      fi
-    done
   fi
   return 1
 }
 
 flavor="$(detect_flavor)" || {
-  echo "ERROR: unable to determine supported socket UI export patch flavor for $OP_ROOT" >&2
+  echo "ERROR: unable to determine supported socket UI export transformer flavor for $OP_ROOT" >&2
   exit 1
 }
-patch="$PATCH_ROOT/$flavor/0001-commaview-ui-export-v2.patch"
-[ -f "$patch" ] || { echo "ERROR: missing socket UI export patch asset: $patch" >&2; exit 1; }
+template="$SRC_ROOT/commaview_export.${flavor}.py"
+[ -f "$template" ] || { echo "ERROR: missing socket UI export helper template: $template" >&2; exit 1; }
+[ -x "$TRANSFORMER" ] || { echo "ERROR: missing socket UI export transformer: $TRANSFORMER" >&2; exit 1; }
 
 if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then
   request_openpilot_ui_restart
@@ -254,35 +226,23 @@ if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --j
   exit 0
 fi
 
-if ! git -C "$OP_ROOT" apply --recount --reverse --check "$patch" >/dev/null 2>&1; then
-  if ! git -C "$OP_ROOT" apply --recount --check "$patch" >/dev/null 2>&1; then
-    if [ "$FORCE_REPAIR" != "1" ]; then
-      echo "ERROR: onroad UI export patch does not apply cleanly to $OP_ROOT" >&2
-      echo "ERROR: refusing to reset managed patch targets without --force-repair" >&2
-      echo "ERROR: upstream may have changed; review patch compatibility before repairing" >&2
-      exit 43
-    fi
-    force_repair_patch_targets "$patch"
-    git -C "$OP_ROOT" apply --recount --check "$patch"
-  elif dirty_targets="$(dirty_patch_targets "$patch")" && [ -n "$dirty_targets" ]; then
-    if [ "$FORCE_REPAIR" != "1" ]; then
-      echo "ERROR: onroad UI export patch target files have local changes:" >&2
-      printf '%s\n' "$dirty_targets" >&2
-      echo "ERROR: refusing to modify dirty upstream files without --force-repair" >&2
-      exit 44
-    fi
-    force_repair_patch_targets "$patch"
-    git -C "$OP_ROOT" apply --recount --check "$patch"
+if dirty_targets="$(dirty_managed_targets)" && [ -n "$dirty_targets" ]; then
+  if [ "$FORCE_REPAIR" != "1" ]; then
+    echo "ERROR: onroad UI export transformer target files have local changes:" >&2
+    printf '%s\n' "$dirty_targets" >&2
+    echo "ERROR: refusing to modify dirty upstream files without --force-repair" >&2
+    exit 44
   fi
-  git -C "$OP_ROOT" apply --recount "$patch"
+  force_repair_managed_targets
+elif [ "$FORCE_REPAIR" = "1" ]; then
+  force_repair_managed_targets
 fi
 
-fingerprint="$(sha256sum "$patch" | awk '{print $1}')"
+python3 "$TRANSFORMER" --op-root "$OP_ROOT" --flavor "$flavor"
+
+fingerprint="$(sha256sum "$TRANSFORMER" "$template" | sha256sum | awk '{print $1}')"
 mkdir -p "$(dirname "$STATE_ENV")"
-printf 'ONROAD_UI_EXPORT_FLAVOR=%s
-ONROAD_UI_EXPORT_PATCH_SHA=%s
-ONROAD_UI_EXPORT_OP_ROOT=%s
-' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
+printf 'ONROAD_UI_EXPORT_FLAVOR=%s\nONROAD_UI_EXPORT_METHOD=transformer\nONROAD_UI_EXPORT_TRANSFORMER_SHA=%s\nONROAD_UI_EXPORT_OP_ROOT=%s\n' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
 
 if [ -x "$VERIFY_SCRIPT" ]; then
   request_openpilot_ui_restart

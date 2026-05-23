@@ -2,8 +2,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OPENPILOT_PATCH="$REPO_ROOT/comma4/patches/openpilot/0001-commaview-ui-export-v2.patch"
-SUNNYPILOT_PATCH="$REPO_ROOT/comma4/patches/sunnypilot/0001-commaview-ui-export-v2.patch"
+OPENPILOT_TEMPLATE="$REPO_ROOT/comma4/src/commaview_export.openpilot.py"
+SUNNYPILOT_TEMPLATE="$REPO_ROOT/comma4/src/commaview_export.sunnypilot.py"
+TRANSFORMER="$REPO_ROOT/comma4/scripts/transform_onroad_ui_export.py"
+INSTALLER="$REPO_ROOT/comma4/install.sh"
+APPLY_SCRIPT="$REPO_ROOT/comma4/scripts/apply_onroad_ui_export_patch.sh"
+VERIFY_SCRIPT="$REPO_ROOT/comma4/scripts/verify_onroad_ui_export_patch.sh"
 
 fail() {
   echo "FAIL: $1" >&2
@@ -101,55 +105,65 @@ legacy_markers=(
   'def _speed_limit_pre_active_icon(self, ui_state) -> str:'
 )
 
-for patch in "$OPENPILOT_PATCH" "$SUNNYPILOT_PATCH"; do
-  [[ -f "$patch" ]] || fail "missing patch $patch"
+[[ -f "$TRANSFORMER" ]] || fail "missing transformer $TRANSFORMER"
+[[ -f "$APPLY_SCRIPT" ]] || fail "missing apply script $APPLY_SCRIPT"
+[[ -f "$VERIFY_SCRIPT" ]] || fail "missing verify script $VERIFY_SCRIPT"
+grep -Fq 'python3 "$TRANSFORMER" --op-root "$OP_ROOT" --flavor "$flavor"' "$APPLY_SCRIPT" || fail "apply script does not invoke transformer"
+grep -Fq 'ONROAD_UI_EXPORT_METHOD=transformer' "$APPLY_SCRIPT" || fail "apply script does not persist transformer method"
+grep -Fq '"method":"%s"' "$VERIFY_SCRIPT" || fail "verify status missing method field"
+grep -Fq '"src/commaview_export.openpilot.py"' "$INSTALLER" || fail "installer missing openpilot helper template"
+grep -Fq '"src/commaview_export.sunnypilot.py"' "$INSTALLER" || fail "installer missing sunnypilot helper template"
+grep -Fq '"scripts/transform_onroad_ui_export.py"' "$INSTALLER" || fail "installer missing transformer script"
+! grep -Fq 'git -C "$OP_ROOT" apply' "$APPLY_SCRIPT" || fail "apply script still uses static git apply lifecycle"
+
+for template in "$OPENPILOT_TEMPLATE" "$SUNNYPILOT_TEMPLATE"; do
+  [[ -f "$template" ]] || fail "missing helper template $template"
   expected_runtime_flavor='OPENPILOT'
-  if [[ "$patch" == *'/sunnypilot/'* ]]; then
+  if [[ "$template" == *'.sunnypilot.py' ]]; then
     expected_runtime_flavor='SUNNYPILOT'
   fi
 
-  grep -Fq 'diff --git a/selfdrive/ui/commaview_export.py b/selfdrive/ui/commaview_export.py' "$patch" || fail "$patch missing helper file diff"
-  grep -Fq 'diff --git a/selfdrive/ui/mici/onroad/augmented_road_view.py b/selfdrive/ui/mici/onroad/augmented_road_view.py' "$patch" || fail "$patch missing augmented_road_view camera relay diff"
-  grep -Fq 'from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR' "$patch" || fail "$patch missing ui_state exporter import"
-  grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$patch" || fail "$patch missing runtime flavor constant"
-  grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$patch" || fail "$patch missing frame version"
-  grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$patch" || fail "$patch missing default socket path"
-  grep -Fq 'os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT' "$patch" || fail "$patch missing socket env override"
-  grep -Fq 'socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' "$patch" || fail "$patch missing unix socket client"
-  grep -Fq 'struct.pack(">I", len(frame)) + frame' "$patch" || fail "$patch missing framing"
-  grep -Fq 'json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")' "$patch" || fail "$patch missing compact json encoding"
-  grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$patch" || fail "$patch missing exporter installation"
-  grep -Fq 'self._commaview_exporter.publish(self)' "$patch" || fail "$patch missing exporter publish call"
-  grep -Fq 'self._update_commaview_camera_export()' "$patch" || fail "$patch missing onroad camera relay call"
-  grep -Fq 'def _update_commaview_camera_export(self):' "$patch" || fail "$patch missing onroad camera relay helper"
-  grep -Fq 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$patch" || fail "$patch missing stream-type camera relay mapping"
-  grep -Fq 'active_camera="wideRoad" if is_wide_camera else "road"' "$patch" || fail "$patch missing wide onroad projection camera mapping"
-  grep -Fq 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$patch" || fail "$patch missing immediate onroad projection export"
-  grep -Fq 'cloudlog.exception("commaview ui export publish failed")' "$patch" || fail "$patch missing publish guardrail"
-  grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$patch" || fail "$patch missing torque helper import"
-  grep -Fq 'def _torque_bar_value(ui_state) -> float:' "$patch" || fail "$patch missing torque bar helper"
+  grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$template" || fail "$template missing runtime flavor constant"
+  grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$template" || fail "$template missing frame version"
+  grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$template" || fail "$template missing default socket path"
+  grep -Fq 'os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT' "$template" || fail "$template missing socket env override"
+  grep -Fq 'socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' "$template" || fail "$template missing unix socket client"
+  grep -Fq 'struct.pack(">I", len(frame)) + frame' "$template" || fail "$template missing framing"
+  grep -Fq 'json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")' "$template" || fail "$template missing compact json encoding"
+  grep -Fq 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$template" || fail "$template missing immediate onroad projection export"
+  grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$template" || fail "$template missing torque helper import"
+  grep -Fq 'def _torque_bar_value(ui_state) -> float:' "$template" || fail "$template missing torque bar helper"
 
   for marker in "${payload_markers[@]}"; do
-    grep -Fq "$marker" "$patch" || fail "$patch missing payload marker: $marker"
+    grep -Fq "$marker" "$template" || fail "$template missing payload marker: $marker"
   done
 
   for const_name in "${service_consts[@]}"; do
-    grep -Fq "self._send_json(${const_name}, self._" "$patch" || fail "$patch missing publish path for $const_name"
+    grep -Fq "self._send_json(${const_name}, self._" "$template" || fail "$template missing publish path for $const_name"
   done
 
   for marker in "${risk_markers[@]}"; do
-    grep -Fq "$marker" "$patch" || fail "$patch missing risk-field marker: $marker"
+    grep -Fq "$marker" "$template" || fail "$template missing risk-field marker: $marker"
   done
 
-  if [[ "$patch" == *'/sunnypilot/'* ]]; then
-    grep -Fq '"rainbowPathEnabled": bool(getattr(ui_state, "rainbow_path", ui_state.params.get_bool("RainbowMode")))' "$patch" || fail "$patch missing truthful sunnypilot rainbow export"
+  if [[ "$template" == *'.sunnypilot.py' ]]; then
+    grep -Fq '"rainbowPathEnabled": bool(getattr(ui_state, "rainbow_path", ui_state.params.get_bool("RainbowMode")))' "$template" || fail "$template missing truthful sunnypilot rainbow export"
   else
-    grep -Fq '"rainbowPathEnabled": False' "$patch" || fail "$patch should pin rainbowPathEnabled false for openpilot"
+    grep -Fq '"rainbowPathEnabled": False' "$template" || fail "$template should pin rainbowPathEnabled false for openpilot"
   fi
 
   for marker in "${legacy_markers[@]}"; do
-    ! grep -Fq "$marker" "$patch" || fail "$patch still contains legacy marker: $marker"
+    ! grep -Fq "$marker" "$template" || fail "$template still contains legacy marker: $marker"
   done
 done
 
-echo "PASS: upstream-organized socket UI export patch contract present"
+grep -Fq 'from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR' "$TRANSFORMER" || fail "transformer missing ui_state exporter import marker"
+grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$TRANSFORMER" || fail "transformer missing exporter installation marker"
+grep -Fq 'self._commaview_exporter.publish(self)' "$TRANSFORMER" || fail "transformer missing exporter publish marker"
+grep -Fq 'self._update_commaview_camera_export()' "$TRANSFORMER" || fail "transformer missing onroad camera relay call marker"
+grep -Fq 'def _update_commaview_camera_export(self):' "$TRANSFORMER" || fail "transformer missing onroad camera relay helper marker"
+grep -Fq 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$TRANSFORMER" || fail "transformer missing stream-type camera relay mapping"
+grep -Fq 'active_camera="wideRoad" if is_wide_camera else "road"' "$TRANSFORMER" || fail "transformer missing wide onroad projection camera mapping"
+grep -Fq 'cloudlog.exception("commaview ui export publish failed")' "$TRANSFORMER" || fail "transformer missing publish guardrail"
+
+echo "PASS: source transformer socket UI export contract present"
