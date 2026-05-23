@@ -66,6 +66,20 @@ def ensure_export_import(lines: list[str]) -> bool:
     return True
 
 
+def install_helper_source(op_root: Path, flavor: str) -> bool:
+    template_path = Path(__file__).resolve().parents[1] / "src" / f"commaview_export.{flavor}.py"
+    if not template_path.is_file():
+        fail(f"missing commaview export helper template: {template_path}")
+
+    target_path = op_root / "selfdrive" / "ui" / "commaview_export.py"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    template = template_path.read_text()
+    if target_path.exists() and target_path.read_text() == template:
+        return False
+    target_path.write_text(template)
+    return True
+
+
 def transform_ui_state(ui_state_path: Path) -> bool:
     if not ui_state_path.is_file():
         fail(f"missing ui_state.py at {ui_state_path}")
@@ -225,6 +239,7 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
 def transform(op_root: Path, flavor: str) -> None:
     if flavor not in {"openpilot", "sunnypilot"}:
         fail(f"unsupported flavor: {flavor}")
+    install_helper_source(op_root, flavor)
     transform_ui_state(op_root / "selfdrive" / "ui" / "ui_state.py")
     transform_augmented_road_view(op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py")
 

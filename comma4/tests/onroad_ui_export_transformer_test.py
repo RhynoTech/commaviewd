@@ -9,6 +9,7 @@ TRANSFORMER = REPO_ROOT / "comma4" / "scripts" / "transform_onroad_ui_export.py"
 EXPORT_IMPORT = "from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR"
 EXPORT_INSTALL = "self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)"
 EXPORT_PUBLISH = "self._commaview_exporter.publish(self)"
+HELPER_PATH = Path("selfdrive/ui/commaview_export.py")
 
 
 def write_upstream_tree(tmp_path: Path, *, ui_state: str, augmented_road_view: str | None = None) -> Path:
@@ -119,6 +120,17 @@ def test_transformer_handles_old_inline_params_ui_state_layout(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert_ui_state_transformed(op_root / "selfdrive" / "ui" / "ui_state.py")
+
+
+def test_transformer_installs_openpilot_export_helper_template(tmp_path):
+    op_root = write_upstream_tree(tmp_path, ui_state=OLD_UI_STATE)
+
+    result = run_transformer(op_root)
+
+    assert result.returncode == 0, result.stderr
+    helper_text = (op_root / HELPER_PATH).read_text()
+    assert 'COMMAVIEW_RUNTIME_FLAVOR = "OPENPILOT"' in helper_text
+    assert "class _CommaViewSocketExporter:" in helper_text
 
 
 def test_transformer_handles_new_background_params_ui_state_layout(tmp_path):
