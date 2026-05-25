@@ -1,0 +1,171 @@
+name: commaviewd-device-test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: commaviewd-device-test-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build-device-test:
+    name: device-test (${{ matrix.target.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: openpilot-release-mici-staging
+            upstream_repo: commaai/openpilot
+            upstream_ref: release-mici-staging
+          - name: sunnypilot-staging
+            upstream_repo: sunnypilot/sunnypilot
+            upstream_ref: staging
+
+    steps:
+      - name: Checkout CommaView
+        uses: actions/checkout@v6
+
+      - name: Restore apt package cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/commaview-apt/archives
+          key: apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-v1
+          restore-keys: |
+            apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-
+
+      - name: Install toolchain + deps
+        id: armcapnp
+        run: ./scripts/install-commaviewd-toolchain.sh
+
+      - name: Resolve upstream SHA
+        id: upstream
+        run: |
+          set -euo pipefail
+          REPO='${{ matrix.target.upstream_repo }}'
+          REF='${{ matrix.target.upstream_ref }}'
+          SHA="$(git ls-remote "https://github.com/${REPO}.git" "refs/heads/${REF}" | awk '{print $1}')"
+          if [[ -z "$SHA" ]]; then
+            SHA="$(git ls-remote "https://github.com/${REPO}.git" "refs/tags/${REF}" | awk '{print $1}')"
+          fi
+          if [[ -z "$SHA" ]]; then
+            SHA="$REF"
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Restore upstream source cache
+        id: upstream-cache
+        uses: actions/cache@v5
+        with:
+          path: openpilot-src
+          key: upstream-src-${{ runner.os }}-${{ matrix.target.upstream_repo }}-${{ steps.upstream.outputs.sha }}
+
+      - name: Checkout upstream source
+        if: steps.upstream-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ matrix.target.upstream_repo }}
+          ref: ${{ matrix.target.upstream_ref }}
+          path: openpilot-src
+          submodules: recursive
+
+      - name: Onroad UI export transformer apply/verify
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/apply_onroad_ui_export_patch.sh
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/verify_onroad_ui_export_patch.sh --json >/dev/null
+          cp "${{ github.workspace }}/comma4/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
+          git -C "${{ github.workspace }}/openpilot-src" reset --hard -q HEAD
+          git -C "${{ github.workspace }}/openpilot-src" clean -fdq
+
+      - name: Run commaviewd verification pipeline
+        env:
+          OP_ROOT: ${{ github.workspace }}/openpilot-src
+          ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
+          ARM_KJ_SO: ${{ steps.armcapnp.outputs.arm_kj_so }}
+          RELEASE_SMOKE_TAG: device-test-smoke-${{ matrix.target.name }}-${{ github.run_id }}
+        run: |
+          set -euxo pipefail
+          commaviewd/scripts/run-verification.sh
+
+      - name: Build device-test bundle
+        id: bundle
+        env:
+          OP_ROOT: ${{ github.workspace }}/openpilot-src
+          ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
+          ARM_KJ_SO: ${{ steps.armcapnp.outputs.arm_kj_so }}
+        run: |
+          set -euxo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          tag="device-test-${{ matrix.target.name }}-${short_sha}-${{ github.run_id }}"
+          tools/release/comma4-build-bundle.sh "$tag"
+          asset="release/${tag}/commaview-comma4-${tag}.tar.gz"
+          sha_file="${asset}.sha256"
+          sha256="$(sha256sum "$asset" | awk '{print $1}')"
+          checksum_file_sha="$(awk '{print $1}' "$sha_file")"
+          [[ "$sha256" == "$checksum_file_sha" ]]
+          cat > dist/device-test-manifest.json <<JSON
+          {
+            "kind": "commaviewd-device-test",
+            "target": "${{ matrix.target.name }}",
+            "commaviewdSha": "${GITHUB_SHA}",
+            "commaviewdShortSha": "${short_sha}",
+            "githubRunId": "${{ github.run_id }}",
+            "githubRunAttempt": "${{ github.run_attempt }}",
+            "upstreamRepo": "${{ matrix.target.upstream_repo }}",
+            "upstreamRef": "${{ matrix.target.upstream_ref }}",
+            "upstreamSha": "${{ steps.upstream.outputs.sha }}",
+            "bundleTag": "${tag}",
+            "bundlePath": "${asset}",
+            "sha256Path": "${sha_file}",
+            "sha256": "${sha256}",
+            "onroadUiExportStatus": "dist/onroad-ui-export-status.json"
+          }
+          JSON
+          python3 -m json.tool dist/device-test-manifest.json >/dev/null
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "sha_file=$sha_file" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload device-test artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: commaviewd-device-test-${{ matrix.target.name }}-${{ github.sha }}
+          path: |
+            ${{ steps.bundle.outputs.asset }}
+            ${{ steps.bundle.outputs.sha_file }}
+            dist/device-test-manifest.json
+            dist/reproducible-build-manifest.json
+            dist/upstream-interface-manifest.json
+            dist/binary-contract.json
+            dist/release-smoke-manifest.json
+            dist/onroad-ui-export-status.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Device-test summary
+        if: always()
+        run: |
+          {
+            echo "### commaviewd device-test (${{ matrix.target.name }})"
+            echo "- This is not a GitHub Release and does not update live alpha/current-release pointers."
+            echo "- CommaViewD SHA: \`${GITHUB_SHA}\`"
+            echo "- Upstream: \`${{ matrix.target.upstream_repo }}@${{ matrix.target.upstream_ref }}\`"
+            echo "- Upstream SHA: \`${{ steps.upstream.outputs.sha }}\`"
+            echo "- Bundle tag: \`${{ steps.bundle.outputs.tag }}\`"
+            echo "- Bundle: \`${{ steps.bundle.outputs.asset }}\`"
+            echo "- SHA256: \`${{ steps.bundle.outputs.sha256 }}\`"
+            echo "- Manifest: \`dist/device-test-manifest.json\`"
+            echo "- Onroad UI export status: \`dist/onroad-ui-export-status.json\`"
+            echo ""
+            echo "Install only by exact artifact and checksum. Do not treat this as latest/stable."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
