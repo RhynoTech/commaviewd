@@ -49,22 +49,25 @@ for f in "${required_files[@]}"; do
   check_file "$f"
 done
 
-if [[ ${#missing[@]} -eq 0 ]]; then
-  remote="$(git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true)"
-  patch_flavor="openpilot"
-  if printf '%s' "$remote" | grep -qi 'sunnypilot'; then
-    patch_flavor="sunnypilot"
-  fi
-  patch_file="$REPO_ROOT/comma4/patches/$patch_flavor/0001-commaview-ui-export-v2.patch"
-  check_file "$patch_file"
-  if [[ -f "$patch_file" ]] && ! git -C "$OP_ROOT" apply --recount --check "$patch_file" >/dev/null 2>&1 && \
-     ! git -C "$OP_ROOT" apply --recount --reverse --check "$patch_file" >/dev/null 2>&1; then
-    missing+=("direct-v2-patch:$patch_flavor@$OP_ROOT")
-  fi
+remote="$(git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true)"
+onroad_ui_export_flavor="openpilot"
+if printf '%s' "$remote" | grep -qi 'sunnypilot'; then
+  onroad_ui_export_flavor="sunnypilot"
 fi
 
+required_transformer_files=(
+  "$REPO_ROOT/comma4/scripts/transform_onroad_ui_export.py"
+  "$REPO_ROOT/comma4/scripts/apply_onroad_ui_export_patch.sh"
+  "$REPO_ROOT/comma4/scripts/verify_onroad_ui_export_patch.sh"
+  "$REPO_ROOT/comma4/src/commaview_export.$onroad_ui_export_flavor.py"
+)
+
+for f in "${required_transformer_files[@]}"; do
+  check_file "$f"
+done
+
 [[ ${#missing[@]} -eq 0 ]] || {
-  printf 'FAIL: upstream interface guard missing current direct-v2 prerequisites:\n' >&2
+  printf 'FAIL: upstream interface guard missing current transformer prerequisites:\n' >&2
   printf '  - %s\n' "${missing[@]}" >&2
   exit 1
 }
@@ -123,7 +126,9 @@ cat > "$MANIFEST" <<JSON
   "opRoot": "${OP_ROOT}",
   "upstreamSha": "${upstream_sha}",
   "checks": {
-    "directV2PatchFlavor": "${patch_flavor}",
+    "onroadUiExportMethod": "transformer",
+    "onroadUiExportFlavor": "${onroad_ui_export_flavor}",
+    "requiredTransformerFiles": ${#required_transformer_files[@]},
     "requiredServices": ${#required_services[@]},
     "requiredCapnpFields": ${#required_capnp_fields[@]},
     "requiredFiles": ${#required_files[@]}

@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GUARD="$ROOT/scripts/upstream-interface-guard.sh"
+
+tmpdir="$(mktemp -d)"
+cleanup() { python3 - "$tmpdir" <<'PY'
+import shutil
+import sys
+shutil.rmtree(sys.argv[1], ignore_errors=True)
+PY
+}
+trap cleanup EXIT
+
+op_root="$tmpdir/openpilot-src"
+manifest="$tmpdir/manifest.json"
+mkdir -p "$op_root/cereal"
+
+cat > "$op_root/cereal/services.py" <<'PY'
+roadEncodeData = None
+wideRoadEncodeData = None
+driverEncodeData = None
+livestreamRoadEncodeData = None
+livestreamWideRoadEncodeData = None
+livestreamDriverEncodeData = None
+carState = None
+selfdriveState = None
+deviceState = None
+liveCalibration = None
+radarState = None
+modelV2 = None
+PY
+
+cat > "$op_root/cereal/log.capnp" <<'CAPNP'
+roadEncodeData
+wideRoadEncodeData
+driverEncodeData
+livestreamRoadEncodeData
+livestreamWideRoadEncodeData
+livestreamDriverEncodeData
+carState
+selfdriveState
+deviceState
+liveCalibration
+radarState
+modelV2
+alertText1
+alertText2
+alertType
+laneLineProbs
+laneLineStds
+roadEdgeStds
+leadsV3
+rpyCalib
+calStatus
+calPerc
+CAPNP
+
+git -C "$op_root" init -q
+git -C "$op_root" remote add origin https://github.com/commaai/openpilot.git
+
+output="$(OP_ROOT="$op_root" "$GUARD" --manifest "$manifest" 2>&1)" || {
+  printf '%s\n' "$output" >&2
+  echo "FAIL: transformer-era upstream guard should not require static direct-v2 patch applicability" >&2
+  exit 1
+}
+
+printf '%s\n' "$output" | grep -Fq 'PASS: upstream interface guard' || {
+  printf '%s\n' "$output" >&2
+  echo "FAIL: guard did not report success" >&2
+  exit 1
+}
+
+python3 - "$manifest" <<'PY'
+import json
+import sys
+manifest = json.loads(open(sys.argv[1]).read())
+checks = manifest.get("checks", {})
+if checks.get("onroadUiExportMethod") != "transformer":
+    raise SystemExit(f"missing transformer method in manifest: {checks}")
+if "directV2PatchFlavor" in checks:
+    raise SystemExit(f"stale static patch manifest key present: {checks}")
+PY
+
+echo "PASS: upstream interface guard validates transformer prerequisites"
