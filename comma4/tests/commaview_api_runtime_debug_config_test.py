@@ -338,15 +338,55 @@ def test_transformer_state_files_are_parsed_without_sourcing_shell():
     assert 'json.dumps(payload' in verify_text
 
 
-def test_uninstall_script_revert_preflight_runs_before_uninstall_mutations():
+def test_uninstall_script_actual_revert_runs_before_uninstall_mutations():
     text = UNINSTALL_SH.read_text()
-    preflight_index = text.index("--preflight-only")
+    revert_index = text.index("Reverting direct v2 onroad UI export transformer")
     stop_index = text.index("Stopping services")
     boot_hook_index = text.index("Removing boot hook")
 
     assert "uninstall aborted before stopping services or removing boot hook" in text
-    assert preflight_index < stop_index
-    assert preflight_index < boot_hook_index
+    assert revert_index < stop_index
+    assert revert_index < boot_hook_index
+    assert text.count('bash "$revert_helper" "${revert_args[@]}"') == 1
+
+
+def test_uninstall_script_aborts_before_mutation_when_actual_revert_fails_after_preflight_would_pass(tmp_path):
+    install_dir = tmp_path / "commaview"
+    scripts_dir = install_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    revert_helper = scripts_dir / "revert_onroad_ui_export_patch.sh"
+    stop_marker = install_dir / "stop-called"
+    revert_helper.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$COMMAVIEWD_INSTALL_DIR/revert-calls.txt\"\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$arg\" = --preflight-only ]; then\n"
+        "    exit 0\n"
+        "  fi\n"
+        "done\n"
+        "exit 42\n"
+    )
+    revert_helper.chmod(0o755)
+    (install_dir / "stop.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf stopped > {shlex.quote(str(stop_marker))}\n"
+    )
+
+    result = subprocess.run(
+        ["bash", str(UNINSTALL_SH)],
+        env={"COMMAVIEWD_INSTALL_DIR": str(install_dir), "PATH": "/usr/bin:/bin"},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 42
+    assert not stop_marker.exists()
+    assert "Stopping services" not in result.stdout
+    assert "Removing boot hook" not in result.stdout
+    assert "Removing files" not in result.stdout
+    assert "uninstall aborted before stopping services or removing boot hook" in result.stderr
 
 
 def test_uninstall_script_reverts_transformer_before_removing_install_tree():
@@ -358,8 +398,7 @@ def test_uninstall_script_reverts_transformer_before_removing_install_tree():
     assert '--force-offroad' in text
     assert 'revert_args+=(--force-offroad)' in text
     assert 'preserving $INSTALL_DIR for recovery' in text
-    assert '--preflight-only' in text
-    assert text.index('--preflight-only') < text.index('bash "$INSTALL_DIR/stop.sh"')
+    assert text.index("Reverting direct v2 onroad UI export transformer") < text.index('bash "$INSTALL_DIR/stop.sh"')
     assert text.rindex("revert_onroad_ui_export_patch.sh") < text.index('rm -rf "$INSTALL_DIR"')
 
 
