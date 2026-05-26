@@ -364,15 +364,37 @@ else
   exit "$transform_ec"
 fi
 
-fingerprint="$(sha256sum "$TRANSFORMER" "$template" | sha256sum | awk '{print $1}')"
-mkdir -p "$(dirname "$STATE_ENV")"
-printf 'ONROAD_UI_EXPORT_FLAVOR=%s\nONROAD_UI_EXPORT_METHOD=transformer\nONROAD_UI_EXPORT_TRANSFORMER_SHA=%s\nONROAD_UI_EXPORT_OP_ROOT=%s\n' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
-
 if [ -x "$VERIFY_SCRIPT" ]; then
-  request_openpilot_ui_restart
-  restart_openpilot_ui_if_offroad
-  exec "$VERIFY_SCRIPT" --json
+  verify_ec=0
+  "$VERIFY_SCRIPT" --json || verify_ec=$?
+  if [ "$verify_ec" -eq 0 ]; then
+    request_openpilot_ui_restart
+    restart_openpilot_ui_if_offroad
+    exit 0
+  fi
+  reset_ec=0
+  reset_managed_targets || reset_ec=$?
+  if [ "$reset_ec" -ne 0 ]; then
+    echo "WARN: reset of managed targets had errors before verification rollback restore" >&2
+  fi
+  restore_ec=0
+  rollback_match_ec=0
+  restore_managed_targets_from_backup "$transform_backup_root" || restore_ec=$?
+  managed_targets_match_backup "$transform_backup_root" || rollback_match_ec=$?
+  if [ "$restore_ec" -eq 0 ] && [ "$rollback_match_ec" -eq 0 ]; then
+    echo "ERROR: verification failed; restored managed targets from $transform_backup_root" >&2
+  else
+    echo "ERROR: verification failed and rollback failed or incomplete from $transform_backup_root" >&2
+  fi
+  exit "$verify_ec"
 fi
 
+fingerprint="$(sha256sum "$TRANSFORMER" "$template" | sha256sum | awk '{print $1}')"
+mkdir -p "$(dirname "$STATE_ENV")"
+printf 'ONROAD_UI_EXPORT_FLAVOR=%s
+ONROAD_UI_EXPORT_METHOD=transformer
+ONROAD_UI_EXPORT_TRANSFORMER_SHA=%s
+ONROAD_UI_EXPORT_OP_ROOT=%s
+' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
 request_openpilot_ui_restart
 restart_openpilot_ui_if_offroad

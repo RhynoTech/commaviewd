@@ -5,7 +5,7 @@ import { request as httpsRequest } from 'node:https';
 function usage() {
   console.error(`Usage:
   node scripts/update-firebase-current-release.mjs --app-tag app-v0.0.130-alpha [--app-channel firebase-app-distribution] [--status-label "..."] [--project commaview]
-  node scripts/update-firebase-current-release.mjs --runtime-tag v0.0.47-alpha [--project commaview]
+  node scripts/update-firebase-current-release.mjs --runtime-tag v0.0.47-alpha [--project commaview] [--allow-runtime-downgrade]
 
 Requires FIREBASE_SERVICE_ACCOUNT_JSON unless --dry-run is set.`);
 }
@@ -17,6 +17,10 @@ function parseArgs(argv) {
     if (!key.startsWith('--')) throw new Error(`Unexpected positional argument: ${key}`);
     if (key === '--dry-run') {
       out.dryRun = 'true';
+      continue;
+    }
+    if (key === '--allow-runtime-downgrade') {
+      out['allow-runtime-downgrade'] = 'true';
       continue;
     }
     const value = argv[i + 1];
@@ -37,6 +41,21 @@ function runtimeVersionFromTag(tag) {
   const match = /^v(\d+\.\d+\.\d+-alpha)$/.exec(tag);
   if (!match) throw new Error(`Invalid runtime tag: ${tag}`);
   return match[1];
+}
+
+function runtimeTagParts(tag) {
+  const match = /^v(\d+)\.(\d+)\.(\d+)-alpha$/.exec(tag);
+  if (!match) throw new Error(`Invalid runtime tag: ${tag}`);
+  return match.slice(1).map((part) => Number.parseInt(part, 10));
+}
+
+function compareRuntimeTags(left, right) {
+  const a = runtimeTagParts(left);
+  const b = runtimeTagParts(right);
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
 }
 
 function base64urlJson(value) {
@@ -139,10 +158,20 @@ async function main() {
   }
 
   const token = await accessToken(serviceAccount);
+  const authHeaders = { Authorization: `Bearer ${token}` };
+  if (args['runtime-tag']) {
+    const currentDocumentUrl = new URL(`https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/publicConfig/currentRelease`);
+    const currentRelease = await requestJson(currentDocumentUrl, { headers: authHeaders });
+    const currentRuntimeTag = currentRelease?.fields?.runtimeTag?.stringValue;
+    if (currentRuntimeTag && compareRuntimeTags(args['runtime-tag'], currentRuntimeTag) < 0 && args["allow-runtime-downgrade"] !== "true") {
+      throw new Error(`Refusing to promote older runtime tag ${args['runtime-tag']} over current ${currentRuntimeTag}; rerun with --allow-runtime-downgrade only for an intentional rollback`);
+    }
+  }
+
   await requestJson(documentUrl, {
     method: 'PATCH',
     headers: {
-      Authorization: `Bearer ${token}`,
+      ...authHeaders,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ fields }),

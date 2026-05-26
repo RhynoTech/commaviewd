@@ -839,6 +839,45 @@ def test_apply_script_rolls_back_partial_transformer_failure(tmp_path):
     assert status == ""
 
 
+def test_apply_script_rolls_back_when_post_transform_verify_fails(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    verify_script = install_dir / "scripts" / "verify_onroad_ui_export_patch.sh"
+    verify_script.write_text("#!/usr/bin/env bash\necho forced verify failure >&2\nexit 77\n")
+    verify_script.chmod(0o755)
+    managed_paths = [
+        Path("selfdrive/ui/ui_state.py"),
+        Path("selfdrive/ui/mici/onroad/augmented_road_view.py"),
+        Path("selfdrive/ui/onroad/augmented_road_view.py"),
+    ]
+    originals = {rel: (op_root / rel).read_text() for rel in managed_paths}
+
+    result = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root)
+
+    assert result.returncode == 77
+    assert "forced verify failure" in result.stderr
+    assert "verification failed; restored managed targets" in result.stderr
+    for rel, original in originals.items():
+        assert (op_root / rel).read_text() == original
+    assert not (op_root / HELPER_PATH).exists()
+    status = subprocess.check_output(
+        [
+            "git",
+            "status",
+            "--short",
+            "--",
+            "selfdrive/ui/commaview_export.py",
+            "selfdrive/ui/ui_state.py",
+            "selfdrive/ui/mici/onroad/augmented_road_view.py",
+            "selfdrive/ui/onroad/augmented_road_view.py",
+        ],
+        cwd=op_root,
+        text=True,
+    )
+    assert status == ""
+
+
 def test_apply_script_attempts_rollback_restore_when_reset_fails_after_transformer_failure(tmp_path):
     broken_augmented = AUGMENTED_ROAD_VIEW.replace(
         "    self._model_renderer.set_transform(video_transform @ calib_transform)\n",

@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 WORKFLOW="$REPO_ROOT/.github/workflows/commaviewd-release.yml"
 BUILD_BUNDLE="$REPO_ROOT/tools/release/comma4-build-bundle.sh"
+FIREBASE_UPDATE="$REPO_ROOT/scripts/update-firebase-current-release.mjs"
 
 assert_file() {
   [[ -f "$1" ]] || { echo "FAIL: missing $1" >&2; exit 1; }
@@ -19,6 +20,7 @@ assert_contains() {
 
 assert_file "$WORKFLOW"
 assert_file "$BUILD_BUNDLE"
+assert_file "$FIREBASE_UPDATE"
 assert_contains "Onroad UI export transformer apply/verify" "$WORKFLOW" "release workflow should apply/verify transformer before packaging"
 assert_contains "apply_onroad_ui_export_patch.sh" "$WORKFLOW" "release workflow should apply transformer"
 assert_contains "verify_onroad_ui_export_patch.sh --json" "$WORKFLOW" "release workflow should verify transformer"
@@ -30,6 +32,10 @@ assert_contains "promote_current:" "$WORKFLOW" "release workflow should expose e
 assert_contains "Promote this runtime tag to Firebase current-release after publishing assets" "$WORKFLOW" "Firebase runtime promotion input should explain the explicit promotion action"
 assert_contains "if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true" "$WORKFLOW" "Firebase current-release update should require explicit manual promotion"
 assert_contains "Promote Firebase current runtime release" "$WORKFLOW" "Firebase current-release step should be named as an explicit promotion"
+assert_contains "compareRuntimeTags" "$FIREBASE_UPDATE" "Firebase updater should compare runtime tags before promotion"
+assert_contains "Refusing to promote older runtime tag" "$FIREBASE_UPDATE" "Firebase updater should fail closed on runtime downgrades"
+assert_contains "allow-runtime-downgrade" "$FIREBASE_UPDATE" "Firebase updater should require an explicit downgrade override if ever needed"
+assert_contains 'args["allow-runtime-downgrade"] !== "true"' "$FIREBASE_UPDATE" "runtime downgrade override should be explicit"
 assert_contains "PROVENANCE_ASSETS=(" "$WORKFLOW" "release workflow should define provenance assets for upload"
 assert_contains 'REQUIRED_ASSETS=("$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}")' "$WORKFLOW" "release workflow should validate bundle, checksum, and provenance assets"
 assert_contains 'cd "$OUT_DIR"' "$BUILD_BUNDLE" "bundle script should enter release directory before writing checksum"

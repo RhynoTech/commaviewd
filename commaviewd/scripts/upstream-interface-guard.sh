@@ -85,6 +85,18 @@ required_services=(
   liveCalibration
   radarState
   modelV2
+  controlsState
+  onroadEvents
+  driverMonitoringState
+  driverStateV2
+  carOutput
+  carControl
+  liveParameters
+  longitudinalPlan
+  carParams
+  roadCameraState
+  pandaStates
+  wideRoadCameraState
 )
 
 for svc in "${required_services[@]}"; do

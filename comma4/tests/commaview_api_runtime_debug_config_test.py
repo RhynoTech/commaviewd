@@ -511,7 +511,10 @@ def test_apply_patch_script_restarts_openpilot_ui_after_patch_lifecycle_offroad_
     assert 'restarting openpilot UI to load CommaView onroad UI export transformer output' in text
     assert text.index('restart_openpilot_ui_if_offroad') < text.index('if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then')
     assert 'request_openpilot_ui_restart\n  restart_openpilot_ui_if_offroad\n  exit 0' in text
-    assert 'request_openpilot_ui_restart\n  restart_openpilot_ui_if_offroad\n  exec "$VERIFY_SCRIPT" --json' in text
+    assert '"$VERIFY_SCRIPT" --json || verify_ec=$?' in text
+    assert 'verification failed; restored managed targets' in text
+    assert 'managed_targets_match_backup "$transform_backup_root"' in text
+    assert text.index('"$VERIFY_SCRIPT" --json || verify_ec=$?') < text.index('request_openpilot_ui_restart\n    restart_openpilot_ui_if_offroad\n    exit 0')
 
 
 def test_control_mode_routes_present_for_runtime_debug_config():

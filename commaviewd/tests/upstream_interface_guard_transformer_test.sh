@@ -30,6 +30,18 @@ deviceState = None
 liveCalibration = None
 radarState = None
 modelV2 = None
+controlsState = None
+onroadEvents = None
+driverMonitoringState = None
+driverStateV2 = None
+carOutput = None
+carControl = None
+liveParameters = None
+longitudinalPlan = None
+carParams = None
+roadCameraState = None
+pandaStates = None
+wideRoadCameraState = None
 PY
 
 cat > "$op_root/cereal/log.capnp" <<'CAPNP'
@@ -45,6 +57,18 @@ deviceState
 liveCalibration
 radarState
 modelV2
+controlsState
+onroadEvents
+driverMonitoringState
+driverStateV2
+carOutput
+carControl
+liveParameters
+longitudinalPlan
+carParams
+roadCameraState
+pandaStates
+wideRoadCameraState
 alertText1
 alertText2
 alertType
@@ -81,6 +105,9 @@ if checks.get("onroadUiExportMethod") != "transformer":
     raise SystemExit(f"missing transformer method in manifest: {checks}")
 if "directV2PatchFlavor" in checks:
     raise SystemExit(f"stale static patch manifest key present: {checks}")
+expected_services = 24
+if checks.get("requiredServices", 0) < expected_services:
+    raise SystemExit(f"guard should cover all exporter services; expected at least {expected_services}, got {checks.get('requiredServices')}: {checks}")
 PY
 
 echo "PASS: upstream interface guard validates transformer prerequisites"
