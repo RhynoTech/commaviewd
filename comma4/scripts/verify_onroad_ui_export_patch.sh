@@ -38,29 +38,41 @@ check_fixed() {
   grep -Fq -- "$needle" "$file"
 }
 
+state_value() {
+  local key="$1"
+  [ -f "$STATE_ENV" ] || return 1
+  sed -n "s/^${key}=//p" "$STATE_ENV" | tail -n 1 | sed 's/^"//; s/"$//'
+}
+
+remote_flavor() {
+  local remote="$1"
+  remote="${remote%.git}"
+  remote="${remote%/}"
+  case "$remote" in
+    *github.com:commaai/openpilot|*github.com/commaai/openpilot) printf '%s\n' openpilot ;;
+    *github.com:sunnypilot/sunnypilot|*github.com/sunnypilot/sunnypilot|*github.com:sunnypilot/openpilot|*github.com/sunnypilot/openpilot) printf '%s\n' sunnypilot ;;
+    *) return 1 ;;
+  esac
+}
+
 detect_flavor() {
   local preferred=""
   local remote=""
-
-  if [ -f "$STATE_ENV" ]; then
-    # shellcheck disable=SC1090
-    . "$STATE_ENV" || true
-    if [ "${ONROAD_UI_EXPORT_OP_ROOT:-}" = "$OP_ROOT" ] && [ -n "${ONROAD_UI_EXPORT_FLAVOR:-}" ] && [ -f "$SRC_ROOT/commaview_export.${ONROAD_UI_EXPORT_FLAVOR}.py" ]; then
-      printf '%s\n' "$ONROAD_UI_EXPORT_FLAVOR"
-      return 0
-    fi
-  fi
+  local state_flavor=""
+  local state_op_root=""
 
   if git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     remote="$(git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true)"
-    if printf '%s' "$remote" | grep -qi 'sunnypilot'; then
-      preferred='sunnypilot'
-    elif printf '%s' "$remote" | grep -qi 'openpilot'; then
-      preferred='openpilot'
-    elif grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"' "$HELPER_PATH" 2>/dev/null; then
-      preferred='sunnypilot'
-    elif grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR = "OPENPILOT"' "$HELPER_PATH" 2>/dev/null; then
-      preferred='openpilot'
+    if [ -n "$remote" ]; then
+      preferred="$(remote_flavor "$remote")" || return 1
+    fi
+  fi
+
+  if [ -z "$preferred" ]; then
+    state_flavor="$(state_value ONROAD_UI_EXPORT_FLAVOR || true)"
+    state_op_root="$(state_value ONROAD_UI_EXPORT_OP_ROOT || true)"
+    if [ "$state_op_root" = "$OP_ROOT" ] && { [ "$state_flavor" = "openpilot" ] || [ "$state_flavor" = "sunnypilot" ]; }; then
+      preferred="$state_flavor"
     fi
   fi
 
@@ -200,7 +212,7 @@ service_marker_count=0
 if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   state="missing-repo"; reason="upstream repo not found at $OP_ROOT"
 elif [ "$flavor_detected" -ne 1 ]; then
-  state="unknown-flavor"; reason="unable to determine supported socket UI export transformer flavor for $OP_ROOT"
+  state="unknown-flavor"; reason="unsupported upstream remote for $OP_ROOT; CommaView currently supports only commaai/openpilot and sunnypilot remotes"
 elif [ ! -f "$template_path" ]; then
   state="missing-template"; reason="missing socket UI export helper template for $flavor"
 elif [ ! -f "$TRANSFORMER" ]; then
@@ -277,7 +289,89 @@ else
   fi
 fi
 
-json=$(printf '{"healthy":%s,"patchVerified":%s,"method":"%s","statusScope":"%s","repairNeeded":%s,"state":"%s","reason":"%s","flavor":"%s","opRoot":"%s","transformer":"%s","template":"%s","transformerFingerprint":"%s","helperPresent":%s,"uiStateHookPresent":%s,"runtimeFlavorConstantPresent":%s,"socketPathPresent":%s,"socketEnvPresent":%s,"frameVersionPresent":%s,"unixSocketPresent":%s,"framingPresent":%s,"compactJsonPresent":%s,"payloadHelpersPresent":%s,"publishPathsPresent":%s,"riskFieldsPresent":%s,"legacyBucketMarkersAbsent":%s,"exporterInstallPresent":%s,"exporterPublishPresent":%s,"onroadCameraRelayPresent":%s,"onroadProjectionPresent":%s,"transformerPresent":%s,"templatePresent":%s,"serviceMarkerCount":%s}' "$healthy" "$patch_verified" "$method" "$status_scope" "$repair_needed" "$state" "$reason" "$flavor" "$OP_ROOT" "$TRANSFORMER" "$template_path" "$fingerprint" "$helper_present" "$ui_state_hook_present" "$runtime_flavor_constant_present" "$socket_path_present" "$socket_env_present" "$frame_version_present" "$unix_socket_present" "$framing_present" "$compact_json_present" "$payload_helpers_present" "$publish_paths_present" "$risk_fields_present" "$legacy_bucket_markers_absent" "$exporter_install_present" "$exporter_publish_present" "$onroad_camera_relay_present" "$onroad_projection_present" "$transformer_present" "$template_present" "$service_marker_count")
+json="$(
+  HEALTHY="$healthy" \
+  PATCH_VERIFIED="$patch_verified" \
+  METHOD="$method" \
+  STATUS_SCOPE="$status_scope" \
+  REPAIR_NEEDED="$repair_needed" \
+  STATE="$state" \
+  REASON="$reason" \
+  FLAVOR="$flavor" \
+  OP_ROOT_JSON="$OP_ROOT" \
+  TRANSFORMER_JSON="$TRANSFORMER" \
+  TEMPLATE_PATH_JSON="$template_path" \
+  FINGERPRINT="$fingerprint" \
+  HELPER_PRESENT="$helper_present" \
+  UI_STATE_HOOK_PRESENT="$ui_state_hook_present" \
+  RUNTIME_FLAVOR_CONSTANT_PRESENT="$runtime_flavor_constant_present" \
+  SOCKET_PATH_PRESENT="$socket_path_present" \
+  SOCKET_ENV_PRESENT="$socket_env_present" \
+  FRAME_VERSION_PRESENT="$frame_version_present" \
+  UNIX_SOCKET_PRESENT="$unix_socket_present" \
+  FRAMING_PRESENT="$framing_present" \
+  COMPACT_JSON_PRESENT="$compact_json_present" \
+  PAYLOAD_HELPERS_PRESENT="$payload_helpers_present" \
+  PUBLISH_PATHS_PRESENT="$publish_paths_present" \
+  RISK_FIELDS_PRESENT="$risk_fields_present" \
+  LEGACY_BUCKET_MARKERS_ABSENT="$legacy_bucket_markers_absent" \
+  EXPORTER_INSTALL_PRESENT="$exporter_install_present" \
+  EXPORTER_PUBLISH_PRESENT="$exporter_publish_present" \
+  ONROAD_CAMERA_RELAY_PRESENT="$onroad_camera_relay_present" \
+  ONROAD_PROJECTION_PRESENT="$onroad_projection_present" \
+  TRANSFORMER_PRESENT="$transformer_present" \
+  TEMPLATE_PRESENT="$template_present" \
+  SERVICE_MARKER_COUNT="$service_marker_count" \
+  python3 - <<'PYJSON'
+import json
+import os
+
+def env_bool(name: str) -> bool:
+    return os.environ.get(name, "false") == "true"
+
+def env_int(name: str) -> int:
+    try:
+        return int(os.environ.get(name, "0"))
+    except ValueError:
+        return 0
+
+payload = {
+    "healthy": env_bool("HEALTHY"),
+    "patchVerified": env_bool("PATCH_VERIFIED"),
+    "method": os.environ.get("METHOD", ""),
+    "statusScope": os.environ.get("STATUS_SCOPE", ""),
+    "repairNeeded": env_bool("REPAIR_NEEDED"),
+    "state": os.environ.get("STATE", ""),
+    "reason": os.environ.get("REASON", ""),
+    "flavor": os.environ.get("FLAVOR", ""),
+    "opRoot": os.environ.get("OP_ROOT_JSON", ""),
+    "transformer": os.environ.get("TRANSFORMER_JSON", ""),
+    "template": os.environ.get("TEMPLATE_PATH_JSON", ""),
+    "transformerFingerprint": os.environ.get("FINGERPRINT", ""),
+    "helperPresent": env_bool("HELPER_PRESENT"),
+    "uiStateHookPresent": env_bool("UI_STATE_HOOK_PRESENT"),
+    "runtimeFlavorConstantPresent": env_bool("RUNTIME_FLAVOR_CONSTANT_PRESENT"),
+    "socketPathPresent": env_bool("SOCKET_PATH_PRESENT"),
+    "socketEnvPresent": env_bool("SOCKET_ENV_PRESENT"),
+    "frameVersionPresent": env_bool("FRAME_VERSION_PRESENT"),
+    "unixSocketPresent": env_bool("UNIX_SOCKET_PRESENT"),
+    "framingPresent": env_bool("FRAMING_PRESENT"),
+    "compactJsonPresent": env_bool("COMPACT_JSON_PRESENT"),
+    "payloadHelpersPresent": env_bool("PAYLOAD_HELPERS_PRESENT"),
+    "publishPathsPresent": env_bool("PUBLISH_PATHS_PRESENT"),
+    "riskFieldsPresent": env_bool("RISK_FIELDS_PRESENT"),
+    "legacyBucketMarkersAbsent": env_bool("LEGACY_BUCKET_MARKERS_ABSENT"),
+    "exporterInstallPresent": env_bool("EXPORTER_INSTALL_PRESENT"),
+    "exporterPublishPresent": env_bool("EXPORTER_PUBLISH_PRESENT"),
+    "onroadCameraRelayPresent": env_bool("ONROAD_CAMERA_RELAY_PRESENT"),
+    "onroadProjectionPresent": env_bool("ONROAD_PROJECTION_PRESENT"),
+    "transformerPresent": env_bool("TRANSFORMER_PRESENT"),
+    "templatePresent": env_bool("TEMPLATE_PRESENT"),
+    "serviceMarkerCount": env_int("SERVICE_MARKER_COUNT"),
+}
+print(json.dumps(payload, separators=(",", ":")))
+PYJSON
+)"
 printf '%s
 ' "$json" > "$STATE_JSON"
 if [ -n "$fingerprint" ]; then

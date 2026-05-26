@@ -6,13 +6,84 @@ OP_ROOT="${COMMAVIEWD_OP_ROOT:-/data/openpilot}"
 STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
 STATE_JSON="$INSTALL_DIR/run/onroad-ui-export-status.json"
 RESTART_MARKER="$INSTALL_DIR/run/onroad-ui-export-ui-restart-needed"
+BACKUP_ROOT="${COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups}"
 PARAMS_DIR="/data/params/d"
+FORCE_OFFROAD=0
+FORCE_OFFROAD_OWNED=0
+FORCE_OFFROAD_PREV=""
 
 read_param() {
   local path="$PARAMS_DIR/$1"
   [[ -f "$path" ]] || return 0
   tr -d '\000\r\n' < "$path" 2>/dev/null || true
 }
+
+write_param() {
+  mkdir -p "$PARAMS_DIR"
+  printf '%s' "$2" > "$PARAMS_DIR/$1"
+}
+
+restore_force_offroad_mode() {
+  if [ "$FORCE_OFFROAD_OWNED" = "1" ]; then
+    write_param "OffroadMode" "${FORCE_OFFROAD_PREV:-0}"
+  fi
+}
+
+cleanup() {
+  restore_force_offroad_mode
+}
+
+wait_until_offroad() {
+  local timeout_sec="${1:-45}"
+  local elapsed=0
+  local is_onroad=""
+  while [ "$elapsed" -lt "$timeout_sec" ]; do
+    is_onroad="$(read_param IsOnroad)"
+    if [ "$is_onroad" != "1" ]; then
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
+ensure_offroad_ready() {
+  local is_onroad
+  is_onroad="$(read_param IsOnroad)"
+  if [ "$is_onroad" != "1" ]; then
+    return 0
+  fi
+
+  if [ "$FORCE_OFFROAD" != "1" ]; then
+    echo "ERROR: socket UI export transformer revert blocked while onroad" >&2
+    exit 42
+  fi
+
+  FORCE_OFFROAD_PREV="$(read_param OffroadMode)"
+  if [ "$FORCE_OFFROAD_PREV" != "1" ]; then
+    echo "INFO: requesting OffroadMode for transformer revert" >&2
+    write_param "OffroadMode" "1"
+    FORCE_OFFROAD_OWNED=1
+  fi
+
+  echo "INFO: waiting for actual offroad transition" >&2
+  if ! wait_until_offroad 45; then
+    echo "ERROR: device did not transition offroad in time" >&2
+    exit 42
+  fi
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --force-offroad) FORCE_OFFROAD=1; shift ;;
+    -h|--help) echo "Usage: revert_onroad_ui_export_patch.sh [--force-offroad]"; exit 0 ;;
+    *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
+trap cleanup EXIT
+ensure_offroad_ready
 
 request_openpilot_ui_restart() {
   mkdir -p "$(dirname "$RESTART_MARKER")"
@@ -61,7 +132,7 @@ managed_targets() {
 }
 
 backup_managed_targets() {
-  local backup_root="$INSTALL_DIR/backups/onroad-ui-export-revert/$(date -u +%Y%m%d-%H%M%S)"
+  local backup_root="$BACKUP_ROOT/onroad-ui-export-revert/$(date -u +%Y%m%d-%H%M%S)"
   local rel=""
   mkdir -p "$backup_root"
   while IFS= read -r rel; do

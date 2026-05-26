@@ -24,6 +24,7 @@ jobs:
       matrix:
         upstream_ref:
           - master
+          - release-mici-staging
 
     steps:
       - name: Checkout CommaView

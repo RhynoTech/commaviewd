@@ -153,6 +153,12 @@ backup_managed_targets() {
   printf '%s\n' "$backup_root"
 }
 
+restore_managed_targets_from_backup() {
+  local backup_root="$1"
+  [ -d "$backup_root" ] || return 0
+  cp -a "$backup_root"/. "$OP_ROOT"/ 2>/dev/null || true
+}
+
 dirty_managed_targets() {
   local rel=""
   while IFS= read -r rel; do
@@ -182,28 +188,38 @@ force_repair_managed_targets() {
   reset_managed_targets
 }
 
+state_value() {
+  local key="$1"
+  [ -f "$STATE_ENV" ] || return 1
+  sed -n "s/^${key}=//p" "$STATE_ENV" | tail -n 1 | sed 's/^"//; s/"$//'
+}
+
+remote_flavor() {
+  local remote="$1"
+  remote="${remote%.git}"
+  remote="${remote%/}"
+  case "$remote" in
+    *github.com:commaai/openpilot|*github.com/commaai/openpilot) printf '%s\n' openpilot ;;
+    *github.com:sunnypilot/sunnypilot|*github.com/sunnypilot/sunnypilot|*github.com:sunnypilot/openpilot|*github.com/sunnypilot/openpilot) printf '%s\n' sunnypilot ;;
+    *) return 1 ;;
+  esac
+}
+
 detect_flavor() {
   local preferred=""
   local remote=""
-
-  if [ -f "$STATE_ENV" ]; then
-    # shellcheck disable=SC1090
-    . "$STATE_ENV" || true
-    if [ "${ONROAD_UI_EXPORT_OP_ROOT:-}" = "$OP_ROOT" ] && [ -n "${ONROAD_UI_EXPORT_FLAVOR:-}" ] && [ -f "$SRC_ROOT/commaview_export.${ONROAD_UI_EXPORT_FLAVOR}.py" ]; then
-      printf '%s\n' "$ONROAD_UI_EXPORT_FLAVOR"
-      return 0
-    fi
-  fi
+  local state_flavor=""
+  local state_op_root=""
 
   remote="$(git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true)"
-  if printf '%s' "$remote" | grep -qi 'sunnypilot'; then
-    preferred='sunnypilot'
-  elif printf '%s' "$remote" | grep -qi 'openpilot'; then
-    preferred='openpilot'
-  elif grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"' "$OP_ROOT/selfdrive/ui/commaview_export.py" 2>/dev/null; then
-    preferred='sunnypilot'
-  elif grep -Fq 'COMMAVIEW_RUNTIME_FLAVOR = "OPENPILOT"' "$OP_ROOT/selfdrive/ui/commaview_export.py" 2>/dev/null; then
-    preferred='openpilot'
+  if [ -n "$remote" ]; then
+    preferred="$(remote_flavor "$remote")" || return 1
+  else
+    state_flavor="$(state_value ONROAD_UI_EXPORT_FLAVOR || true)"
+    state_op_root="$(state_value ONROAD_UI_EXPORT_OP_ROOT || true)"
+    if [ "$state_op_root" = "$OP_ROOT" ] && { [ "$state_flavor" = "openpilot" ] || [ "$state_flavor" = "sunnypilot" ]; }; then
+      preferred="$state_flavor"
+    fi
   fi
 
   if [ -n "$preferred" ] && [ -f "$SRC_ROOT/commaview_export.${preferred}.py" ]; then
@@ -214,7 +230,7 @@ detect_flavor() {
 }
 
 flavor="$(detect_flavor)" || {
-  echo "ERROR: unable to determine supported socket UI export transformer flavor for $OP_ROOT" >&2
+  echo "ERROR: unsupported upstream remote for $OP_ROOT; CommaView currently supports only commaai/openpilot and sunnypilot remotes" >&2
   exit 1
 }
 template="$SRC_ROOT/commaview_export.${flavor}.py"
@@ -239,7 +255,16 @@ elif [ "$FORCE_REPAIR" = "1" ]; then
   force_repair_managed_targets
 fi
 
-python3 "$TRANSFORMER" --op-root "$OP_ROOT" --flavor "$flavor"
+transform_backup_root="$(backup_managed_targets)"
+if python3 "$TRANSFORMER" --op-root "$OP_ROOT" --flavor "$flavor"; then
+  :
+else
+  transform_ec=$?
+  reset_managed_targets
+  restore_managed_targets_from_backup "$transform_backup_root"
+  echo "ERROR: transformer failed; restored managed targets from $transform_backup_root" >&2
+  exit "$transform_ec"
+fi
 
 fingerprint="$(sha256sum "$TRANSFORMER" "$template" | sha256sum | awk '{print $1}')"
 mkdir -p "$(dirname "$STATE_ENV")"

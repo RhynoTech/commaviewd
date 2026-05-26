@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set +e
 INSTALL_DIR="${COMMAVIEWD_INSTALL_DIR:-/data/commaview}"
+FORCE_OFFROAD=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --force-offroad) FORCE_OFFROAD=1; shift ;;
+    -h|--help) echo "Usage: uninstall.sh [--force-offroad]"; exit 0 ;;
+    *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
+  esac
+done
 
 echo "Stopping services..."
 bash "$INSTALL_DIR/stop.sh" 2>/dev/null || true
@@ -10,10 +19,15 @@ sed -i '/# commaview-hook/d; /commaview\/start.sh/d' /data/continue.sh 2>/dev/nu
 
 if [ -x "$INSTALL_DIR/scripts/revert_onroad_ui_export_patch.sh" ]; then
   echo "Reverting direct v2 onroad UI export transformer..."
-  COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/revert_onroad_ui_export_patch.sh"
+  revert_args=()
+  if [ "$FORCE_OFFROAD" = "1" ]; then
+    revert_args+=(--force-offroad)
+  fi
+  COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/revert_onroad_ui_export_patch.sh" "${revert_args[@]}"
   revert_ec=$?
   if [ "$revert_ec" -ne 0 ]; then
-    echo "WARN: direct v2 onroad UI export transformer revert failed with exit $revert_ec" >&2
+    echo "ERROR: direct v2 onroad UI export transformer revert failed with exit $revert_ec; preserving $INSTALL_DIR for recovery" >&2
+    exit "$revert_ec"
   fi
 else
   echo "WARN: direct v2 onroad UI export transformer revert helper missing" >&2

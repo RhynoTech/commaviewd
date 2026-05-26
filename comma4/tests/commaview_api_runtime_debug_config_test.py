@@ -186,21 +186,24 @@ def test_verify_patch_script_requires_onroad_projection_markers():
 
 def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_force_repair():
     text = APPLY_PATCH_SH.read_text()
-    assert "patch_targets()" in text
-    assert "backup_patch_targets()" in text
-    assert "dirty_patch_targets()" in text
-    assert "reset_patch_targets()" in text
-    assert "force_repair_patch_targets()" in text
+    assert "managed_targets()" in text
+    assert "backup_managed_targets()" in text
+    assert "dirty_managed_targets()" in text
+    assert "reset_managed_targets()" in text
+    assert "restore_managed_targets_from_backup()" in text
+    assert "force_repair_managed_targets()" in text
     assert '--maintenance-mode' not in text
     assert 'COMMAVIEWD_MAINTENANCE_MODE' not in text
     assert '--force-repair' in text
     assert 'if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ]' in text
-    assert 'refusing to reset managed patch targets without --force-repair' in text
-    assert 'upstream may have changed; review patch compatibility before repairing' in text
-    assert 'onroad UI export patch target files have local changes' in text
+    assert 'onroad UI export transformer target files have local changes' in text
     assert 'refusing to modify dirty upstream files without --force-repair' in text
     assert 'backups written to $backup_root' in text
-    assert 'COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"' in text
+    assert 'transformer failed; restored managed targets' in text
+    assert 'remote_flavor()' in text
+    assert 'github.com:commaai/openpilot' in text
+    assert 'github.com:sunnypilot/sunnypilot' in text
+    assert 'github.com:sunnypilot/openpilot' in text
     assert 'selfdrive/ui/mici' in text
     assert 'git -C "$OP_ROOT" reset -q HEAD -- "$rel"' in text
     assert 'git -C "$OP_ROOT" checkout -- "$rel"' in text
@@ -209,12 +212,29 @@ def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_for
     assert 'write_param "OffroadMode" "1"' in text
 
 
+def test_transformer_state_files_are_parsed_without_sourcing_shell():
+    apply_text = APPLY_PATCH_SH.read_text()
+    verify_text = VERIFY_PATCH_SH.read_text()
+    assert '. "$STATE_ENV"' not in apply_text
+    assert '. "$STATE_ENV"' not in verify_text
+    assert 'source "$STATE_ENV"' not in apply_text
+    assert 'source "$STATE_ENV"' not in verify_text
+    assert 'state_value()' in apply_text
+    assert 'state_value()' in verify_text
+    assert 'unsupported upstream remote' in apply_text
+    assert 'unsupported upstream remote' in verify_text
+    assert 'json.dumps(payload' in verify_text
+
+
 def test_uninstall_script_reverts_transformer_before_removing_install_tree():
     text = UNINSTALL_SH.read_text()
     assert "revert_onroad_ui_export_patch.sh" in text
     assert "Reverting direct v2 onroad UI export transformer" in text
     assert 'bash "$INSTALL_DIR/stop.sh"' in text
     assert 'rm -rf "$INSTALL_DIR"' in text
+    assert '--force-offroad' in text
+    assert 'revert_args+=(--force-offroad)' in text
+    assert 'preserving $INSTALL_DIR for recovery' in text
     assert text.index('bash "$INSTALL_DIR/stop.sh"') < text.index("revert_onroad_ui_export_patch.sh")
     assert text.index("revert_onroad_ui_export_patch.sh") < text.index('rm -rf "$INSTALL_DIR"')
 
@@ -225,6 +245,10 @@ def test_revert_patch_script_resets_every_transformer_managed_target():
     assert "backup_managed_targets()" in text
     assert "reset_managed_targets()" in text
     assert "restart_openpilot_ui_if_offroad" in text
+    assert "COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups" in text
+    assert "ensure_offroad_ready" in text
+    assert "socket UI export transformer revert blocked while onroad" in text
+    assert "--force-offroad" in text
     assert "selfdrive/ui/commaview_export.py" in text
     assert "selfdrive/ui/ui_state.py" in text
     assert "selfdrive/ui/mici/onroad/augmented_road_view.py" in text
@@ -244,7 +268,7 @@ def test_apply_patch_script_restarts_openpilot_ui_after_patch_lifecycle_offroad_
     assert 'deferring openpilot UI restart while onroad' in text
     assert 'pkill unavailable; deferring openpilot UI restart' in text
     assert 'pkill -INT -f "selfdrive.ui.ui"' in text
-    assert 'restarting openpilot UI to load CommaView onroad UI export patch' in text
+    assert 'restarting openpilot UI to load CommaView onroad UI export transformer output' in text
     assert text.index('restart_openpilot_ui_if_offroad') < text.index('if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then')
     assert 'request_openpilot_ui_restart\n  restart_openpilot_ui_if_offroad\n  exit 0' in text
     assert 'request_openpilot_ui_restart\n  restart_openpilot_ui_if_offroad\n  exec "$VERIFY_SCRIPT" --json' in text

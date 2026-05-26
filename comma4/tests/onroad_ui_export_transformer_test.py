@@ -401,18 +401,19 @@ def prepare_lifecycle_install_dir(tmp_path: Path, op_root: Path) -> Path:
     return install_dir
 
 
-def lifecycle_env(install_dir: Path, op_root: Path) -> dict[str, str]:
+def lifecycle_env(install_dir: Path, op_root: Path, **extra: str) -> dict[str, str]:
     return {
         "COMMAVIEWD_INSTALL_DIR": str(install_dir),
         "COMMAVIEWD_OP_ROOT": str(op_root),
         "COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART": "1",
+        **extra,
     }
 
 
-def run_lifecycle_script(script: Path, install_dir: Path, op_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def run_lifecycle_script(script: Path, install_dir: Path, op_root: Path, *args: str, **extra_env: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(script), *args],
-        env={**lifecycle_env(install_dir, op_root)},
+        env={**lifecycle_env(install_dir, op_root, **extra_env)},
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -481,3 +482,93 @@ def test_revert_script_removes_helper_and_restores_tracked_transformer_targets(t
         text=True,
     )
     assert status == ""
+
+
+def test_apply_script_rolls_back_partial_transformer_failure(tmp_path):
+    broken_augmented = AUGMENTED_ROAD_VIEW.replace(
+        "    self._model_renderer.set_transform(video_transform @ calib_transform)\n",
+        "",
+    )
+    op_root = write_augmented_tree(tmp_path, broken_augmented)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    ui_state = op_root / "selfdrive" / "ui" / "ui_state.py"
+    augmented_path = op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py"
+    original_ui_state = ui_state.read_text()
+    original_augmented = augmented_path.read_text()
+
+    result = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root)
+
+    assert result.returncode != 0
+    assert "transformer failed; restored managed targets" in result.stderr
+    assert ui_state.read_text() == original_ui_state
+    assert augmented_path.read_text() == original_augmented
+    assert not (op_root / HELPER_PATH).exists()
+    status = subprocess.check_output(
+        ["git", "status", "--short", "--", "selfdrive/ui/commaview_export.py", "selfdrive/ui/ui_state.py", "selfdrive/ui/mici/onroad/augmented_road_view.py"],
+        cwd=op_root,
+        text=True,
+    )
+    assert status == ""
+
+
+def test_revert_script_writes_backup_outside_install_tree(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    backup_root = tmp_path / "surviving-backups"
+
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+    assert applied.returncode == 0, applied.stderr
+
+    reverted = run_lifecycle_script(
+        REVERT_SCRIPT,
+        install_dir,
+        op_root,
+        COMMAVIEWD_BACKUP_ROOT=str(backup_root),
+    )
+
+    assert reverted.returncode == 0, reverted.stderr
+    shutil.rmtree(install_dir)
+    backups = list((backup_root / "onroad-ui-export-revert").glob("*"))
+    assert backups
+    assert any((backup / "selfdrive" / "ui" / "ui_state.py").exists() for backup in backups)
+
+
+def test_apply_script_accepts_sunnypilot_openpilot_remote(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/sunnypilot/openpilot.git"], cwd=op_root, check=True)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+
+    result = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+
+    assert result.returncode == 0, result.stderr
+    assert_ui_state_transformed(op_root / "selfdrive" / "ui" / "ui_state.py")
+    assert "ONROAD_UI_EXPORT_FLAVOR=sunnypilot" in (install_dir / "config" / "onroad-ui-export-patch.env").read_text()
+
+
+def test_apply_script_rejects_unsupported_upstream_fork_even_with_state_flavor(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/example/openpilot.git"], cwd=op_root, check=True)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+
+    result = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root)
+
+    assert result.returncode == 1
+    assert "unsupported upstream remote" in result.stderr
+    assert "commaai/openpilot and sunnypilot" in result.stderr
+
+
+def test_verify_script_rejects_unsupported_upstream_fork_even_with_state_flavor(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:example/sunnypilot.git"], cwd=op_root, check=True)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+
+    result = run_lifecycle_script(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
+
+    assert result.returncode == 1
+    assert "unsupported upstream remote" in result.stdout
+    assert "commaai/openpilot and sunnypilot" in result.stdout

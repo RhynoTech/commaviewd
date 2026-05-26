@@ -24,6 +24,7 @@ jobs:
       matrix:
         upstream_ref:
           - dev
+          - staging
 
     steps:
       - name: Checkout CommaView

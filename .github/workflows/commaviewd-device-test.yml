@@ -72,7 +72,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: ${{ matrix.target.upstream_repo }}
-          ref: ${{ matrix.target.upstream_ref }}
+          ref: ${{ steps.upstream.outputs.sha }}
           path: openpilot-src
           submodules: recursive
 
@@ -151,6 +151,21 @@ jobs:
             dist/onroad-ui-export-status.json
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload device-test diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: commaviewd-device-test-diagnostics-${{ matrix.target.name }}-${{ github.sha }}
+          path: |
+            dist/device-test-manifest.json
+            dist/reproducible-build-manifest.json
+            dist/upstream-interface-manifest.json
+            dist/binary-contract.json
+            dist/release-smoke-manifest.json
+            dist/onroad-ui-export-status.json
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Device-test summary
         if: always()
