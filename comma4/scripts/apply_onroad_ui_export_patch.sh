@@ -196,6 +196,28 @@ rollback_managed_targets_clean() {
   return 0
 }
 
+managed_targets_match_backup() {
+  local backup_root="$1"
+  local rel=""
+  local match_ec=0
+  [ -d "$backup_root" ] || return 1
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if [ -e "$backup_root/$rel" ]; then
+      if [ ! -e "$OP_ROOT/$rel" ] || ! cmp -s "$backup_root/$rel" "$OP_ROOT/$rel"; then
+        echo "WARN: managed rollback does not match backup for target: $rel" >&2
+        match_ec=1
+      fi
+    else
+      if [ -e "$OP_ROOT/$rel" ]; then
+        echo "WARN: managed rollback target should be absent but exists: $rel" >&2
+        match_ec=1
+      fi
+    fi
+  done < <(managed_targets)
+  return "$match_ec"
+}
+
 dirty_managed_targets() {
   local rel=""
   while IFS= read -r rel; do
@@ -237,7 +259,15 @@ force_repair_managed_targets() {
   echo "WARN: force repairing managed onroad UI export transformer targets" >&2
   echo "WARN: backups written to $backup_root" >&2
   if ! reset_managed_targets; then
-    echo "ERROR: failed to reset managed onroad UI export transformer targets; refusing force repair" >&2
+    local restore_ec=0
+    local rollback_match_ec=0
+    restore_managed_targets_from_backup "$backup_root" || restore_ec=$?
+    managed_targets_match_backup "$backup_root" || rollback_match_ec=$?
+    if [ "$restore_ec" -eq 0 ] && [ "$rollback_match_ec" -eq 0 ]; then
+      echo "ERROR: failed to reset managed onroad UI export transformer targets; restored managed targets from $backup_root" >&2
+    else
+      echo "ERROR: failed to reset managed onroad UI export transformer targets and rollback failed or incomplete from $backup_root" >&2
+    fi
     return 1
   fi
 }

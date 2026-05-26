@@ -181,6 +181,10 @@ jobs:
               exit 1
             fi
           done
+          sha256sum -c "$ASSET_SHA"
+          for manifest in "${PROVENANCE_ASSETS[@]}"; do
+            python3 -m json.tool "$manifest" >/dev/null
+          done
 
           release_exists=0
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

@@ -39,19 +39,26 @@ for asset in \
   assert_contains "$asset" "$WORKFLOW" "release workflow should publish provenance asset $asset"
 done
 assert_contains "Missing release asset: \$asset" "$WORKFLOW" "release workflow should fail clearly when any release asset is missing"
+assert_contains 'sha256sum -c "$ASSET_SHA"' "$WORKFLOW" "release workflow should validate checksum file against release tarball before publishing"
+assert_contains 'for manifest in "${PROVENANCE_ASSETS[@]}"; do' "$WORKFLOW" "release workflow should validate every provenance JSON manifest"
+assert_contains 'python3 -m json.tool "$manifest" >/dev/null' "$WORKFLOW" "release workflow should parse provenance manifests as JSON before publishing"
 assert_contains 'gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}"' "$WORKFLOW" "release workflow should upload bundle, checksum, and provenance manifests together"
 
 release_asset_validation_line="$(grep -n "REQUIRED_ASSETS=(" "$WORKFLOW" | cut -d: -f1 | head -1)"
+checksum_validation_line="$(grep -n 'sha256sum -c "$ASSET_SHA"' "$WORKFLOW" | cut -d: -f1 | head -1)"
+json_validation_line="$(grep -n 'python3 -m json.tool "$manifest" >/dev/null' "$WORKFLOW" | cut -d: -f1 | head -1)"
 release_create_line="$(grep -n "gh release create" "$WORKFLOW" | cut -d: -f1 | head -1)"
 release_edit_line="$(grep -n "gh release edit" "$WORKFLOW" | cut -d: -f1 | head -1)"
-if [[ -z "$release_asset_validation_line" || -z "$release_create_line" || -z "$release_edit_line" ]]; then
-  echo "FAIL: unable to locate release asset validation or release create/edit steps" >&2
+if [[ -z "$release_asset_validation_line" || -z "$checksum_validation_line" || -z "$json_validation_line" || -z "$release_create_line" || -z "$release_edit_line" ]]; then
+  echo "FAIL: unable to locate release asset checksum/JSON validation or release create/edit steps" >&2
   exit 1
 fi
-if (( release_asset_validation_line >= release_create_line || release_asset_validation_line >= release_edit_line )); then
-  echo "FAIL: release asset validation must run before GitHub release create/edit" >&2
-  exit 1
-fi
+for validation_line in "$release_asset_validation_line" "$checksum_validation_line" "$json_validation_line"; do
+  if (( validation_line >= release_create_line || validation_line >= release_edit_line )); then
+    echo "FAIL: release asset checksum/JSON validation must run before GitHub release create/edit" >&2
+    exit 1
+  fi
+done
 
 release_gate_line="$(grep -n "Onroad UI export transformer apply/verify" "$WORKFLOW" | cut -d: -f1 | head -1)"
 verification_line="$(grep -n "Run release verification pipeline" "$WORKFLOW" | cut -d: -f1 | head -1)"

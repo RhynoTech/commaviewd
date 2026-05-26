@@ -494,6 +494,33 @@ def failing_git_checkout_path(tmp_path: Path) -> str:
     return f"{fakebin}:{os.environ['PATH']}"
 
 
+def failing_git_checkout_after_mutating_path(tmp_path: Path, op_root: Path, relpath: str, replacement: str) -> str:
+    real_git = shutil.which("git")
+    assert real_git
+    fakebin = tmp_path / "fakepartialgitbin"
+    fakebin.mkdir()
+    fake_git = fakebin / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        "git_root=\"\"\n"
+        "is_checkout=0\n"
+        "prev=\"\"\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$prev\" = -C ]; then git_root=\"$arg\"; fi\n"
+        "  if [ \"$arg\" = checkout ]; then is_checkout=1; fi\n"
+        f"  if [ \"$is_checkout\" = 1 ] && [ \"$git_root\" = {shlex.quote(str(op_root))} ] && [ \"$arg\" = {shlex.quote(relpath)} ]; then\n"
+        f"    printf '%s\\n' {shlex.quote(replacement)} > {shlex.quote(str(op_root / relpath))}\n"
+        "    echo forced partial git checkout failure >&2\n"
+        "    exit 88\n"
+        "  fi\n"
+        "  prev=\"$arg\"\n"
+        "done\n"
+        f"exec {shlex.quote(real_git)} \"$@\"\n"
+    )
+    fake_git.chmod(0o755)
+    return f"{fakebin}:{os.environ['PATH']}"
+
+
 def failing_rm_helper_path(tmp_path: Path, op_root: Path) -> str:
     real_rm = shutil.which("rm")
     assert real_rm
@@ -536,6 +563,40 @@ def test_apply_script_force_repair_backup_failure_stops_before_reset(tmp_path):
     assert "failed to back up managed onroad UI export transformer targets; refusing force repair" in result.stderr
     assert dirty_marker in ui_state.read_text()
     assert not (op_root / HELPER_PATH).exists()
+
+
+def test_apply_script_force_repair_restores_backup_when_reset_checkout_partially_fails(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+    assert applied.returncode == 0, applied.stderr
+    helper_text = (op_root / HELPER_PATH).read_text()
+    ui_state = op_root / "selfdrive" / "ui" / "ui_state.py"
+    dirty_marker = "# force repair must restore this dirty managed target"
+    ui_state.write_text(ui_state.read_text() + f"\n{dirty_marker}\n")
+    dirty_ui_state = ui_state.read_text()
+
+    result = run_lifecycle_script(
+        APPLY_SCRIPT,
+        install_dir,
+        op_root,
+        "--force-repair",
+        PATH=failing_git_checkout_after_mutating_path(
+            tmp_path,
+            op_root,
+            "selfdrive/ui/ui_state.py",
+            "# partially reset by failing checkout",
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "failed to reset managed onroad UI export transformer targets" in result.stderr
+    assert "restored managed targets from" in result.stderr
+    assert "rollback failed or incomplete" not in result.stderr
+    assert ui_state.read_text() == dirty_ui_state
+    assert (op_root / HELPER_PATH).read_text() == helper_text
 
 
 def test_apply_script_transform_backup_failure_stops_before_transform(tmp_path):
