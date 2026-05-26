@@ -28,6 +28,17 @@ assert_contains "promote_current:" "$WORKFLOW" "release workflow should expose e
 assert_contains "Promote this runtime tag to Firebase current-release after publishing assets" "$WORKFLOW" "Firebase runtime promotion input should explain the explicit promotion action"
 assert_contains "if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true" "$WORKFLOW" "Firebase current-release update should require explicit manual promotion"
 assert_contains "Promote Firebase current runtime release" "$WORKFLOW" "Firebase current-release step should be named as an explicit promotion"
+assert_contains "PROVENANCE_ASSETS=(" "$WORKFLOW" "release workflow should define provenance assets for upload"
+for asset in \
+  "dist/reproducible-build-manifest.json" \
+  "dist/upstream-interface-manifest.json" \
+  "dist/binary-contract.json" \
+  "dist/release-smoke-manifest.json" \
+  "dist/onroad-ui-export-status.json"; do
+  assert_contains "$asset" "$WORKFLOW" "release workflow should publish provenance asset $asset"
+  assert_contains "Missing provenance asset: \$asset" "$WORKFLOW" "release workflow should fail clearly when provenance assets are missing"
+done
+assert_contains 'gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}"' "$WORKFLOW" "release workflow should upload bundle, checksum, and provenance manifests together"
 
 release_gate_line="$(grep -n "Onroad UI export transformer apply/verify" "$WORKFLOW" | cut -d: -f1 | head -1)"
 verification_line="$(grep -n "Run release verification pipeline" "$WORKFLOW" | cut -d: -f1 | head -1)"

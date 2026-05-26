@@ -159,6 +159,13 @@ jobs:
           TAG='${{ steps.vars.outputs.tag }}'
           ASSET_TGZ="release/${TAG}/commaview-comma4-${TAG}.tar.gz"
           ASSET_SHA="${ASSET_TGZ}.sha256"
+          PROVENANCE_ASSETS=(
+            dist/reproducible-build-manifest.json
+            dist/upstream-interface-manifest.json
+            dist/binary-contract.json
+            dist/release-smoke-manifest.json
+            dist/onroad-ui-export-status.json
+          )
           NOTES_FILE="docs/release/${TAG}-user-facing.md"
           if [[ ! -f "$NOTES_FILE" ]]; then
             NOTES_FILE="release/${TAG}/github-release-notes.txt"
@@ -192,7 +199,14 @@ jobs:
               --prerelease
           fi
 
-          gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA" \
+          for asset in "${PROVENANCE_ASSETS[@]}"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "Missing provenance asset: $asset" >&2
+              exit 1
+            fi
+          done
+
+          gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
