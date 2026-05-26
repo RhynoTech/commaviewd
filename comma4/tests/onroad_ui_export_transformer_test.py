@@ -440,7 +440,8 @@ def test_apply_script_force_repair_resets_dirty_targets_then_reapplies_transform
     init_git_repo(op_root)
     install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
     ui_state = op_root / "selfdrive" / "ui" / "ui_state.py"
-    ui_state.write_text(ui_state.read_text() + "\n# user dirty change\n")
+    dirty_marker = "# user dirty change"
+    ui_state.write_text(ui_state.read_text() + f"\n{dirty_marker}\n")
 
     refused = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root)
 
@@ -450,6 +451,13 @@ def test_apply_script_force_repair_resets_dirty_targets_then_reapplies_transform
     repaired = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
 
     assert repaired.returncode == 0, repaired.stderr
+    backup_paths = re.findall(r"backups written to (\S+)", repaired.stderr)
+    assert backup_paths
+    assert any(
+        dirty_marker in (Path(backup_path) / "selfdrive" / "ui" / "ui_state.py").read_text()
+        for backup_path in backup_paths
+        if (Path(backup_path) / "selfdrive" / "ui" / "ui_state.py").exists()
+    )
     assert_ui_state_transformed(ui_state)
     assert_augmented_transformed(op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py")
     assert_augmented_transformed(op_root / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py")

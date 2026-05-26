@@ -67,8 +67,11 @@ FORCE_OFFROAD_OWNED=0
 FORCE_OFFROAD_PREV=""
 tmpdir=""
 COMPANION_DIR="$SCRIPT_DIR"
+BACKUP_ROOT="${COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups}"
+INSTALL_ROLLBACK_BACKUP_ROOT="${COMMAVIEWD_INSTALL_ROLLBACK_BACKUP_ROOT:-$BACKUP_ROOT/install-rollback}"
 INSTALL_MUTATED=0
 INSTALL_SUCCESS=0
+PRESERVE_TMPDIR=0
 
 usage() {
   cat <<USAGE
@@ -203,8 +206,19 @@ restore_force_offroad_mode() {
   fi
 }
 
+preserve_install_rollback_backup() {
+  local backup_dir="$1"
+  local preserved_dir=""
+  mkdir -p "$INSTALL_ROLLBACK_BACKUP_ROOT"
+  preserved_dir="$(mktemp -d "$INSTALL_ROLLBACK_BACKUP_ROOT/$(date -u +%Y%m%d-%H%M%S).XXXXXX")"
+  cp -a "$backup_dir"/. "$preserved_dir"/
+  printf '%s\n' "$preserved_dir"
+}
+
 restore_previous_install_tree() {
   local backup_dir="$tmpdir/previous-install"
+  local restore_ec=0
+  local preserved_dir=""
   [ "$INSTALL_MUTATED" = "1" ] || return 0
   [ "$INSTALL_SUCCESS" = "0" ] || return 0
   [ -d "$backup_dir" ] || return 0
@@ -223,7 +237,19 @@ restore_previous_install_tree() {
     "$INSTALL_DIR/scripts" \
     "$INSTALL_DIR/patches" \
     "$INSTALL_DIR/src"
-  cp -a "$backup_dir"/. "$INSTALL_DIR"/ 2>/dev/null || true
+  if cp -a "$backup_dir"/. "$INSTALL_DIR"/; then
+    :
+  else
+    restore_ec=$?
+    echo "ERROR: failed to restore previous CommaView install tree from $backup_dir" >&2
+    if preserved_dir="$(preserve_install_rollback_backup "$backup_dir")"; then
+      echo "ERROR: preserved failed install rollback backup at $preserved_dir" >&2
+    else
+      PRESERVE_TMPDIR=1
+      echo "ERROR: failed to preserve rollback backup under $INSTALL_ROLLBACK_BACKUP_ROOT; keeping temporary backup at $backup_dir" >&2
+    fi
+    return "$restore_ec"
+  fi
   if [ -x "$INSTALL_DIR/start.sh" ]; then
     echo "WARN: restarting restored CommaView runtime after failed install" >&2
     COMMAVIEWD_RESTART_REASON=install-rollback bash "$INSTALL_DIR/start.sh" >/dev/null 2>&1 || \
@@ -232,9 +258,15 @@ restore_previous_install_tree() {
 }
 
 cleanup() {
-  restore_previous_install_tree
+  local restore_ec=0
+  restore_previous_install_tree || restore_ec=$?
   restore_force_offroad_mode
-  rm -rf "${tmpdir:-}"
+  if [ "$PRESERVE_TMPDIR" = "1" ]; then
+    echo "WARN: preserving installer temporary directory for rollback diagnostics: $tmpdir" >&2
+  elif [ -n "${tmpdir:-}" ]; then
+    rm -rf "$tmpdir"
+  fi
+  return "$restore_ec"
 }
 
 wait_until_offroad() {

@@ -161,6 +161,31 @@ def test_install_script_rolls_back_managed_src_tree():
     assert deploy_body.index('mkdir -p "$INSTALL_DIR/src"') < deploy_body.index('copy_required_file "src/commaview_export.openpilot.py"')
 
 
+def test_install_script_failed_rollback_copy_preserves_backup_and_skips_restart():
+    text = INSTALL_SH.read_text()
+    restore_body = _shell_function_body(text, "restore_previous_install_tree")
+    preserve_body = _shell_function_body(text, "preserve_install_rollback_backup")
+    cleanup_body = _shell_function_body(text, "cleanup")
+
+    assert 'INSTALL_ROLLBACK_BACKUP_ROOT="${COMMAVIEWD_INSTALL_ROLLBACK_BACKUP_ROOT:-$BACKUP_ROOT/install-rollback}"' in text
+    assert 'BACKUP_ROOT="${COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups}"' in text
+    assert 'mktemp -d "$INSTALL_ROLLBACK_BACKUP_ROOT/$(date -u +%Y%m%d-%H%M%S).XXXXXX"' in preserve_body
+    assert 'cp -a "$backup_dir"/. "$preserved_dir"/' in preserve_body
+    assert 'PRESERVE_TMPDIR=1' in restore_body
+    assert 'keeping temporary backup at $backup_dir' in restore_body
+    assert 'if [ "$PRESERVE_TMPDIR" = "1" ]' in cleanup_body
+
+    assert 'cp -a "$backup_dir"/. "$INSTALL_DIR"/ 2>/dev/null || true' not in restore_body
+    assert not re.search(r'cp -a "\$backup_dir"/\. "\$INSTALL_DIR"/[^\n]*\|\|\s*true', restore_body)
+    assert 'if cp -a "$backup_dir"/. "$INSTALL_DIR"/; then' in restore_body
+    assert 'return "$restore_ec"' in restore_body
+
+    restore_copy = restore_body.index('if cp -a "$backup_dir"/. "$INSTALL_DIR"/; then')
+    restore_failure_return = restore_body.index('return "$restore_ec"')
+    runtime_restart = restore_body.index('COMMAVIEWD_RESTART_REASON=install-rollback')
+    assert restore_copy < restore_failure_return < runtime_restart
+
+
 def test_install_script_preserves_patch_flavor_state_and_supports_explicit_current_reinstall():
     text = INSTALL_SH.read_text()
     assert "clean_managed_install_tree" in text
