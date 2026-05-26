@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -5,6 +6,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRANSFORMER = REPO_ROOT / "comma4" / "scripts" / "transform_onroad_ui_export.py"
+APPLY_SCRIPT = REPO_ROOT / "comma4" / "scripts" / "apply_onroad_ui_export_patch.sh"
+REVERT_SCRIPT = REPO_ROOT / "comma4" / "scripts" / "revert_onroad_ui_export_patch.sh"
+OPENPILOT_TEMPLATE = REPO_ROOT / "comma4" / "src" / "commaview_export.openpilot.py"
+SUNNYPILOT_TEMPLATE = REPO_ROOT / "comma4" / "src" / "commaview_export.sunnypilot.py"
 
 EXPORT_IMPORT = "from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR"
 EXPORT_INSTALL = "self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)"
@@ -370,3 +375,109 @@ def test_transformer_fails_when_augmented_transform_anchor_is_duplicated(tmp_pat
 
     assert result.returncode != 0
     assert "set_transform(video_transform @ calib_transform)" in result.stderr
+
+
+def init_git_repo(op_root: Path) -> None:
+    subprocess.run(["git", "init"], cwd=op_root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    subprocess.run(["git", "config", "user.email", "commaview-test@example.invalid"], cwd=op_root, check=True)
+    subprocess.run(["git", "config", "user.name", "CommaView Test"], cwd=op_root, check=True)
+    subprocess.run(["git", "add", "."], cwd=op_root, check=True)
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=op_root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def prepare_lifecycle_install_dir(tmp_path: Path, op_root: Path) -> Path:
+    install_dir = tmp_path / "commaview"
+    (install_dir / "scripts").mkdir(parents=True)
+    (install_dir / "src").mkdir(parents=True)
+    (install_dir / "config").mkdir(parents=True)
+    shutil.copy2(TRANSFORMER, install_dir / "scripts" / "transform_onroad_ui_export.py")
+    shutil.copy2(APPLY_SCRIPT, install_dir / "scripts" / "apply_onroad_ui_export_patch.sh")
+    shutil.copy2(REVERT_SCRIPT, install_dir / "scripts" / "revert_onroad_ui_export_patch.sh")
+    shutil.copy2(OPENPILOT_TEMPLATE, install_dir / "src" / "commaview_export.openpilot.py")
+    shutil.copy2(SUNNYPILOT_TEMPLATE, install_dir / "src" / "commaview_export.sunnypilot.py")
+    (install_dir / "config" / "onroad-ui-export-patch.env").write_text(
+        f"ONROAD_UI_EXPORT_FLAVOR=openpilot\nONROAD_UI_EXPORT_OP_ROOT={op_root}\n"
+    )
+    return install_dir
+
+
+def lifecycle_env(install_dir: Path, op_root: Path) -> dict[str, str]:
+    return {
+        "COMMAVIEWD_INSTALL_DIR": str(install_dir),
+        "COMMAVIEWD_OP_ROOT": str(op_root),
+        "COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART": "1",
+    }
+
+
+def run_lifecycle_script(script: Path, install_dir: Path, op_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(script), *args],
+        env={**lifecycle_env(install_dir, op_root)},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def write_full_augmented_tree(tmp_path: Path) -> Path:
+    op_root = write_upstream_tree(tmp_path, ui_state=NEW_UI_STATE)
+    mici_path = op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py"
+    flat_path = op_root / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py"
+    mici_path.parent.mkdir(parents=True, exist_ok=True)
+    flat_path.parent.mkdir(parents=True, exist_ok=True)
+    mici_path.write_text(textwrap.dedent(AUGMENTED_ROAD_VIEW).lstrip())
+    flat_path.write_text(textwrap.dedent(FLAT_AUGMENTED_ROAD_VIEW).lstrip())
+    return op_root
+
+
+def test_apply_script_force_repair_resets_dirty_targets_then_reapplies_transformer(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    ui_state = op_root / "selfdrive" / "ui" / "ui_state.py"
+    ui_state.write_text(ui_state.read_text() + "\n# user dirty change\n")
+
+    refused = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root)
+
+    assert refused.returncode == 44
+    assert "refusing to modify dirty upstream files without --force-repair" in refused.stderr
+
+    repaired = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+
+    assert repaired.returncode == 0, repaired.stderr
+    assert_ui_state_transformed(ui_state)
+    assert_augmented_transformed(op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py")
+    assert_augmented_transformed(op_root / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py")
+    assert (op_root / HELPER_PATH).exists()
+
+
+def test_revert_script_removes_helper_and_restores_tracked_transformer_targets(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    originals = {
+        rel: (op_root / rel).read_text()
+        for rel in (
+            Path("selfdrive/ui/ui_state.py"),
+            Path("selfdrive/ui/mici/onroad/augmented_road_view.py"),
+            Path("selfdrive/ui/onroad/augmented_road_view.py"),
+        )
+    }
+
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+    assert applied.returncode == 0, applied.stderr
+    assert (op_root / HELPER_PATH).exists()
+
+    reverted = run_lifecycle_script(REVERT_SCRIPT, install_dir, op_root)
+
+    assert reverted.returncode == 0, reverted.stderr
+    assert not (op_root / HELPER_PATH).exists()
+    for rel, text in originals.items():
+        assert (op_root / rel).read_text() == text
+    status = subprocess.check_output(
+        ["git", "status", "--short", "--", "selfdrive/ui/commaview_export.py", "selfdrive/ui/ui_state.py", "selfdrive/ui/mici/onroad/augmented_road_view.py", "selfdrive/ui/onroad/augmented_road_view.py"],
+        cwd=op_root,
+        text=True,
+    )
+    assert status == ""

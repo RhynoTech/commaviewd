@@ -301,6 +301,7 @@ required_files=(
   "runtime-debug.defaults.json"
   "scripts/verify_onroad_ui_export_patch.sh"
   "scripts/apply_onroad_ui_export_patch.sh"
+  "scripts/revert_onroad_ui_export_patch.sh"
   "scripts/transform_onroad_ui_export.py"
   "src/commaview_export.openpilot.py"
   "src/commaview_export.sunnypilot.py"
@@ -364,6 +365,7 @@ deploy_required_scripts() {
   copy_required_file "runtime-debug.defaults.json" "$INSTALL_DIR/runtime-debug.defaults.json" 644
   copy_required_file "scripts/verify_onroad_ui_export_patch.sh" "$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
   copy_required_file "scripts/apply_onroad_ui_export_patch.sh" "$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh"
+  copy_required_file "scripts/revert_onroad_ui_export_patch.sh" "$INSTALL_DIR/scripts/revert_onroad_ui_export_patch.sh"
   copy_required_file "scripts/transform_onroad_ui_export.py" "$INSTALL_DIR/scripts/transform_onroad_ui_export.py"
   copy_required_file "src/commaview_export.openpilot.py" "$INSTALL_DIR/src/commaview_export.openpilot.py" 644
   copy_required_file "src/commaview_export.sunnypilot.py" "$INSTALL_DIR/src/commaview_export.sunnypilot.py" 644

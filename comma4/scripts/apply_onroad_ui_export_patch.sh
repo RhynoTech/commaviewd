@@ -135,7 +135,8 @@ managed_targets() {
   printf '%s\n' \
     "selfdrive/ui/commaview_export.py" \
     "selfdrive/ui/ui_state.py" \
-    "selfdrive/ui/mici/onroad/augmented_road_view.py"
+    "selfdrive/ui/mici/onroad/augmented_road_view.py" \
+    "selfdrive/ui/onroad/augmented_road_view.py"
 }
 
 backup_managed_targets() {

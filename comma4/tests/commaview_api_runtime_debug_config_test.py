@@ -6,7 +6,9 @@ DEFAULTS = REPO_ROOT / "comma4" / "runtime-debug.defaults.json"
 START_SH = REPO_ROOT / "comma4" / "start.sh"
 STOP_SH = REPO_ROOT / "comma4" / "stop.sh"
 INSTALL_SH = REPO_ROOT / "comma4" / "install.sh"
+UNINSTALL_SH = REPO_ROOT / "comma4" / "uninstall.sh"
 APPLY_PATCH_SH = REPO_ROOT / "comma4" / "scripts" / "apply_onroad_ui_export_patch.sh"
+REVERT_PATCH_SH = REPO_ROOT / "comma4" / "scripts" / "revert_onroad_ui_export_patch.sh"
 VERIFY_PATCH_SH = REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh"
 SUNNYPILOT_PATCH = REPO_ROOT / "comma4" / "patches" / "sunnypilot" / "0001-commaview-ui-export-v2.patch"
 CONTROL_CPP = REPO_ROOT / "commaviewd" / "src" / "control_mode.cpp"
@@ -205,6 +207,31 @@ def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_for
     assert 'rm -f "$OP_ROOT/$rel"' in text
     assert '--force-offroad' in text
     assert 'write_param "OffroadMode" "1"' in text
+
+
+def test_uninstall_script_reverts_transformer_before_removing_install_tree():
+    text = UNINSTALL_SH.read_text()
+    assert "revert_onroad_ui_export_patch.sh" in text
+    assert "Reverting direct v2 onroad UI export transformer" in text
+    assert 'bash "$INSTALL_DIR/stop.sh"' in text
+    assert 'rm -rf "$INSTALL_DIR"' in text
+    assert text.index('bash "$INSTALL_DIR/stop.sh"') < text.index("revert_onroad_ui_export_patch.sh")
+    assert text.index("revert_onroad_ui_export_patch.sh") < text.index('rm -rf "$INSTALL_DIR"')
+
+
+def test_revert_patch_script_resets_every_transformer_managed_target():
+    text = REVERT_PATCH_SH.read_text()
+    assert "managed_targets()" in text
+    assert "backup_managed_targets()" in text
+    assert "reset_managed_targets()" in text
+    assert "restart_openpilot_ui_if_offroad" in text
+    assert "selfdrive/ui/commaview_export.py" in text
+    assert "selfdrive/ui/ui_state.py" in text
+    assert "selfdrive/ui/mici/onroad/augmented_road_view.py" in text
+    assert "selfdrive/ui/onroad/augmented_road_view.py" in text
+    assert 'git -C "$OP_ROOT" reset -q HEAD -- "$rel"' in text
+    assert 'git -C "$OP_ROOT" checkout -- "$rel"' in text
+    assert 'rm -f "$OP_ROOT/$rel"' in text
 
 
 def test_apply_patch_script_restarts_openpilot_ui_after_patch_lifecycle_offroad_only():
