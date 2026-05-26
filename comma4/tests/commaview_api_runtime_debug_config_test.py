@@ -290,7 +290,8 @@ def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_for
     assert 'backup_root="$(mktemp -d "$backup_parent/$(date -u +%Y%m%d-%H%M%S).XXXXXX")" || return $?' in text
     assert 'cp -a "$OP_ROOT/$rel" "$backup_root/$rel" || return $?' in text
     assert 'failed to back up managed onroad UI export transformer targets; refusing force repair' in text
-    assert 'failed to reset managed onroad UI export transformer targets; refusing force repair' in text
+    assert 'failed to reset managed onroad UI export transformer targets; restored managed targets from $backup_root' in text
+    assert 'failed to reset managed onroad UI export transformer targets and rollback failed or incomplete from $backup_root' in text
     assert 'failed to back up managed onroad UI export transformer targets before transform' in text
     assert 'local reset_ec=0' in reset_body
     assert 'return "$reset_ec"' in reset_body
