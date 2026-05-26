@@ -272,6 +272,7 @@ def test_verify_patch_script_requires_onroad_projection_markers():
 
 def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_force_repair():
     text = APPLY_PATCH_SH.read_text()
+    restore_body = _shell_function_body(text, "restore_managed_targets_from_backup")
     reset_body = _shell_function_body(text, "reset_managed_targets")
     assert "managed_targets()" in text
     assert "backup_managed_targets()" in text
@@ -297,10 +298,19 @@ def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_for
     assert 'rm -f "$OP_ROOT/$rel"' in reset_body
     assert 'reset_managed_targets || reset_ec=$?' in text
     assert 'reset of managed targets had errors before rollback restore' in text
+    assert 'while IFS= read -r rel; do' in restore_body
+    assert 'mkdir -p "$OP_ROOT/$(dirname "$rel")"' in restore_body
+    assert 'cp -a "$backup_root/$rel" "$OP_ROOT/$rel"' in restore_body
+    assert 'rm -f "$OP_ROOT/$rel"' in restore_body
+    assert 'rollback_managed_targets_clean()' in text
+    assert 'managed rollback incomplete; dirty targets remain:' in text
+    assert 'rollback_managed_targets_clean || rollback_clean_ec=$?' in text
+    assert 'if [ "$restore_ec" -eq 0 ] && [ "$rollback_clean_ec" -eq 0 ]; then' in text
     assert text.index('reset_managed_targets || reset_ec=$?') < text.index('restore_managed_targets_from_backup "$transform_backup_root"')
+    assert text.index('restore_managed_targets_from_backup "$transform_backup_root"') < text.index('rollback_managed_targets_clean || rollback_clean_ec=$?')
     assert 'backups written to $backup_root' in text
     assert 'transformer failed; restored managed targets' in text
-    assert 'transformer failed and rollback failed' in text
+    assert 'transformer failed and rollback failed or incomplete' in text
     assert 'cp -a "$backup_root"/. "$OP_ROOT"/ 2>/dev/null || true' not in text
     assert 'remote_flavor()' in text
     assert 'github.com:commaai/openpilot' in text

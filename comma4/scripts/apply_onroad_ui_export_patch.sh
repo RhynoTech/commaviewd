@@ -157,8 +157,43 @@ backup_managed_targets() {
 
 restore_managed_targets_from_backup() {
   local backup_root="$1"
-  [ -d "$backup_root" ] || return 0
-  cp -a "$backup_root"/. "$OP_ROOT"/
+  local rel=""
+  local restore_ec=0
+  [ -d "$backup_root" ] || return 1
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if [ -e "$backup_root/$rel" ]; then
+      if ! mkdir -p "$OP_ROOT/$(dirname "$rel")"; then
+        echo "WARN: failed to create parent for managed rollback target: $rel" >&2
+        restore_ec=1
+        continue
+      fi
+      if ! cp -a "$backup_root/$rel" "$OP_ROOT/$rel"; then
+        echo "WARN: failed to restore managed rollback target from backup: $rel" >&2
+        restore_ec=1
+      fi
+    else
+      if ! rm -f "$OP_ROOT/$rel"; then
+        echo "WARN: failed to remove managed rollback target absent from backup: $rel" >&2
+        restore_ec=1
+      fi
+    fi
+  done < <(managed_targets)
+  return "$restore_ec"
+}
+
+rollback_managed_targets_clean() {
+  local rollback_dirty=""
+  if ! rollback_dirty="$(dirty_managed_targets)"; then
+    echo "WARN: failed to verify managed rollback cleanliness" >&2
+    return 1
+  fi
+  if [ -n "$rollback_dirty" ]; then
+    echo "WARN: managed rollback incomplete; dirty targets remain:" >&2
+    printf '%s\n' "$rollback_dirty" >&2
+    return 1
+  fi
+  return 0
 }
 
 dirty_managed_targets() {
@@ -287,10 +322,14 @@ else
   if [ "$reset_ec" -ne 0 ]; then
     echo "WARN: reset of managed targets had errors before rollback restore" >&2
   fi
-  if restore_managed_targets_from_backup "$transform_backup_root"; then
+  restore_ec=0
+  rollback_clean_ec=0
+  restore_managed_targets_from_backup "$transform_backup_root" || restore_ec=$?
+  rollback_managed_targets_clean || rollback_clean_ec=$?
+  if [ "$restore_ec" -eq 0 ] && [ "$rollback_clean_ec" -eq 0 ]; then
     echo "ERROR: transformer failed; restored managed targets from $transform_backup_root" >&2
   else
-    echo "ERROR: transformer failed and rollback failed from $transform_backup_root" >&2
+    echo "ERROR: transformer failed and rollback failed or incomplete from $transform_backup_root" >&2
   fi
   exit "$transform_ec"
 fi

@@ -494,6 +494,28 @@ def failing_git_checkout_path(tmp_path: Path) -> str:
     return f"{fakebin}:{os.environ['PATH']}"
 
 
+def failing_rm_helper_path(tmp_path: Path, op_root: Path) -> str:
+    real_rm = shutil.which("rm")
+    assert real_rm
+    helper = op_root / HELPER_PATH
+    fakebin = tmp_path / "fakermbin"
+    fakebin.mkdir()
+    fake_rm = fakebin / "rm"
+    fake_rm.write_text(
+        "#!/bin/sh\n"
+        f"helper={shlex.quote(str(helper))}\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$arg\" = \"$helper\" ]; then\n"
+        "    echo forced rm helper failure >&2\n"
+        "    exit 89\n"
+        "  fi\n"
+        "done\n"
+        f"exec {shlex.quote(real_rm)} \"$@\"\n"
+    )
+    fake_rm.chmod(0o755)
+    return f"{fakebin}:{os.environ['PATH']}"
+
+
 def test_apply_script_force_repair_backup_failure_stops_before_reset(tmp_path):
     op_root = write_full_augmented_tree(tmp_path)
     init_git_repo(op_root)
@@ -623,6 +645,37 @@ def test_apply_script_attempts_rollback_restore_when_reset_fails_after_transform
     assert ui_state.read_text() == original_ui_state
     assert augmented_path.read_text() == original_augmented
     assert not (op_root / HELPER_PATH).exists()
+
+
+def test_apply_script_reports_incomplete_rollback_when_absent_helper_remove_fails(tmp_path):
+    broken_augmented = AUGMENTED_ROAD_VIEW.replace(
+        "    self._model_renderer.set_transform(video_transform @ calib_transform)\n",
+        "",
+    )
+    op_root = write_augmented_tree(tmp_path, broken_augmented)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+
+    result = run_lifecycle_script(
+        APPLY_SCRIPT,
+        install_dir,
+        op_root,
+        PATH=failing_rm_helper_path(tmp_path, op_root),
+    )
+
+    assert result.returncode != 0
+    assert "WARN: failed to remove untracked managed target: selfdrive/ui/commaview_export.py" in result.stderr
+    assert "WARN: failed to remove managed rollback target absent from backup: selfdrive/ui/commaview_export.py" in result.stderr
+    assert "WARN: managed rollback incomplete; dirty targets remain:" in result.stderr
+    assert "transformer failed and rollback failed or incomplete" in result.stderr
+    assert "transformer failed; restored managed targets" not in result.stderr
+    assert (op_root / HELPER_PATH).exists()
+    status = subprocess.check_output(
+        ["git", "status", "--short", "--", "selfdrive/ui/commaview_export.py"],
+        cwd=op_root,
+        text=True,
+    )
+    assert "selfdrive/ui/commaview_export.py" in status
 
 
 def test_apply_script_force_repair_and_transform_failure_use_distinct_backups(tmp_path):
