@@ -26,6 +26,7 @@ sudo apt-get -o Dir::Cache::archives="$APT_CACHE_DIR" install -y --no-install-re
   binutils-aarch64-linux-gnu \
   capnproto \
   python3 \
+  python3-pytest \
   libzmq3-dev \
   libcapnp-dev
 
