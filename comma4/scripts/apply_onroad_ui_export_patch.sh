@@ -140,9 +140,11 @@ managed_targets() {
 }
 
 backup_managed_targets() {
-  local backup_root="$INSTALL_DIR/backups/onroad-ui-export/$(date -u +%Y%m%d-%H%M%S)"
+  local backup_parent="$INSTALL_DIR/backups/onroad-ui-export"
+  local backup_root=""
   local rel=""
-  mkdir -p "$backup_root"
+  mkdir -p "$backup_parent"
+  backup_root="$(mktemp -d "$backup_parent/$(date -u +%Y%m%d-%H%M%S).XXXXXX")"
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     if [ -e "$OP_ROOT/$rel" ]; then

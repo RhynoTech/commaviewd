@@ -221,7 +221,8 @@ restore_previous_install_tree() {
   rm -rf \
     "$INSTALL_DIR/lib" \
     "$INSTALL_DIR/scripts" \
-    "$INSTALL_DIR/patches"
+    "$INSTALL_DIR/patches" \
+    "$INSTALL_DIR/src"
   cp -a "$backup_dir"/. "$INSTALL_DIR"/ 2>/dev/null || true
   if [ -x "$INSTALL_DIR/start.sh" ]; then
     echo "WARN: restarting restored CommaView runtime after failed install" >&2
@@ -360,6 +361,7 @@ validate_required_files() {
 }
 
 deploy_required_scripts() {
+  mkdir -p "$INSTALL_DIR/src"
   copy_required_file "install.sh" "$INSTALL_DIR/install.sh"
   copy_required_file "start.sh" "$INSTALL_DIR/start.sh"
   copy_required_file "runtime-debug.defaults.json" "$INSTALL_DIR/runtime-debug.defaults.json" 644
@@ -447,7 +449,8 @@ backup_managed_install_tree() {
     version.env \
     lib \
     scripts \
-    patches; do
+    patches \
+    src; do
     [ -e "$INSTALL_DIR/$rel" ] || continue
     cp -a "$INSTALL_DIR/$rel" "$backup_dir/$rel"
   done
@@ -468,6 +471,7 @@ clean_managed_install_tree() {
     "$INSTALL_DIR/lib" \
     "$INSTALL_DIR/scripts" \
     "$INSTALL_DIR/patches" \
+    "$INSTALL_DIR/src" \
     "$INSTALL_DIR/run"
   mkdir -p \
     "$INSTALL_DIR/logs" \

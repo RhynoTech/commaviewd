@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -138,6 +139,26 @@ def test_install_script_uses_robust_runtime_stop_before_mutating_live_tree():
     stop_call = text.index('echo "Stopping existing CommaView processes..."')
     clean_call = text.index('\nclean_managed_install_tree', stop_call)
     assert stop_call < clean_call
+
+
+def _shell_function_body(text: str, name: str) -> str:
+    match = re.search(rf"\n{name}\(\) \{{(?P<body>.*?)\n\}}", text, re.S)
+    assert match, f"missing shell function {name}"
+    return match.group("body")
+
+
+def test_install_script_rolls_back_managed_src_tree():
+    text = INSTALL_SH.read_text()
+    backup_body = _shell_function_body(text, "backup_managed_install_tree")
+    clean_body = _shell_function_body(text, "clean_managed_install_tree")
+    restore_body = _shell_function_body(text, "restore_previous_install_tree")
+    deploy_body = _shell_function_body(text, "deploy_required_scripts")
+
+    assert "src" in backup_body
+    assert '"$INSTALL_DIR/src"' in clean_body
+    assert '"$INSTALL_DIR/src"' in restore_body
+    assert 'mkdir -p "$INSTALL_DIR/src"' in deploy_body
+    assert deploy_body.index('mkdir -p "$INSTALL_DIR/src"') < deploy_body.index('copy_required_file "src/commaview_export.openpilot.py"')
 
 
 def test_install_script_preserves_patch_flavor_state_and_supports_explicit_current_reinstall():

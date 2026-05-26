@@ -1,4 +1,6 @@
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -511,6 +513,40 @@ def test_apply_script_rolls_back_partial_transformer_failure(tmp_path):
         text=True,
     )
     assert status == ""
+
+
+def test_apply_script_force_repair_and_transform_failure_use_distinct_backups(tmp_path):
+    broken_augmented = AUGMENTED_ROAD_VIEW.replace(
+        "    self._model_renderer.set_transform(video_transform @ calib_transform)\n",
+        "",
+    )
+    op_root = write_augmented_tree(tmp_path, broken_augmented)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    ui_state = op_root / "selfdrive" / "ui" / "ui_state.py"
+    ui_state.write_text(ui_state.read_text() + "\n# dirty local user change\n")
+
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    fake_date = fakebin / "date"
+    fake_date.write_text("#!/bin/sh\necho 20260526-132500\n")
+    fake_date.chmod(0o755)
+
+    result = run_lifecycle_script(
+        APPLY_SCRIPT,
+        install_dir,
+        op_root,
+        "--force-repair",
+        PATH=f"{fakebin}:{os.environ['PATH']}",
+    )
+
+    assert result.returncode != 0
+    backup_paths = re.findall(r"backups written to (\S+)", result.stderr)
+    restore_paths = re.findall(r"restored managed targets from (\S+)", result.stderr)
+    assert backup_paths
+    assert restore_paths
+    all_paths = backup_paths + restore_paths
+    assert len(set(all_paths)) >= 2, result.stderr
 
 
 def test_revert_script_writes_backup_outside_install_tree(tmp_path):
