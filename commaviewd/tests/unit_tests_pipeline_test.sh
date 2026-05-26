@@ -35,6 +35,6 @@ grep -Fq 'local_discovery_contract_test.sh' "$RUNNER" || { echo "FAIL: run-unit-
 grep -Fq 'upstream_interface_guard_transformer_test.sh' "$RUNNER" || { echo "FAIL: run-unit-tests should execute upstream interface guard transformer contract"; exit 1; }
 grep -Fq 'device_test_workflow_contract_test.sh' "$RUNNER" || { echo "FAIL: run-unit-tests should execute device-test workflow contract"; exit 1; }
 grep -Fq 'ci_workflow_contract_test.sh' "$RUNNER" || { echo "FAIL: run-unit-tests should execute CI workflow contract"; exit 1; }
-grep -Fq 'python3-pytest' scripts/install-commaviewd-toolchain.sh || { echo "FAIL: toolchain install should include python3-pytest"; exit 1; }
+grep -Fq 'python3-pytest' "$REPO_ROOT/scripts/install-commaviewd-toolchain.sh" || { echo "FAIL: toolchain install should include python3-pytest"; exit 1; }
 
 echo "PASS: verification pipeline scripts exist and support --help"
