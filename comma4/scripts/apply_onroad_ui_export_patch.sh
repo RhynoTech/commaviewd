@@ -143,22 +143,22 @@ backup_managed_targets() {
   local backup_parent="$INSTALL_DIR/backups/onroad-ui-export"
   local backup_root=""
   local rel=""
-  mkdir -p "$backup_parent"
-  backup_root="$(mktemp -d "$backup_parent/$(date -u +%Y%m%d-%H%M%S).XXXXXX")"
+  mkdir -p "$backup_parent" || return $?
+  backup_root="$(mktemp -d "$backup_parent/$(date -u +%Y%m%d-%H%M%S).XXXXXX")" || return $?
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     if [ -e "$OP_ROOT/$rel" ]; then
-      mkdir -p "$backup_root/$(dirname "$rel")"
-      cp -a "$OP_ROOT/$rel" "$backup_root/$rel"
+      mkdir -p "$backup_root/$(dirname "$rel")" || return $?
+      cp -a "$OP_ROOT/$rel" "$backup_root/$rel" || return $?
     fi
   done < <(managed_targets)
-  printf '%s\n' "$backup_root"
+  printf '%s\n' "$backup_root" || return $?
 }
 
 restore_managed_targets_from_backup() {
   local backup_root="$1"
   [ -d "$backup_root" ] || return 0
-  cp -a "$backup_root"/. "$OP_ROOT"/ 2>/dev/null || true
+  cp -a "$backup_root"/. "$OP_ROOT"/
 }
 
 dirty_managed_targets() {
@@ -184,7 +184,10 @@ reset_managed_targets() {
 
 force_repair_managed_targets() {
   local backup_root=""
-  backup_root="$(backup_managed_targets)"
+  if ! backup_root="$(backup_managed_targets)"; then
+    echo "ERROR: failed to back up managed onroad UI export transformer targets; refusing force repair" >&2
+    return 1
+  fi
   echo "WARN: force repairing managed onroad UI export transformer targets" >&2
   echo "WARN: backups written to $backup_root" >&2
   reset_managed_targets
@@ -257,14 +260,20 @@ elif [ "$FORCE_REPAIR" = "1" ]; then
   force_repair_managed_targets
 fi
 
-transform_backup_root="$(backup_managed_targets)"
+if ! transform_backup_root="$(backup_managed_targets)"; then
+  echo "ERROR: failed to back up managed onroad UI export transformer targets before transform" >&2
+  exit 1
+fi
 if python3 "$TRANSFORMER" --op-root "$OP_ROOT" --flavor "$flavor"; then
   :
 else
   transform_ec=$?
   reset_managed_targets
-  restore_managed_targets_from_backup "$transform_backup_root"
-  echo "ERROR: transformer failed; restored managed targets from $transform_backup_root" >&2
+  if restore_managed_targets_from_backup "$transform_backup_root"; then
+    echo "ERROR: transformer failed; restored managed targets from $transform_backup_root" >&2
+  else
+    echo "ERROR: transformer failed and rollback failed from $transform_backup_root" >&2
+  fi
   exit "$transform_ec"
 fi
 

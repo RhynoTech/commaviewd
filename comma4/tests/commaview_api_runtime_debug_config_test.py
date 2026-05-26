@@ -284,8 +284,15 @@ def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_for
     assert 'if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ]' in text
     assert 'onroad UI export transformer target files have local changes' in text
     assert 'refusing to modify dirty upstream files without --force-repair' in text
+    assert 'mkdir -p "$backup_parent" || return $?' in text
+    assert 'backup_root="$(mktemp -d "$backup_parent/$(date -u +%Y%m%d-%H%M%S).XXXXXX")" || return $?' in text
+    assert 'cp -a "$OP_ROOT/$rel" "$backup_root/$rel" || return $?' in text
+    assert 'failed to back up managed onroad UI export transformer targets; refusing force repair' in text
+    assert 'failed to back up managed onroad UI export transformer targets before transform' in text
     assert 'backups written to $backup_root' in text
     assert 'transformer failed; restored managed targets' in text
+    assert 'transformer failed and rollback failed' in text
+    assert 'cp -a "$backup_root"/. "$OP_ROOT"/ 2>/dev/null || true' not in text
     assert 'remote_flavor()' in text
     assert 'github.com:commaai/openpilot' in text
     assert 'github.com:sunnypilot/sunnypilot' in text

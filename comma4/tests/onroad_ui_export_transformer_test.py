@@ -464,6 +464,57 @@ def test_apply_script_force_repair_resets_dirty_targets_then_reapplies_transform
     assert (op_root / HELPER_PATH).exists()
 
 
+def failing_mktemp_path(tmp_path: Path) -> str:
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    fake_mktemp = fakebin / "mktemp"
+    fake_mktemp.write_text("#!/bin/sh\necho forced mktemp failure >&2\nexit 77\n")
+    fake_mktemp.chmod(0o755)
+    return f"{fakebin}:{os.environ['PATH']}"
+
+
+def test_apply_script_force_repair_backup_failure_stops_before_reset(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    ui_state = op_root / "selfdrive" / "ui" / "ui_state.py"
+    dirty_marker = "# user dirty change before failed backup"
+    ui_state.write_text(ui_state.read_text() + f"\n{dirty_marker}\n")
+
+    result = run_lifecycle_script(
+        APPLY_SCRIPT,
+        install_dir,
+        op_root,
+        "--force-repair",
+        PATH=failing_mktemp_path(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert "failed to back up managed onroad UI export transformer targets; refusing force repair" in result.stderr
+    assert dirty_marker in ui_state.read_text()
+    assert not (op_root / HELPER_PATH).exists()
+
+
+def test_apply_script_transform_backup_failure_stops_before_transform(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    ui_state = op_root / "selfdrive" / "ui" / "ui_state.py"
+    original_ui_state = ui_state.read_text()
+
+    result = run_lifecycle_script(
+        APPLY_SCRIPT,
+        install_dir,
+        op_root,
+        PATH=failing_mktemp_path(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert "failed to back up managed onroad UI export transformer targets before transform" in result.stderr
+    assert ui_state.read_text() == original_ui_state
+    assert not (op_root / HELPER_PATH).exists()
+
+
 def test_revert_script_removes_helper_and_restores_tracked_transformer_targets(tmp_path):
     op_root = write_full_augmented_tree(tmp_path)
     init_git_repo(op_root)
