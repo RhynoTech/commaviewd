@@ -193,6 +193,53 @@ def test_install_script_failed_rollback_copy_preserves_backup_and_skips_restart(
     assert restore_copy < restore_failure_return < runtime_restart
 
 
+def test_install_cleanup_reverts_transformer_before_restoring_previous_install(tmp_path):
+    text = INSTALL_SH.read_text()
+    cleanup_definition = _shell_function_definition(text, "cleanup")
+    revert_definition = _shell_function_definition(text, "revert_onroad_ui_export_after_failed_install")
+    install_dir = tmp_path / "commaview"
+    scripts_dir = install_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    op_file = tmp_path / "openpilot" / "selfdrive" / "ui" / "ui_state.py"
+    op_file.parent.mkdir(parents=True)
+    op_file.write_text("patched by failed install\n")
+    order_file = tmp_path / "order.txt"
+    revert_helper = scripts_dir / "revert_onroad_ui_export_patch.sh"
+    revert_helper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'revert\\n' >> {shlex.quote(str(order_file))}\n"
+        f"printf 'original upstream ui\\n' > {shlex.quote(str(op_file))}\n"
+    )
+    revert_helper.chmod(0o755)
+    script = f"""
+set -euo pipefail
+INSTALL_DIR={shlex.quote(str(install_dir))}
+tmpdir={shlex.quote(str(tmp_path / "tmp"))}
+PRESERVE_TMPDIR=0
+ONROAD_UI_EXPORT_APPLIED=1
+INSTALL_SUCCESS=0
+INSTALL_MUTATED=1
+FORCE_OFFROAD=0
+restore_force_offroad_mode() {{ :; }}
+restore_previous_install_tree() {{ printf 'restore-install\\n' >> {shlex.quote(str(order_file))}; }}
+{revert_definition}
+{cleanup_definition}
+cleanup
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", script],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert op_file.read_text() == "original upstream ui\n"
+    assert order_file.read_text().splitlines() == ["revert", "restore-install"]
+
+
 def test_preserve_install_rollback_backup_returns_nonzero_when_copy_fails_under_command_substitution(tmp_path):
     text = INSTALL_SH.read_text()
     function_definition = _shell_function_definition(text, "preserve_install_rollback_backup")
@@ -349,6 +396,35 @@ def test_uninstall_script_actual_revert_runs_before_uninstall_mutations():
     assert revert_index < stop_index
     assert revert_index < boot_hook_index
     assert text.count('bash "$revert_helper" "${revert_args[@]}"') == 1
+
+
+def test_uninstall_script_aborts_when_revert_helper_is_missing(tmp_path):
+    install_dir = tmp_path / "commaview"
+    install_dir.mkdir()
+    stop_marker = install_dir / "stop-called"
+    (install_dir / "stop.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf stopped > {shlex.quote(str(stop_marker))}\n"
+    )
+    (install_dir / "stop.sh").chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(UNINSTALL_SH)],
+        env={"COMMAVIEWD_INSTALL_DIR": str(install_dir), "PATH": "/usr/bin:/bin"},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert install_dir.exists()
+    assert not stop_marker.exists()
+    assert "Stopping services" not in result.stdout
+    assert "Removing boot hook" not in result.stdout
+    assert "Removing files" not in result.stdout
+    assert "revert helper missing" in result.stderr
+    assert "preserving" in result.stderr
 
 
 def test_uninstall_script_aborts_before_mutation_when_actual_revert_fails_after_preflight_would_pass(tmp_path):

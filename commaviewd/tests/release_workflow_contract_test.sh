@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 WORKFLOW="$REPO_ROOT/.github/workflows/commaviewd-release.yml"
+BUILD_BUNDLE="$REPO_ROOT/tools/release/comma4-build-bundle.sh"
 
 assert_file() {
   [[ -f "$1" ]] || { echo "FAIL: missing $1" >&2; exit 1; }
@@ -17,6 +18,7 @@ assert_contains() {
 }
 
 assert_file "$WORKFLOW"
+assert_file "$BUILD_BUNDLE"
 assert_contains "Onroad UI export transformer apply/verify" "$WORKFLOW" "release workflow should apply/verify transformer before packaging"
 assert_contains "apply_onroad_ui_export_patch.sh" "$WORKFLOW" "release workflow should apply transformer"
 assert_contains "verify_onroad_ui_export_patch.sh --json" "$WORKFLOW" "release workflow should verify transformer"
@@ -30,6 +32,8 @@ assert_contains "if: github.event_name == 'workflow_dispatch' && inputs.promote_
 assert_contains "Promote Firebase current runtime release" "$WORKFLOW" "Firebase current-release step should be named as an explicit promotion"
 assert_contains "PROVENANCE_ASSETS=(" "$WORKFLOW" "release workflow should define provenance assets for upload"
 assert_contains 'REQUIRED_ASSETS=("$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}")' "$WORKFLOW" "release workflow should validate bundle, checksum, and provenance assets"
+assert_contains 'cd "$OUT_DIR"' "$BUILD_BUNDLE" "bundle script should enter release directory before writing checksum"
+assert_contains 'sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"' "$BUILD_BUNDLE" "bundle script should write checksum with portable asset basename"
 for asset in \
   "dist/reproducible-build-manifest.json" \
   "dist/upstream-interface-manifest.json" \
@@ -39,13 +43,13 @@ for asset in \
   assert_contains "$asset" "$WORKFLOW" "release workflow should publish provenance asset $asset"
 done
 assert_contains "Missing release asset: \$asset" "$WORKFLOW" "release workflow should fail clearly when any release asset is missing"
-assert_contains 'sha256sum -c "$ASSET_SHA"' "$WORKFLOW" "release workflow should validate checksum file against release tarball before publishing"
+assert_contains '(cd "release/${TAG}" && sha256sum -c "commaview-comma4-${TAG}.tar.gz.sha256")' "$WORKFLOW" "release workflow should validate portable checksum file from inside release directory"
 assert_contains 'for manifest in "${PROVENANCE_ASSETS[@]}"; do' "$WORKFLOW" "release workflow should validate every provenance JSON manifest"
 assert_contains 'python3 -m json.tool "$manifest" >/dev/null' "$WORKFLOW" "release workflow should parse provenance manifests as JSON before publishing"
 assert_contains 'gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}"' "$WORKFLOW" "release workflow should upload bundle, checksum, and provenance manifests together"
 
 release_asset_validation_line="$(grep -n "REQUIRED_ASSETS=(" "$WORKFLOW" | cut -d: -f1 | head -1)"
-checksum_validation_line="$(grep -n 'sha256sum -c "$ASSET_SHA"' "$WORKFLOW" | cut -d: -f1 | head -1)"
+checksum_validation_line="$(grep -n 'sha256sum -c "commaview-comma4-${TAG}.tar.gz.sha256"' "$WORKFLOW" | cut -d: -f1 | head -1)"
 json_validation_line="$(grep -n 'python3 -m json.tool "$manifest" >/dev/null' "$WORKFLOW" | cut -d: -f1 | head -1)"
 release_create_line="$(grep -n "gh release create" "$WORKFLOW" | cut -d: -f1 | head -1)"
 release_edit_line="$(grep -n "gh release edit" "$WORKFLOW" | cut -d: -f1 | head -1)"

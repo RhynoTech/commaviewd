@@ -26,7 +26,8 @@ if [ -x "$revert_helper" ]; then
     exit "$revert_ec"
   fi
 else
-  echo "WARN: direct v2 onroad UI export transformer revert helper missing" >&2
+  echo "ERROR: direct v2 onroad UI export transformer revert helper missing; uninstall aborted before stopping services or removing files; preserving $INSTALL_DIR for recovery" >&2
+  exit 1
 fi
 
 echo "Stopping services..."

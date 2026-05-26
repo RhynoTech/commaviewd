@@ -181,7 +181,7 @@ jobs:
               exit 1
             fi
           done
-          sha256sum -c "$ASSET_SHA"
+          (cd "release/${TAG}" && sha256sum -c "commaview-comma4-${TAG}.tar.gz.sha256")
           for manifest in "${PROVENANCE_ASSETS[@]}"; do
             python3 -m json.tool "$manifest" >/dev/null
           done

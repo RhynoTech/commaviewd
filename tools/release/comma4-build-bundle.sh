@@ -130,8 +130,8 @@ echo "[3/3] Packing release asset..."
 (
   cd "$OUT_DIR"
   tar -czf "${NAME}.tar.gz" "${NAME}"
+  sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
 )
-sha256sum "$ASSET_TGZ" > "$ASSET_SHA"
 
 ls -lh "$ASSET_TGZ" "$ASSET_SHA"
 cat "$ASSET_SHA"

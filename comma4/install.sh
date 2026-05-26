@@ -72,6 +72,7 @@ INSTALL_ROLLBACK_BACKUP_ROOT="${COMMAVIEWD_INSTALL_ROLLBACK_BACKUP_ROOT:-$BACKUP
 INSTALL_MUTATED=0
 INSTALL_SUCCESS=0
 PRESERVE_TMPDIR=0
+ONROAD_UI_EXPORT_APPLIED=0
 
 usage() {
   cat <<USAGE
@@ -257,9 +258,41 @@ restore_previous_install_tree() {
   fi
 }
 
+revert_onroad_ui_export_after_failed_install() {
+  local revert_helper="$INSTALL_DIR/scripts/revert_onroad_ui_export_patch.sh"
+  local revert_args=()
+  local revert_ec=0
+  [ "$ONROAD_UI_EXPORT_APPLIED" = "1" ] || return 0
+  [ "$INSTALL_SUCCESS" = "0" ] || return 0
+
+  if [ ! -x "$revert_helper" ]; then
+    echo "ERROR: install failed after applying onroad UI export transformer, but revert helper is missing; preserving $INSTALL_DIR for recovery" >&2
+    PRESERVE_TMPDIR=1
+    return 1
+  fi
+
+  if [ "$FORCE_OFFROAD" = "1" ]; then
+    revert_args+=(--force-offroad)
+  fi
+
+  echo "WARN: install failed after applying onroad UI export transformer; reverting upstream UI files" >&2
+  COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$revert_helper" "${revert_args[@]}" || revert_ec=$?
+  if [ "$revert_ec" -ne 0 ]; then
+    echo "ERROR: failed to revert onroad UI export transformer after failed install; preserving $INSTALL_DIR for recovery" >&2
+    PRESERVE_TMPDIR=1
+    return "$revert_ec"
+  fi
+  return 0
+}
+
 cleanup() {
   local restore_ec=0
-  restore_previous_install_tree || restore_ec=$?
+  if revert_onroad_ui_export_after_failed_install; then
+    restore_previous_install_tree || restore_ec=$?
+  else
+    restore_ec=$?
+    echo "ERROR: skipping previous install restore because upstream UI transformer revert failed" >&2
+  fi
   restore_force_offroad_mode
   if [ "$PRESERVE_TMPDIR" = "1" ]; then
     echo "WARN: preserving installer temporary directory for rollback diagnostics: $tmpdir" >&2
@@ -580,6 +613,7 @@ ensure_api_auth_token
 echo "Applying direct v2 onroad UI export patch lifecycle..."
 if [ -x "$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh" ]; then
   COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh" --force-repair
+  ONROAD_UI_EXPORT_APPLIED=1
 else
   echo "ERROR: missing onroad UI export patch apply helper" >&2
   exit 1
