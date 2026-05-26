@@ -11,26 +11,37 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+revert_args=()
+if [ "$FORCE_OFFROAD" = "1" ]; then
+  revert_args+=(--force-offroad)
+fi
+revert_helper="$INSTALL_DIR/scripts/revert_onroad_ui_export_patch.sh"
+
+if [ -x "$revert_helper" ]; then
+  COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$revert_helper" "${revert_args[@]}" --preflight-only
+  preflight_ec=$?
+  if [ "$preflight_ec" -ne 0 ]; then
+    echo "ERROR: uninstall aborted before stopping services or removing boot hook; onroad UI export transformer revert preflight failed with exit $preflight_ec" >&2
+    exit "$preflight_ec"
+  fi
+else
+  echo "WARN: direct v2 onroad UI export transformer revert helper missing" >&2
+fi
+
 echo "Stopping services..."
 bash "$INSTALL_DIR/stop.sh" 2>/dev/null || true
 
 echo "Removing boot hook..."
 sed -i '/# commaview-hook/d; /commaview\/start.sh/d' /data/continue.sh 2>/dev/null || true
 
-if [ -x "$INSTALL_DIR/scripts/revert_onroad_ui_export_patch.sh" ]; then
+if [ -x "$revert_helper" ]; then
   echo "Reverting direct v2 onroad UI export transformer..."
-  revert_args=()
-  if [ "$FORCE_OFFROAD" = "1" ]; then
-    revert_args+=(--force-offroad)
-  fi
-  COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/scripts/revert_onroad_ui_export_patch.sh" "${revert_args[@]}"
+  COMMAVIEWD_INSTALL_DIR="$INSTALL_DIR" bash "$revert_helper" "${revert_args[@]}"
   revert_ec=$?
   if [ "$revert_ec" -ne 0 ]; then
     echo "ERROR: direct v2 onroad UI export transformer revert failed with exit $revert_ec; preserving $INSTALL_DIR for recovery" >&2
     exit "$revert_ec"
   fi
-else
-  echo "WARN: direct v2 onroad UI export transformer revert helper missing" >&2
 fi
 
 echo "Removing files..."

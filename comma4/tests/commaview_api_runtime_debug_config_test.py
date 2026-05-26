@@ -338,6 +338,17 @@ def test_transformer_state_files_are_parsed_without_sourcing_shell():
     assert 'json.dumps(payload' in verify_text
 
 
+def test_uninstall_script_revert_preflight_runs_before_uninstall_mutations():
+    text = UNINSTALL_SH.read_text()
+    preflight_index = text.index("--preflight-only")
+    stop_index = text.index("Stopping services")
+    boot_hook_index = text.index("Removing boot hook")
+
+    assert "uninstall aborted before stopping services or removing boot hook" in text
+    assert preflight_index < stop_index
+    assert preflight_index < boot_hook_index
+
+
 def test_uninstall_script_reverts_transformer_before_removing_install_tree():
     text = UNINSTALL_SH.read_text()
     assert "revert_onroad_ui_export_patch.sh" in text
@@ -347,8 +358,9 @@ def test_uninstall_script_reverts_transformer_before_removing_install_tree():
     assert '--force-offroad' in text
     assert 'revert_args+=(--force-offroad)' in text
     assert 'preserving $INSTALL_DIR for recovery' in text
-    assert text.index('bash "$INSTALL_DIR/stop.sh"') < text.index("revert_onroad_ui_export_patch.sh")
-    assert text.index("revert_onroad_ui_export_patch.sh") < text.index('rm -rf "$INSTALL_DIR"')
+    assert '--preflight-only' in text
+    assert text.index('--preflight-only') < text.index('bash "$INSTALL_DIR/stop.sh"')
+    assert text.rindex("revert_onroad_ui_export_patch.sh") < text.index('rm -rf "$INSTALL_DIR"')
 
 
 def test_revert_patch_script_resets_every_transformer_managed_target():

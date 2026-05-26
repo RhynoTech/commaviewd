@@ -7,8 +7,9 @@ STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
 STATE_JSON="$INSTALL_DIR/run/onroad-ui-export-status.json"
 RESTART_MARKER="$INSTALL_DIR/run/onroad-ui-export-ui-restart-needed"
 BACKUP_ROOT="${COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups}"
-PARAMS_DIR="/data/params/d"
+PARAMS_DIR="${COMMAVIEWD_PARAMS_DIR:-/data/params/d}"
 FORCE_OFFROAD=0
+PREFLIGHT_ONLY=0
 FORCE_OFFROAD_OWNED=0
 FORCE_OFFROAD_PREV=""
 
@@ -77,13 +78,17 @@ ensure_offroad_ready() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --force-offroad) FORCE_OFFROAD=1; shift ;;
-    -h|--help) echo "Usage: revert_onroad_ui_export_patch.sh [--force-offroad]"; exit 0 ;;
+    --preflight-only) PREFLIGHT_ONLY=1; shift ;;
+    -h|--help) echo "Usage: revert_onroad_ui_export_patch.sh [--force-offroad] [--preflight-only]"; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 trap cleanup EXIT
 ensure_offroad_ready
+if [ "$PREFLIGHT_ONLY" = "1" ]; then
+  exit 0
+fi
 
 request_openpilot_ui_restart() {
   mkdir -p "$(dirname "$RESTART_MARKER")"

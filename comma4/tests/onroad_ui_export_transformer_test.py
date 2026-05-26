@@ -589,6 +589,89 @@ def test_revert_script_removes_helper_and_restores_tracked_transformer_targets(t
     assert status == ""
 
 
+def test_revert_script_preflight_only_rejects_onroad_without_mutating_targets(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    params_dir = tmp_path / "params" / "d"
+    params_dir.mkdir(parents=True)
+    (params_dir / "IsOnroad").write_text("1")
+    backup_root = tmp_path / "backups"
+
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+    assert applied.returncode == 0, applied.stderr
+    managed_after_apply = {
+        rel: (op_root / rel).read_text()
+        for rel in (
+            HELPER_PATH,
+            Path("selfdrive/ui/ui_state.py"),
+            Path("selfdrive/ui/mici/onroad/augmented_road_view.py"),
+            Path("selfdrive/ui/onroad/augmented_road_view.py"),
+        )
+    }
+
+    result = run_lifecycle_script(
+        REVERT_SCRIPT,
+        install_dir,
+        op_root,
+        "--preflight-only",
+        COMMAVIEWD_BACKUP_ROOT=str(backup_root),
+        COMMAVIEWD_PARAMS_DIR=str(params_dir),
+    )
+
+    assert result.returncode == 42
+    assert "transformer revert blocked while onroad" in result.stderr
+    assert not backup_root.exists()
+    for rel, text in managed_after_apply.items():
+        assert (op_root / rel).read_text() == text
+
+
+def test_revert_script_preflight_only_success_does_not_mutate_backups_state_or_restart(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    params_dir = tmp_path / "params" / "d"
+    params_dir.mkdir(parents=True)
+    (params_dir / "IsOnroad").write_text("0")
+    backup_root = tmp_path / "backups"
+
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+    assert applied.returncode == 0, applied.stderr
+    run_dir = install_dir / "run"
+    run_dir.mkdir(exist_ok=True)
+    state_json = run_dir / "onroad-ui-export-status.json"
+    restart_marker = run_dir / "onroad-ui-export-ui-restart-needed"
+    state_json.write_text('{"patchVerified": true}\n')
+    restart_marker.write_text("pending\n")
+    managed_after_apply = {
+        rel: (op_root / rel).read_text()
+        for rel in (
+            HELPER_PATH,
+            Path("selfdrive/ui/ui_state.py"),
+            Path("selfdrive/ui/mici/onroad/augmented_road_view.py"),
+            Path("selfdrive/ui/onroad/augmented_road_view.py"),
+        )
+    }
+    state_env_text = (install_dir / "config" / "onroad-ui-export-patch.env").read_text()
+
+    result = run_lifecycle_script(
+        REVERT_SCRIPT,
+        install_dir,
+        op_root,
+        "--preflight-only",
+        COMMAVIEWD_BACKUP_ROOT=str(backup_root),
+        COMMAVIEWD_PARAMS_DIR=str(params_dir),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not backup_root.exists()
+    for rel, text in managed_after_apply.items():
+        assert (op_root / rel).read_text() == text
+    assert (install_dir / "config" / "onroad-ui-export-patch.env").read_text() == state_env_text
+    assert state_json.read_text() == '{"patchVerified": true}\n'
+    assert restart_marker.read_text() == "pending\n"
+
+
 def test_apply_script_rolls_back_partial_transformer_failure(tmp_path):
     broken_augmented = AUGMENTED_ROAD_VIEW.replace(
         "    self._model_renderer.set_transform(video_transform @ calib_transform)\n",
