@@ -197,6 +197,8 @@ jobs:
             --clobber
 
 
+      # promote_current is the explicit human gate for current-release promotion in this task;
+      # monotonic runtime-tag comparison remains follow-up hardening.
       - name: Promote Firebase current runtime release
         if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true
         env:
