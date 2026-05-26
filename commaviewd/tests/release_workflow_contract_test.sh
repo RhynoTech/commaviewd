@@ -29,6 +29,7 @@ assert_contains "Promote this runtime tag to Firebase current-release after publ
 assert_contains "if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true" "$WORKFLOW" "Firebase current-release update should require explicit manual promotion"
 assert_contains "Promote Firebase current runtime release" "$WORKFLOW" "Firebase current-release step should be named as an explicit promotion"
 assert_contains "PROVENANCE_ASSETS=(" "$WORKFLOW" "release workflow should define provenance assets for upload"
+assert_contains 'REQUIRED_ASSETS=("$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}")' "$WORKFLOW" "release workflow should validate bundle, checksum, and provenance assets"
 for asset in \
   "dist/reproducible-build-manifest.json" \
   "dist/upstream-interface-manifest.json" \
@@ -36,9 +37,21 @@ for asset in \
   "dist/release-smoke-manifest.json" \
   "dist/onroad-ui-export-status.json"; do
   assert_contains "$asset" "$WORKFLOW" "release workflow should publish provenance asset $asset"
-  assert_contains "Missing provenance asset: \$asset" "$WORKFLOW" "release workflow should fail clearly when provenance assets are missing"
 done
+assert_contains "Missing release asset: \$asset" "$WORKFLOW" "release workflow should fail clearly when any release asset is missing"
 assert_contains 'gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}"' "$WORKFLOW" "release workflow should upload bundle, checksum, and provenance manifests together"
+
+release_asset_validation_line="$(grep -n "REQUIRED_ASSETS=(" "$WORKFLOW" | cut -d: -f1 | head -1)"
+release_create_line="$(grep -n "gh release create" "$WORKFLOW" | cut -d: -f1 | head -1)"
+release_edit_line="$(grep -n "gh release edit" "$WORKFLOW" | cut -d: -f1 | head -1)"
+if [[ -z "$release_asset_validation_line" || -z "$release_create_line" || -z "$release_edit_line" ]]; then
+  echo "FAIL: unable to locate release asset validation or release create/edit steps" >&2
+  exit 1
+fi
+if (( release_asset_validation_line >= release_create_line || release_asset_validation_line >= release_edit_line )); then
+  echo "FAIL: release asset validation must run before GitHub release create/edit" >&2
+  exit 1
+fi
 
 release_gate_line="$(grep -n "Onroad UI export transformer apply/verify" "$WORKFLOW" | cut -d: -f1 | head -1)"
 verification_line="$(grep -n "Run release verification pipeline" "$WORKFLOW" | cut -d: -f1 | head -1)"
