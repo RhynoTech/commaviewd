@@ -272,6 +272,7 @@ def test_verify_patch_script_requires_onroad_projection_markers():
 
 def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_force_repair():
     text = APPLY_PATCH_SH.read_text()
+    reset_body = _shell_function_body(text, "reset_managed_targets")
     assert "managed_targets()" in text
     assert "backup_managed_targets()" in text
     assert "dirty_managed_targets()" in text
@@ -288,7 +289,15 @@ def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_for
     assert 'backup_root="$(mktemp -d "$backup_parent/$(date -u +%Y%m%d-%H%M%S).XXXXXX")" || return $?' in text
     assert 'cp -a "$OP_ROOT/$rel" "$backup_root/$rel" || return $?' in text
     assert 'failed to back up managed onroad UI export transformer targets; refusing force repair' in text
+    assert 'failed to reset managed onroad UI export transformer targets; refusing force repair' in text
     assert 'failed to back up managed onroad UI export transformer targets before transform' in text
+    assert 'local reset_ec=0' in reset_body
+    assert 'return "$reset_ec"' in reset_body
+    assert 'git -C "$OP_ROOT" checkout -- "$rel"' in reset_body
+    assert 'rm -f "$OP_ROOT/$rel"' in reset_body
+    assert 'reset_managed_targets || reset_ec=$?' in text
+    assert 'reset of managed targets had errors before rollback restore' in text
+    assert text.index('reset_managed_targets || reset_ec=$?') < text.index('restore_managed_targets_from_backup "$transform_backup_root"')
     assert 'backups written to $backup_root' in text
     assert 'transformer failed; restored managed targets' in text
     assert 'transformer failed and rollback failed' in text

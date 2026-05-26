@@ -171,15 +171,26 @@ dirty_managed_targets() {
 
 reset_managed_targets() {
   local rel=""
+  local reset_ec=0
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
-    git -C "$OP_ROOT" reset -q HEAD -- "$rel" >/dev/null 2>&1 || true
+    if ! git -C "$OP_ROOT" reset -q HEAD -- "$rel" >/dev/null 2>&1; then
+      echo "WARN: failed to reset managed target index: $rel" >&2
+      reset_ec=1
+    fi
     if git -C "$OP_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
-      git -C "$OP_ROOT" checkout -- "$rel"
+      if ! git -C "$OP_ROOT" checkout -- "$rel"; then
+        echo "WARN: failed to restore tracked managed target from HEAD: $rel" >&2
+        reset_ec=1
+      fi
     else
-      rm -f "$OP_ROOT/$rel"
+      if ! rm -f "$OP_ROOT/$rel"; then
+        echo "WARN: failed to remove untracked managed target: $rel" >&2
+        reset_ec=1
+      fi
     fi
   done < <(managed_targets)
+  return "$reset_ec"
 }
 
 force_repair_managed_targets() {
@@ -190,7 +201,10 @@ force_repair_managed_targets() {
   fi
   echo "WARN: force repairing managed onroad UI export transformer targets" >&2
   echo "WARN: backups written to $backup_root" >&2
-  reset_managed_targets
+  if ! reset_managed_targets; then
+    echo "ERROR: failed to reset managed onroad UI export transformer targets; refusing force repair" >&2
+    return 1
+  fi
 }
 
 state_value() {
@@ -268,7 +282,11 @@ if python3 "$TRANSFORMER" --op-root "$OP_ROOT" --flavor "$flavor"; then
   :
 else
   transform_ec=$?
-  reset_managed_targets
+  reset_ec=0
+  reset_managed_targets || reset_ec=$?
+  if [ "$reset_ec" -ne 0 ]; then
+    echo "WARN: reset of managed targets had errors before rollback restore" >&2
+  fi
   if restore_managed_targets_from_backup "$transform_backup_root"; then
     echo "ERROR: transformer failed; restored managed targets from $transform_backup_root" >&2
   else

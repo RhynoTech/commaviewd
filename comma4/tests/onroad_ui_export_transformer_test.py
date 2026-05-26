@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -473,6 +474,26 @@ def failing_mktemp_path(tmp_path: Path) -> str:
     return f"{fakebin}:{os.environ['PATH']}"
 
 
+def failing_git_checkout_path(tmp_path: Path) -> str:
+    real_git = shutil.which("git")
+    assert real_git
+    fakebin = tmp_path / "fakegitbin"
+    fakebin.mkdir()
+    fake_git = fakebin / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$arg\" = checkout ]; then\n"
+        "    echo forced git checkout failure >&2\n"
+        "    exit 88\n"
+        "  fi\n"
+        "done\n"
+        f"exec {shlex.quote(real_git)} \"$@\"\n"
+    )
+    fake_git.chmod(0o755)
+    return f"{fakebin}:{os.environ['PATH']}"
+
+
 def test_apply_script_force_repair_backup_failure_stops_before_reset(tmp_path):
     op_root = write_full_augmented_tree(tmp_path)
     init_git_repo(op_root)
@@ -572,6 +593,36 @@ def test_apply_script_rolls_back_partial_transformer_failure(tmp_path):
         text=True,
     )
     assert status == ""
+
+
+def test_apply_script_attempts_rollback_restore_when_reset_fails_after_transformer_failure(tmp_path):
+    broken_augmented = AUGMENTED_ROAD_VIEW.replace(
+        "    self._model_renderer.set_transform(video_transform @ calib_transform)\n",
+        "",
+    )
+    op_root = write_augmented_tree(tmp_path, broken_augmented)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    ui_state = op_root / "selfdrive" / "ui" / "ui_state.py"
+    augmented_path = op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py"
+    original_ui_state = ui_state.read_text()
+    original_augmented = augmented_path.read_text()
+
+    result = run_lifecycle_script(
+        APPLY_SCRIPT,
+        install_dir,
+        op_root,
+        PATH=failing_git_checkout_path(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert "WARN: failed to restore tracked managed target from HEAD" in result.stderr
+    assert "WARN: reset of managed targets had errors before rollback restore" in result.stderr
+    assert "transformer failed; restored managed targets" in result.stderr
+    assert "transformer failed and rollback failed" not in result.stderr
+    assert ui_state.read_text() == original_ui_state
+    assert augmented_path.read_text() == original_augmented
+    assert not (op_root / HELPER_PATH).exists()
 
 
 def test_apply_script_force_repair_and_transform_failure_use_distinct_backups(tmp_path):
