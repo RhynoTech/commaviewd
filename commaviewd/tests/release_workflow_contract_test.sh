@@ -23,6 +23,11 @@ assert_contains "verify_onroad_ui_export_patch.sh --json" "$WORKFLOW" "release w
 assert_contains "onroad-ui-export-status.json" "$WORKFLOW" "release workflow should preserve transformer status manifest"
 assert_contains "git -C \"\${{ github.workspace }}/openpilot-src\" reset --hard -q HEAD" "$WORKFLOW" "release workflow should reset upstream tree after transformer check"
 assert_contains "git -C \"\${{ github.workspace }}/openpilot-src\" clean -fdq" "$WORKFLOW" "release workflow should clean upstream tree after transformer check"
+assert_contains "Release \$TAG already exists; overwrite requires manual dispatch with allow_overwrite=true" "$WORKFLOW" "existing GitHub releases should not be overwritten unless manual dispatch explicitly allows it"
+assert_contains "promote_current:" "$WORKFLOW" "release workflow should expose explicit Firebase runtime promotion input"
+assert_contains "Promote this runtime tag to Firebase current-release after publishing assets" "$WORKFLOW" "Firebase runtime promotion input should explain the explicit promotion action"
+assert_contains "if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true" "$WORKFLOW" "Firebase current-release update should require explicit manual promotion"
+assert_contains "Promote Firebase current runtime release" "$WORKFLOW" "Firebase current-release step should be named as an explicit promotion"
 
 release_gate_line="$(grep -n "Onroad UI export transformer apply/verify" "$WORKFLOW" | cut -d: -f1 | head -1)"
 verification_line="$(grep -n "Run release verification pipeline" "$WORKFLOW" | cut -d: -f1 | head -1)"
