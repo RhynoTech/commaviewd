@@ -575,7 +575,12 @@ def test_revert_script_removes_helper_and_restores_tracked_transformer_targets(t
     assert applied.returncode == 0, applied.stderr
     assert (op_root / HELPER_PATH).exists()
 
-    reverted = run_lifecycle_script(REVERT_SCRIPT, install_dir, op_root)
+    reverted = run_lifecycle_script(
+        REVERT_SCRIPT,
+        install_dir,
+        op_root,
+        COMMAVIEWD_BACKUP_ROOT=str(tmp_path / "backups"),
+    )
 
     assert reverted.returncode == 0, reverted.stderr
     assert not (op_root / HELPER_PATH).exists()
@@ -587,6 +592,79 @@ def test_revert_script_removes_helper_and_restores_tracked_transformer_targets(t
         text=True,
     )
     assert status == ""
+
+
+def test_revert_script_backup_failure_stops_before_reset(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+    assert applied.returncode == 0, applied.stderr
+    managed_before_revert = {
+        rel: (op_root / rel).read_text()
+        for rel in (
+            HELPER_PATH,
+            Path("selfdrive/ui/ui_state.py"),
+            Path("selfdrive/ui/mici/onroad/augmented_road_view.py"),
+            Path("selfdrive/ui/onroad/augmented_road_view.py"),
+        )
+    }
+
+    result = run_lifecycle_script(
+        REVERT_SCRIPT,
+        install_dir,
+        op_root,
+        PATH=failing_mktemp_path(tmp_path),
+        COMMAVIEWD_BACKUP_ROOT=str(tmp_path / "backups"),
+    )
+
+    assert result.returncode != 0
+    assert "failed to back up managed onroad UI export transformer targets; refusing revert" in result.stderr
+    for rel, text in managed_before_revert.items():
+        assert (op_root / rel).read_text() == text
+
+
+def test_revert_script_rolls_back_when_reset_checkout_fails(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+    assert applied.returncode == 0, applied.stderr
+    run_dir = install_dir / "run"
+    run_dir.mkdir(exist_ok=True)
+    state_json = run_dir / "onroad-ui-export-status.json"
+    restart_marker = run_dir / "onroad-ui-export-ui-restart-needed"
+    state_json.write_text('{"patchVerified": true}\n')
+    restart_marker.write_text("pending\n")
+    managed_before_revert = {
+        rel: (op_root / rel).read_text()
+        for rel in (
+            HELPER_PATH,
+            Path("selfdrive/ui/ui_state.py"),
+            Path("selfdrive/ui/mici/onroad/augmented_road_view.py"),
+            Path("selfdrive/ui/onroad/augmented_road_view.py"),
+        )
+    }
+    state_env_text = (install_dir / "config" / "onroad-ui-export-patch.env").read_text()
+
+    result = run_lifecycle_script(
+        REVERT_SCRIPT,
+        install_dir,
+        op_root,
+        PATH=failing_git_checkout_path(tmp_path),
+        COMMAVIEWD_BACKUP_ROOT=str(tmp_path / "backups"),
+    )
+
+    assert result.returncode != 0
+    assert "failed to restore tracked managed target from HEAD" in result.stderr
+    assert "revert failed; restored managed targets" in result.stderr
+    for rel, text in managed_before_revert.items():
+        assert (op_root / rel).read_text() == text
+    assert (install_dir / "config" / "onroad-ui-export-patch.env").read_text() == state_env_text
+    assert state_json.read_text() == '{"patchVerified": true}\n'
+    assert restart_marker.read_text() == "pending\n"
 
 
 def test_revert_script_preflight_only_rejects_onroad_without_mutating_targets(tmp_path):
