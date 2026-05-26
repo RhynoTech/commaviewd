@@ -1,5 +1,7 @@
 import json
 import re
+import shlex
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -147,6 +149,10 @@ def _shell_function_body(text: str, name: str) -> str:
     return match.group("body")
 
 
+def _shell_function_definition(text: str, name: str) -> str:
+    return f"{name}() {{{_shell_function_body(text, name)}\n}}"
+
+
 def test_install_script_rolls_back_managed_src_tree():
     text = INSTALL_SH.read_text()
     backup_body = _shell_function_body(text, "backup_managed_install_tree")
@@ -169,8 +175,9 @@ def test_install_script_failed_rollback_copy_preserves_backup_and_skips_restart(
 
     assert 'INSTALL_ROLLBACK_BACKUP_ROOT="${COMMAVIEWD_INSTALL_ROLLBACK_BACKUP_ROOT:-$BACKUP_ROOT/install-rollback}"' in text
     assert 'BACKUP_ROOT="${COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups}"' in text
-    assert 'mktemp -d "$INSTALL_ROLLBACK_BACKUP_ROOT/$(date -u +%Y%m%d-%H%M%S).XXXXXX"' in preserve_body
-    assert 'cp -a "$backup_dir"/. "$preserved_dir"/' in preserve_body
+    assert 'preserved_dir="$(mktemp -d "$INSTALL_ROLLBACK_BACKUP_ROOT/$(date -u +%Y%m%d-%H%M%S).XXXXXX")" || return $?' in preserve_body
+    assert 'cp -a "$backup_dir"/. "$preserved_dir"/ || return $?' in preserve_body
+    assert "printf '%s\\n' \"$preserved_dir\" || return $?" in preserve_body
     assert 'PRESERVE_TMPDIR=1' in restore_body
     assert 'keeping temporary backup at $backup_dir' in restore_body
     assert 'if [ "$PRESERVE_TMPDIR" = "1" ]' in cleanup_body
@@ -184,6 +191,39 @@ def test_install_script_failed_rollback_copy_preserves_backup_and_skips_restart(
     restore_failure_return = restore_body.index('return "$restore_ec"')
     runtime_restart = restore_body.index('COMMAVIEWD_RESTART_REASON=install-rollback')
     assert restore_copy < restore_failure_return < runtime_restart
+
+
+def test_preserve_install_rollback_backup_returns_nonzero_when_copy_fails_under_command_substitution(tmp_path):
+    text = INSTALL_SH.read_text()
+    function_definition = _shell_function_definition(text, "preserve_install_rollback_backup")
+    bad_backup = tmp_path / "not-a-directory"
+    bad_backup.touch()
+    rollback_root = tmp_path / "rollback-root"
+    script = f"""
+set -euo pipefail
+INSTALL_ROLLBACK_BACKUP_ROOT={shlex.quote(str(rollback_root))}
+{function_definition}
+preserved_dir=""
+if preserved_dir="$(preserve_install_rollback_backup {shlex.quote(str(bad_backup))})"; then
+  echo "unexpected success:$preserved_dir"
+  exit 10
+fi
+if [ -n "$preserved_dir" ]; then
+  echo "unexpected preserved path:$preserved_dir"
+  exit 11
+fi
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", script],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == ""
 
 
 def test_install_script_preserves_patch_flavor_state_and_supports_explicit_current_reinstall():

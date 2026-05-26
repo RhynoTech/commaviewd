@@ -209,10 +209,10 @@ restore_force_offroad_mode() {
 preserve_install_rollback_backup() {
   local backup_dir="$1"
   local preserved_dir=""
-  mkdir -p "$INSTALL_ROLLBACK_BACKUP_ROOT"
-  preserved_dir="$(mktemp -d "$INSTALL_ROLLBACK_BACKUP_ROOT/$(date -u +%Y%m%d-%H%M%S).XXXXXX")"
-  cp -a "$backup_dir"/. "$preserved_dir"/
-  printf '%s\n' "$preserved_dir"
+  mkdir -p "$INSTALL_ROLLBACK_BACKUP_ROOT" || return $?
+  preserved_dir="$(mktemp -d "$INSTALL_ROLLBACK_BACKUP_ROOT/$(date -u +%Y%m%d-%H%M%S).XXXXXX")" || return $?
+  cp -a "$backup_dir"/. "$preserved_dir"/ || return $?
+  printf '%s\n' "$preserved_dir" || return $?
 }
 
 restore_previous_install_tree() {
