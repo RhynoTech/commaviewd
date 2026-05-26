@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 import sys
@@ -572,3 +573,31 @@ def test_verify_script_rejects_unsupported_upstream_fork_even_with_state_flavor(
     assert result.returncode == 1
     assert "unsupported upstream remote" in result.stdout
     assert "commaai/openpilot and sunnypilot" in result.stdout
+
+
+def test_verify_script_fails_when_existing_flat_augmented_road_target_is_stale(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    flat_augmented_path = op_root / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py"
+
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+    assert applied.returncode == 0, applied.stderr
+    assert_augmented_transformed(op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py")
+    assert_augmented_transformed(flat_augmented_path)
+
+    subprocess.run(
+        ["git", "checkout", "HEAD", "--", "selfdrive/ui/onroad/augmented_road_view.py"],
+        cwd=op_root,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    result = run_lifecycle_script(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
+
+    assert result.returncode == 1
+    status = json.loads(result.stdout)
+    assert status["patchVerified"] is False
+    assert status["repairNeeded"] is True

@@ -13,13 +13,6 @@ AUGMENTED_ROAD_PATHS=(
   "$OP_ROOT/selfdrive/ui/mici/onroad/augmented_road_view.py"
   "$OP_ROOT/selfdrive/ui/onroad/augmented_road_view.py"
 )
-AUGMENTED_ROAD_PATH="${AUGMENTED_ROAD_PATHS[0]}"
-for candidate in "${AUGMENTED_ROAD_PATHS[@]}"; do
-  if [ -f "$candidate" ]; then
-    AUGMENTED_ROAD_PATH="$candidate"
-    break
-  fi
-done
 JSON_ONLY=0
 
 while [ "$#" -gt 0 ]; do
@@ -237,11 +230,31 @@ else
   check_fixed 'json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")' "$HELPER_PATH" && compact_json_present=true || true
   check_fixed 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$UI_STATE_PATH" && exporter_install_present=true || true
   check_fixed 'self._commaview_exporter.publish(self)' "$UI_STATE_PATH" && exporter_publish_present=true || true
-  if check_fixed 'self._update_commaview_camera_export()' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'def _update_commaview_camera_export(self):' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$AUGMENTED_ROAD_PATH"; then
-    onroad_camera_relay_present=true
-  fi
-  if check_fixed 'model_transform = video_transform @ calib_transform' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'exporter.set_onroad_projection(' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'active_camera="wideRoad" if is_wide_camera else "road"' "$AUGMENTED_ROAD_PATH" &&      check_fixed 'video_frame_matrix=self._cached_matrix' "$AUGMENTED_ROAD_PATH" &&      { check_fixed 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$AUGMENTED_ROAD_PATH" || check_fixed 'camera_offset=getattr(self.model_renderer, "_camera_offset", 0.0)' "$AUGMENTED_ROAD_PATH"; } &&      check_fixed 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$HELPER_PATH"; then
-    onroad_projection_present=true
+  augmented_road_candidate_count=0
+  onroad_camera_relay_present=true
+  onroad_projection_present=true
+  for augmented_road_path in "${AUGMENTED_ROAD_PATHS[@]}"; do
+    if [ ! -f "$augmented_road_path" ]; then
+      continue
+    fi
+    augmented_road_candidate_count=$((augmented_road_candidate_count + 1))
+    if ! { check_fixed 'self._update_commaview_camera_export()' "$augmented_road_path" && \
+      check_fixed 'def _update_commaview_camera_export(self):' "$augmented_road_path" && \
+      check_fixed 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$augmented_road_path"; }; then
+      onroad_camera_relay_present=false
+    fi
+    if ! { check_fixed 'model_transform = video_transform @ calib_transform' "$augmented_road_path" && \
+      check_fixed 'exporter.set_onroad_projection(' "$augmented_road_path" && \
+      check_fixed 'active_camera="wideRoad" if is_wide_camera else "road"' "$augmented_road_path" && \
+      check_fixed 'video_frame_matrix=self._cached_matrix' "$augmented_road_path" && \
+      { check_fixed 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$augmented_road_path" || check_fixed 'camera_offset=getattr(self.model_renderer, "_camera_offset", 0.0)' "$augmented_road_path"; } && \
+      check_fixed 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$HELPER_PATH"; }; then
+      onroad_projection_present=false
+    fi
+  done
+  if [ "$augmented_road_candidate_count" -eq 0 ]; then
+    onroad_camera_relay_present=false
+    onroad_projection_present=false
   fi
 
   payload_helpers_present=true
