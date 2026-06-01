@@ -149,6 +149,9 @@ for template in "$OPENPILOT_TEMPLATE" "$SUNNYPILOT_TEMPLATE"; do
 
   if [[ "$template" == *'.sunnypilot.py' ]]; then
     grep -Fq '"rainbowPathEnabled": bool(getattr(ui_state, "rainbow_path", ui_state.params.get_bool("RainbowMode")))' "$template" || fail "$template missing truthful sunnypilot rainbow export"
+    grep -Fq '"speedLimitPreActive": speed_limit_pre_active' "$template" || fail "$template missing sunnypilot speed-limit pre-active export"
+    grep -Fq '"speedLimitPreActiveIcon": speed_limit_pre_active_icon' "$template" || fail "$template missing sunnypilot speed-limit pre-active icon export"
+    grep -Fq 'speed_limit_final_last = ui_state.sm["longitudinalPlanSP"].speedLimit.resolver.speedLimitFinalLast' "$template" || fail "$template missing sunnypilot speed-limit target source"
   else
     grep -Fq '"rainbowPathEnabled": False' "$template" || fail "$template should pin rainbowPathEnabled false for openpilot"
   fi

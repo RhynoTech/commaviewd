@@ -33,6 +33,9 @@ COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"
 COMMAVIEW_CONNECT_RETRY_SEC = 1.0
 COMMAVIEW_SOCKET_TIMEOUT_SEC = 0.05
 COMMAVIEW_DEFAULT_MAX_LAT_ACCEL = 3.0
+COMMAVIEW_MS_TO_KPH = 3.6
+COMMAVIEW_MS_TO_MPH = 2.23694
+COMMAVIEW_KM_TO_MILE = 0.621371
 
 
 def _safe_float(value) -> float:
@@ -168,6 +171,56 @@ def _panda_states_summary(ui_state) -> tuple[bool, bool, bool]:
   except (KeyError, TypeError):
     pass
   return ignition_line, ignition_can, ignition_line or ignition_can
+
+
+def _enum_name(value) -> str:
+  if value is None:
+    return ""
+  raw_name = getattr(value, "name", None)
+  if raw_name is not None:
+    return _safe_str(raw_name).replace("_", "").lower()
+  return _safe_str(value).split(".")[-1].replace("_", "").lower()
+
+
+def _enum_raw(value) -> int:
+  raw = getattr(value, "raw", value)
+  return _safe_int(raw)
+
+
+def _speed_limit_pre_active_state(ui_state) -> tuple[bool, str]:
+  try:
+    speed_limit = ui_state.sm["longitudinalPlanSP"].speedLimit
+    assist_state = speed_limit.assist.state
+  except (AttributeError, KeyError, TypeError, IndexError):
+    return False, "none"
+
+  speed_limit_pre_active = _enum_raw(assist_state) == 2 or _enum_name(assist_state) == "preactive"
+  speed_limit_pre_active_icon = "none"
+  if speed_limit_pre_active:
+    speed_conv = COMMAVIEW_MS_TO_KPH if ui_state.is_metric else COMMAVIEW_MS_TO_MPH
+    speed_limit_final_last = ui_state.sm["longitudinalPlanSP"].speedLimit.resolver.speedLimitFinalLast
+    speed_limit_round = round(_safe_float(speed_limit_final_last) * speed_conv)
+
+    try:
+      v_cruise_cluster = _safe_float(ui_state.sm["carState"].vCruiseCluster)
+    except (AttributeError, KeyError, TypeError, IndexError):
+      v_cruise_cluster = 0.0
+    try:
+      controls_v_cruise = _safe_float(getattr(ui_state.sm["controlsState"], "vCruiseDEPRECATED", 0.0))
+    except (AttributeError, KeyError, TypeError, IndexError):
+      controls_v_cruise = 0.0
+
+    set_speed = controls_v_cruise if v_cruise_cluster == 0.0 else v_cruise_cluster
+    if not ui_state.is_metric:
+      set_speed *= COMMAVIEW_KM_TO_MILE
+    set_speed_round = round(set_speed)
+
+    if set_speed_round < speed_limit_round:
+      speed_limit_pre_active_icon = "up"
+    elif set_speed_round > speed_limit_round:
+      speed_limit_pre_active_icon = "down"
+
+  return speed_limit_pre_active, speed_limit_pre_active_icon
 
 
 class _CommaViewSocketExporter:
@@ -435,6 +488,7 @@ class _CommaViewSocketExporter:
     return payload
 
   def _controls_state_payload(self, ui_state) -> dict:
+    speed_limit_pre_active, speed_limit_pre_active_icon = _speed_limit_pre_active_state(ui_state)
     payload = {
       "exportVersion": 1,
       "enabled": False,
@@ -447,12 +501,14 @@ class _CommaViewSocketExporter:
       "alertSize": 0,
       "alertHudVisual": 0,
       "experimentalMode": False,
+      "speedLimitPreActive": speed_limit_pre_active,
+      "speedLimitPreActiveIcon": speed_limit_pre_active_icon,
       "vCruiseDEPRECATED": 0.0,
       "lateralControlStateWhich": "",
       "curvature": 0.0,
       "desiredCurvature": 0.0,
       "torqueBarValue": 0.0,
-      "logMonoTime": self._service_log_mono(ui_state, "controlsState", "carOutput", "carControl", "liveParameters", "carState"),
+      "logMonoTime": self._service_log_mono(ui_state, "controlsState", "carOutput", "carControl", "liveParameters", "carState", "longitudinalPlanSP"),
     }
     if ui_state.sm.recv_frame["controlsState"] >= ui_state.started_frame:
       controls_state = ui_state.sm["controlsState"]
