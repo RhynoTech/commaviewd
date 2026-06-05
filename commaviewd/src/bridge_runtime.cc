@@ -71,6 +71,7 @@ static constexpr uint8_t RAW_META_ENVELOPE_V5 = 0x05;
 static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;
 static constexpr int PORT_DRIVER = 8202;
+static constexpr uint64_t VIDEO_SEND_BUDGET_MICROS = 16000ULL;
 
 // Runtime policy defaults favor the upstream-organized onroad domains we export over the UI socket.
 static constexpr std::array<const char*, 20> kTelemetryServices = {
@@ -194,12 +195,22 @@ struct RuntimeLoopStats {
   uint64_t over_budget = 0;
 };
 
+struct RuntimeVideoSendStats {
+  uint64_t ok_count = 0;
+  uint64_t backpressure_count = 0;
+  uint64_t disconnect_count = 0;
+  uint64_t partial_reset_count = 0;
+  uint64_t zero_byte_drop_count = 0;
+  uint64_t max_send_micros = 0;
+};
+
 struct RuntimeState {
   LoadedRuntimeDebugConfig loaded_config = {};
   LoadedRuntimeDebugConfig effective_config = {};
   std::vector<RuntimeServiceStats> services = std::vector<RuntimeServiceStats>(NUM_TELEM);
   RuntimeLoopStats telemetry_loop = {};
   RuntimeLoopStats video_loop = {};
+  RuntimeVideoSendStats video_send = {};
   std::chrono::steady_clock::time_point started_at = std::chrono::steady_clock::now();
   uint64_t reconnect_count = 0;
   std::string last_restart_reason = "startup";
@@ -257,6 +268,13 @@ static std::string build_runtime_stats_json_locked() {
   out << "\"avgMicros\":" << runtime_loop_avg_micros(g_runtime_state.video_loop) << ",";
   out << "\"maxMicros\":" << g_runtime_state.video_loop.max_micros << ",";
   out << "\"overBudget\":" << g_runtime_state.video_loop.over_budget << "},";
+  out << "\"videoSend\":{";
+  out << "\"okCount\":" << g_runtime_state.video_send.ok_count << ",";
+  out << "\"backpressureCount\":" << g_runtime_state.video_send.backpressure_count << ",";
+  out << "\"disconnectCount\":" << g_runtime_state.video_send.disconnect_count << ",";
+  out << "\"partialResetCount\":" << g_runtime_state.video_send.partial_reset_count << ",";
+  out << "\"zeroByteDropCount\":" << g_runtime_state.video_send.zero_byte_drop_count << ",";
+  out << "\"maxSendMicros\":" << g_runtime_state.video_send.max_send_micros << "},";
   out << "\"services\":{";
   for (int i = 0; i < NUM_TELEM; ++i) {
     if (i > 0) out << ",";
@@ -355,6 +373,26 @@ static void note_runtime_loop_sample(bool telemetry_loop, uint64_t elapsed_micro
   }
 }
 
+static void note_video_send_result(const commaview::net::SendResult& result) {
+  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+  g_runtime_state.video_send.max_send_micros = std::max(g_runtime_state.video_send.max_send_micros,
+                                                        result.elapsed_micros);
+  switch (result.status) {
+    case commaview::net::SendStatus::Ok:
+      g_runtime_state.video_send.ok_count += 1;
+      break;
+    case commaview::net::SendStatus::Backpressure:
+      g_runtime_state.video_send.backpressure_count += 1;
+      if (result.bytes_sent == 0) g_runtime_state.video_send.zero_byte_drop_count += 1;
+      if (result.bytes_sent > 0) g_runtime_state.video_send.partial_reset_count += 1;
+      break;
+    case commaview::net::SendStatus::Disconnected:
+    case commaview::net::SendStatus::InvalidArgument:
+      g_runtime_state.video_send.disconnect_count += 1;
+      break;
+  }
+}
+
 static void set_session_policy(const std::string& session_id, bool suppress_video) {
   commaview::control::set_session_policy(session_id, suppress_video);
 }
@@ -371,20 +409,23 @@ static void consume_client_control_frames(int client_fd,
   commaview::control::consume_client_control_frames(client_fd, state, video_service, MSG_CONTROL);
 }
 
-static bool send_all(int fd, const void* data, size_t len) {
-  return commaview::net::send_all(fd, data, len);
-}
-
-static bool send_frame(int fd, const uint8_t* payload, size_t payload_len) {
-  return commaview::net::send_frame(fd, payload, payload_len);
-}
-
-static bool send_frame_locked(int fd, const uint8_t* payload, size_t payload_len, std::mutex* send_mutex) {
+static commaview::net::SendResult send_frame_locked(int fd,
+                                                    const uint8_t* payload,
+                                                    size_t payload_len,
+                                                    std::mutex* send_mutex) {
   if (send_mutex != nullptr) {
     std::lock_guard<std::mutex> send_lock(*send_mutex);
-    return send_frame(fd, payload, payload_len);
+    return commaview::net::send_frame_bounded(
+        fd,
+        payload,
+        payload_len,
+        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
   }
-  return send_frame(fd, payload, payload_len);
+  return commaview::net::send_frame_bounded(
+      fd,
+      payload,
+      payload_len,
+      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
 }
 
 static bool client_socket_alive(int fd) {
@@ -539,7 +580,16 @@ static void handle_client(int client_fd, const char* video_service, int port) {
           if (header_len > 0) memcpy(&payload[21], header.begin(), header_len);
           memcpy(&payload[21 + header_len], data.begin(), data_len);
 
-          if (!send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex)) goto disconnect;
+          const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);
+          note_video_send_result(send_result);
+          if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
+            // No bytes from this frame entered the stream; preserve framing and prefer freshness.
+            continue;
+          }
+          if (send_result.status != commaview::net::SendStatus::Ok) {
+            shutdown(client_fd, SHUT_RDWR);
+            goto disconnect;
+          }
 
           frame_count++;
           if (frame_count <= 5 || (frame_count % 200) == 0) {

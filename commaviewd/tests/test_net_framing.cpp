@@ -1,12 +1,145 @@
 #include "framing.h"
 
 #include <cassert>
+#include <cerrno>
 #include <cstdint>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
 
+namespace {
+
+struct ScriptedSendCall {
+  ssize_t result = 0;
+  int error = 0;
+};
+
+struct ScriptedSender {
+  std::vector<ScriptedSendCall> calls;
+  size_t call_index = 0;
+  std::vector<uint8_t> bytes;
+};
+
+ssize_t scripted_send(void* ctx, int, const uint8_t* data, size_t len, int) {
+  auto* sender = static_cast<ScriptedSender*>(ctx);
+  assert(sender != nullptr);
+  assert(sender->call_index < sender->calls.size());
+  const ScriptedSendCall call = sender->calls[sender->call_index++];
+  if (call.result < 0) {
+    errno = call.error;
+    return -1;
+  }
+  const size_t n = static_cast<size_t>(call.result);
+  assert(n <= len);
+  sender->bytes.insert(sender->bytes.end(), data, data + n);
+  return call.result;
+}
+
+}  // namespace
+
+static void test_bounded_send_retries_eintr_and_partial_success() {
+  std::vector<uint8_t> payload{0x10, 0x20, 0x30, 0x40, 0x50};
+  ScriptedSender sender{{
+      {-1, EINTR},
+      {2, 0},
+      {-1, EINTR},
+      {3, 0},
+  }};
+
+  const auto result = commaview::net::send_all_for_test(
+      -1,
+      payload.data(),
+      payload.size(),
+      commaview::net::SendDeadline::already_expired_for_test(false),
+      scripted_send,
+      &sender);
+
+  assert(result.status == commaview::net::SendStatus::Ok);
+  assert(result.bytes_sent == payload.size());
+  assert(sender.bytes == payload);
+  assert(sender.call_index == sender.calls.size());
+}
+
+static void test_bounded_send_classifies_eagain_as_backpressure() {
+  std::vector<uint8_t> payload{0x01, 0x02};
+  ScriptedSender sender{{{-1, EAGAIN}}};
+
+  const auto result = commaview::net::send_all_for_test(
+      -1,
+      payload.data(),
+      payload.size(),
+      commaview::net::SendDeadline::already_expired_for_test(false),
+      scripted_send,
+      &sender);
+
+  assert(result.status == commaview::net::SendStatus::Backpressure);
+  assert(result.error == EAGAIN);
+  assert(result.bytes_sent == 0);
+  assert(sender.call_index == sender.calls.size());
+}
+
+static void test_bounded_send_reports_partial_progress_before_backpressure() {
+  std::vector<uint8_t> payload{0x7A, 0x7B, 0x7C};
+  ScriptedSender sender{{{1, 0}, {-1, EAGAIN}}};
+
+  const auto result = commaview::net::send_all_for_test(
+      -1,
+      payload.data(),
+      payload.size(),
+      commaview::net::SendDeadline::already_expired_for_test(false),
+      scripted_send,
+      &sender);
+
+  assert(result.status == commaview::net::SendStatus::Backpressure);
+  assert(result.error == EAGAIN);
+  assert(result.bytes_sent == 1);
+  assert(sender.bytes == std::vector<uint8_t>({payload[0]}));
+  assert(sender.call_index == sender.calls.size());
+}
+
+static void test_bounded_send_classifies_ewouldblock_as_backpressure() {
+  std::vector<uint8_t> payload{0x01, 0x02};
+  ScriptedSender sender{{{-1, EWOULDBLOCK}}};
+
+  const auto result = commaview::net::send_all_for_test(
+      -1,
+      payload.data(),
+      payload.size(),
+      commaview::net::SendDeadline::already_expired_for_test(false),
+      scripted_send,
+      &sender);
+
+  assert(result.status == commaview::net::SendStatus::Backpressure);
+  assert(result.error == EWOULDBLOCK);
+  assert(result.bytes_sent == 0);
+  assert(sender.call_index == sender.calls.size());
+}
+
+static void test_bounded_send_classifies_epipe_as_disconnected() {
+  std::vector<uint8_t> payload{0x01, 0x02};
+  ScriptedSender sender{{{-1, EPIPE}}};
+
+  const auto result = commaview::net::send_all_for_test(
+      -1,
+      payload.data(),
+      payload.size(),
+      commaview::net::SendDeadline::already_expired_for_test(false),
+      scripted_send,
+      &sender);
+
+  assert(result.status == commaview::net::SendStatus::Disconnected);
+  assert(result.error == EPIPE);
+  assert(result.bytes_sent == 0);
+  assert(sender.call_index == sender.calls.size());
+}
+
 int main() {
+  test_bounded_send_retries_eintr_and_partial_success();
+  test_bounded_send_classifies_eagain_as_backpressure();
+  test_bounded_send_reports_partial_progress_before_backpressure();
+  test_bounded_send_classifies_ewouldblock_as_backpressure();
+  test_bounded_send_classifies_epipe_as_disconnected();
+
   uint8_t b[4]{};
   commaview::net::put_be32(b, 0xA1B2C3D4u);
   assert(commaview::net::read_be32(b) == 0xA1B2C3D4u);
