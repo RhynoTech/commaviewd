@@ -320,29 +320,50 @@ static std::string build_runtime_stats_json_locked() {
   return out.str();
 }
 
-static void flush_runtime_state_locked() {
-  write_text_file_best_effort(runtime_debug_effective_path(), render_config_json(g_runtime_state.effective_config, true));
-  write_text_file_best_effort(runtime_debug_stats_path(), build_runtime_stats_json_locked());
+struct RuntimeRenderedState {
+  std::string effective_json;
+  std::string stats_json;
+};
+
+static RuntimeRenderedState render_runtime_state_locked() {
+  return RuntimeRenderedState{
+      render_config_json(g_runtime_state.effective_config, true),
+      build_runtime_stats_json_locked(),
+  };
+}
+
+static void flush_runtime_state() {
+  RuntimeRenderedState rendered;
+  {
+    std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+    rendered = render_runtime_state_locked();
+  }
+  write_text_file_best_effort(runtime_debug_effective_path(), rendered.effective_json);
+  write_text_file_best_effort(runtime_debug_stats_path(), rendered.stats_json);
 }
 
 static void initialize_runtime_state_once() {
-  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  if (g_runtime_state.initialized) return;
-  g_runtime_state.loaded_config = commaview::runtime_debug::load_runtime_debug_config();
-  g_runtime_state.effective_config = effective_runtime_debug_config(g_runtime_state.loaded_config);
-  g_runtime_state.started_at = std::chrono::steady_clock::now();
-  const char* restart_reason = std::getenv("COMMAVIEWD_RESTART_REASON");
-  if (restart_reason != nullptr && restart_reason[0] != '\0') {
-    g_runtime_state.last_restart_reason = restart_reason;
+  {
+    std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+    if (g_runtime_state.initialized) return;
+    g_runtime_state.loaded_config = commaview::runtime_debug::load_runtime_debug_config();
+    g_runtime_state.effective_config = effective_runtime_debug_config(g_runtime_state.loaded_config);
+    g_runtime_state.started_at = std::chrono::steady_clock::now();
+    const char* restart_reason = std::getenv("COMMAVIEWD_RESTART_REASON");
+    if (restart_reason != nullptr && restart_reason[0] != '\0') {
+      g_runtime_state.last_restart_reason = restart_reason;
+    }
+    g_runtime_state.initialized = true;
   }
-  g_runtime_state.initialized = true;
-  flush_runtime_state_locked();
+  flush_runtime_state();
 }
 
 static void note_runtime_connect() {
-  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  g_runtime_state.reconnect_count += 1;
-  flush_runtime_state_locked();
+  {
+    std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+    g_runtime_state.reconnect_count += 1;
+  }
+  flush_runtime_state();
 }
 
 static constexpr uint64_t kTelemetryEmitBackpressureThresholdMicros = 5000ULL;
@@ -785,8 +806,7 @@ static void telemetry_loop(int client_fd,
     now = std::chrono::steady_clock::now();
     if (now >= next_stats_flush) {
       next_stats_flush = now + std::chrono::milliseconds(1000);
-      std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-      flush_runtime_state_locked();
+      flush_runtime_state();
     }
 
     const auto telemetry_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
