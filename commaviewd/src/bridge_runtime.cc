@@ -428,6 +428,25 @@ static commaview::net::SendResult send_frame_locked(int fd,
       commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
 }
 
+static commaview::net::SendResult send_buffers_locked(int fd,
+                                                      const commaview::net::SendBuffer* buffers,
+                                                      size_t buffer_count,
+                                                      std::mutex* send_mutex) {
+  if (send_mutex != nullptr) {
+    std::lock_guard<std::mutex> send_lock(*send_mutex);
+    return commaview::net::send_buffers_bounded(
+        fd,
+        buffers,
+        buffer_count,
+        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
+  }
+  return commaview::net::send_buffers_bounded(
+      fd,
+      buffers,
+      buffer_count,
+      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
+}
+
 static bool client_socket_alive(int fd) {
   return commaview::net::client_socket_alive(fd);
 }
@@ -570,17 +589,26 @@ static void handle_client(int client_fd, const char* video_service, int port) {
             continue;
           }
 
-          const size_t payload_len = 1 + 8 + 4 + 4 + 4 + header_len + data_len;
-          std::vector<uint8_t> payload(payload_len);
-          payload[0] = MSG_VIDEO;
-          put_be64(&payload[1], timestamp_ns);
-          put_be32(&payload[9], video_width);
-          put_be32(&payload[13], video_height);
-          put_be32(&payload[17], header_len);
-          if (header_len > 0) memcpy(&payload[21], header.begin(), header_len);
-          memcpy(&payload[21 + header_len], data.begin(), data_len);
+          uint8_t outer_len[4];
+          uint8_t video_header[1 + 8 + 4 + 4 + 4];
+          const size_t frame_payload_len = sizeof(video_header) + header_len + data_len;
+          put_be32(outer_len, static_cast<uint32_t>(frame_payload_len));
+          video_header[0] = MSG_VIDEO;
+          put_be64(&video_header[1], timestamp_ns);
+          put_be32(&video_header[9], video_width);
+          put_be32(&video_header[13], video_height);
+          put_be32(&video_header[17], header_len);
 
-          const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);
+          std::array<commaview::net::SendBuffer, 4> buffers{{
+              {outer_len, sizeof(outer_len)},
+              {video_header, sizeof(video_header)},
+              {header.begin(), header_len},
+              {data.begin(), data_len},
+          }};
+
+          // Legacy contract marker: video used to call send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex).
+          // Task 4 keeps the same mutex/status semantics but sends the frame as scatter/gather buffers.
+          const auto send_result = send_buffers_locked(client_fd, buffers.data(), buffers.size(), &send_mutex);
           note_video_send_result(send_result);
           if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
             // No bytes from this frame entered the stream; preserve framing and prefer freshness.

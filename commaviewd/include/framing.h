@@ -42,16 +42,31 @@ class SendDeadline {
 
 using SendForTest = ssize_t (*)(void* ctx, int fd, const uint8_t* data, size_t len, int flags);
 
+struct SendBuffer {
+  const uint8_t* data = nullptr;
+  size_t len = 0;
+};
+
 SendResult send_all_bounded(int fd, const void* data, size_t len, SendDeadline deadline);
 SendResult send_frame_bounded(int fd, const uint8_t* payload, size_t payload_len, SendDeadline deadline);
+SendResult send_buffers_bounded(int fd,
+                                const SendBuffer* buffers,
+                                size_t buffer_count,
+                                SendDeadline deadline);
 
-// Test seam. Production callers should use send_all_bounded/send_frame_bounded.
+// Test seams. Production callers should use send_all_bounded/send_frame_bounded/send_buffers_bounded.
 SendResult send_all_for_test(int fd,
                              const void* data,
                              size_t len,
                              SendDeadline deadline,
                              SendForTest send_fn,
                              void* send_ctx);
+SendResult send_buffers_for_test(int fd,
+                                 const SendBuffer* buffers,
+                                 size_t buffer_count,
+                                 SendDeadline deadline,
+                                 SendForTest send_fn,
+                                 void* send_ctx);
 
 bool send_all(int fd, const void* data, size_t len);
 bool send_frame(int fd, const uint8_t* payload, size_t payload_len);

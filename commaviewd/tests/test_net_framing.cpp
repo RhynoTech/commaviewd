@@ -133,12 +133,42 @@ static void test_bounded_send_classifies_epipe_as_disconnected() {
   assert(sender.call_index == sender.calls.size());
 }
 
+static void test_send_iov_handles_partial_iovec_boundaries() {
+  uint8_t a[] = {0xA1, 0xA2};
+  uint8_t b[] = {0xB1, 0xB2, 0xB3};
+  uint8_t c[] = {0xC1};
+  std::vector<commaview::net::SendBuffer> buffers{
+      {a, sizeof(a)},
+      {b, sizeof(b)},
+      {c, sizeof(c)},
+  };
+
+  ScriptedSender sender{{
+      {1, 0},
+      {3, 0},
+      {2, 0},
+  }};
+
+  const auto result = commaview::net::send_buffers_for_test(
+      -1,
+      buffers.data(),
+      buffers.size(),
+      commaview::net::SendDeadline::already_expired_for_test(false),
+      scripted_send,
+      &sender);
+
+  const std::vector<uint8_t> expected{0xA1, 0xA2, 0xB1, 0xB2, 0xB3, 0xC1};
+  assert(result.status == commaview::net::SendStatus::Ok);
+  assert(sender.bytes == expected);
+}
+
 int main() {
   test_bounded_send_retries_eintr_and_partial_success();
   test_bounded_send_classifies_eagain_as_backpressure();
   test_bounded_send_reports_partial_progress_before_backpressure();
   test_bounded_send_classifies_ewouldblock_as_backpressure();
   test_bounded_send_classifies_epipe_as_disconnected();
+  test_send_iov_handles_partial_iovec_boundaries();
 
   uint8_t b[4]{};
   commaview::net::put_be32(b, 0xA1B2C3D4u);

@@ -1,9 +1,12 @@
 #include "framing.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <limits.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #include <vector>
 
@@ -17,6 +20,60 @@ commaview::net::SendStatus classify_send_error(int error) {
   if (error == EAGAIN || error == EWOULDBLOCK) return commaview::net::SendStatus::Backpressure;
   if (error == EPIPE || error == ECONNRESET || error == ENOTCONN) return commaview::net::SendStatus::Disconnected;
   return commaview::net::SendStatus::Disconnected;
+}
+
+bool validate_send_buffers(const commaview::net::SendBuffer* buffers,
+                           size_t buffer_count,
+                           commaview::net::SendResult* result) {
+  if (buffers == nullptr && buffer_count > 0) {
+    result->status = commaview::net::SendStatus::InvalidArgument;
+    result->error = EINVAL;
+    return false;
+  }
+  for (size_t i = 0; i < buffer_count; ++i) {
+    if (buffers[i].data == nullptr && buffers[i].len > 0) {
+      result->status = commaview::net::SendStatus::InvalidArgument;
+      result->error = EINVAL;
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<iovec> build_iovecs(const commaview::net::SendBuffer* buffers, size_t buffer_count) {
+  std::vector<iovec> iovecs;
+  iovecs.reserve(buffer_count);
+  for (size_t i = 0; i < buffer_count; ++i) {
+    if (buffers[i].len == 0) continue;
+    iovec iov{};
+    iov.iov_base = const_cast<uint8_t*>(buffers[i].data);
+    iov.iov_len = buffers[i].len;
+    iovecs.push_back(iov);
+  }
+  return iovecs;
+}
+
+void advance_iovecs(std::vector<iovec>* iovecs, size_t* iov_index, size_t bytes) {
+  while (bytes > 0 && *iov_index < iovecs->size()) {
+    iovec& iov = (*iovecs)[*iov_index];
+    if (bytes < iov.iov_len) {
+      iov.iov_base = static_cast<uint8_t*>(iov.iov_base) + bytes;
+      iov.iov_len -= bytes;
+      return;
+    }
+    bytes -= iov.iov_len;
+    iov.iov_len = 0;
+    ++(*iov_index);
+  }
+}
+
+size_t max_iov_per_sendmsg() {
+#ifdef IOV_MAX
+  return static_cast<size_t>(IOV_MAX);
+#else
+  const long value = sysconf(_SC_IOV_MAX);
+  return value > 0 ? static_cast<size_t>(value) : 16U;
+#endif
 }
 
 }  // namespace
@@ -120,17 +177,120 @@ SendResult send_all_bounded(int fd, const void* data, size_t len, SendDeadline d
   return send_all_for_test(fd, data, len, deadline, system_send, nullptr);
 }
 
+SendResult send_buffers_for_test(int fd,
+                                 const SendBuffer* buffers,
+                                 size_t buffer_count,
+                                 SendDeadline deadline,
+                                 SendForTest send_fn,
+                                 void* send_ctx) {
+  SendResult result{};
+  if (!validate_send_buffers(buffers, buffer_count, &result)) return result;
+  if (send_fn == nullptr) {
+    result.status = SendStatus::InvalidArgument;
+    result.error = EINVAL;
+    return result;
+  }
+
+  std::vector<iovec> iovecs = build_iovecs(buffers, buffer_count);
+  size_t iov_index = 0;
+  while (iov_index < iovecs.size()) {
+    if (deadline.expired()) {
+      result.status = SendStatus::Backpressure;
+      result.error = EAGAIN;
+      result.elapsed_micros = deadline.elapsed_micros();
+      return result;
+    }
+
+    std::vector<uint8_t> remaining;
+    for (size_t i = iov_index; i < iovecs.size(); ++i) {
+      const auto* base = static_cast<const uint8_t*>(iovecs[i].iov_base);
+      remaining.insert(remaining.end(), base, base + iovecs[i].iov_len);
+    }
+
+    const ssize_t n = send_fn(send_ctx,
+                              fd,
+                              remaining.data(),
+                              remaining.size(),
+                              MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (n > 0) {
+      result.bytes_sent += static_cast<size_t>(n);
+      advance_iovecs(&iovecs, &iov_index, static_cast<size_t>(n));
+      continue;
+    }
+    if (n == 0) {
+      result.status = SendStatus::Disconnected;
+      result.elapsed_micros = deadline.elapsed_micros();
+      return result;
+    }
+
+    const int err = errno;
+    if (err == EINTR) continue;
+    result.status = classify_send_error(err);
+    result.error = err;
+    result.elapsed_micros = deadline.elapsed_micros();
+    return result;
+  }
+
+  result.status = SendStatus::Ok;
+  result.elapsed_micros = deadline.elapsed_micros();
+  return result;
+}
+
+SendResult send_buffers_bounded(int fd,
+                                const SendBuffer* buffers,
+                                size_t buffer_count,
+                                SendDeadline deadline) {
+  SendResult result{};
+  if (!validate_send_buffers(buffers, buffer_count, &result)) return result;
+
+  std::vector<iovec> iovecs = build_iovecs(buffers, buffer_count);
+  size_t iov_index = 0;
+  const size_t max_iov = max_iov_per_sendmsg();
+  while (iov_index < iovecs.size()) {
+    if (deadline.expired()) {
+      result.status = SendStatus::Backpressure;
+      result.error = EAGAIN;
+      result.elapsed_micros = deadline.elapsed_micros();
+      return result;
+    }
+
+    msghdr msg{};
+    msg.msg_iov = &iovecs[iov_index];
+    msg.msg_iovlen = std::min(max_iov, iovecs.size() - iov_index);
+
+    const ssize_t n = ::sendmsg(fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (n > 0) {
+      result.bytes_sent += static_cast<size_t>(n);
+      advance_iovecs(&iovecs, &iov_index, static_cast<size_t>(n));
+      continue;
+    }
+    if (n == 0) {
+      result.status = SendStatus::Disconnected;
+      result.elapsed_micros = deadline.elapsed_micros();
+      return result;
+    }
+
+    const int err = errno;
+    if (err == EINTR) continue;
+    result.status = classify_send_error(err);
+    result.error = err;
+    result.elapsed_micros = deadline.elapsed_micros();
+    return result;
+  }
+
+  result.status = SendStatus::Ok;
+  result.elapsed_micros = deadline.elapsed_micros();
+  return result;
+}
+
 SendResult send_frame_bounded(int fd, const uint8_t* payload, size_t payload_len, SendDeadline deadline) {
   uint8_t hdr[4];
   put_be32(hdr, static_cast<uint32_t>(payload_len));
-
-  SendResult header_result = send_all_bounded(fd, hdr, sizeof(hdr), deadline);
-  if (header_result.status != SendStatus::Ok) return header_result;
-
-  SendResult payload_result = send_all_bounded(fd, payload, payload_len, deadline);
-  payload_result.bytes_sent += header_result.bytes_sent;
-  payload_result.elapsed_micros = deadline.elapsed_micros();
-  return payload_result;
+  const SendBuffer buffers[] = {
+      {hdr, sizeof(hdr)},
+      {payload, payload_len},
+  };
+  return send_buffers_bounded(fd, buffers, 2, deadline);
 }
 
 bool send_all(int fd, const void* data, size_t len) {
