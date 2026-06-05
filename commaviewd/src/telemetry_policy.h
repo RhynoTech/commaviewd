@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 
 namespace commaview::telemetry {
@@ -58,6 +59,24 @@ inline bool service_policy_subscribes(const ServicePolicy& policy) {
 
 inline bool service_policy_samples(const ServicePolicy& policy) {
   return policy.mode == ServiceMode::Sample;
+}
+
+inline bool telemetry_policy_fetches_latest(const ServicePolicy& policy) {
+  return service_policy_subscribes(policy);
+}
+
+inline bool telemetry_policy_allows_emit(const ServicePolicy& policy,
+                                         uint64_t frame_updated_ms,
+                                         uint64_t now_ms,
+                                         uint64_t last_frame_updated_ms,
+                                         uint64_t last_emit_wall_ms) {
+  if (!service_policy_subscribes(policy)) return false;
+  if (frame_updated_ms <= last_frame_updated_ms) return false;
+  if (!service_policy_samples(policy)) return true;
+  if (policy.sample_hz <= 0) return false;
+  const uint64_t interval_ms = static_cast<uint64_t>(1000 / policy.sample_hz);
+  const uint64_t min_interval_ms = interval_ms == 0 ? 1 : interval_ms;
+  return last_emit_wall_ms == 0 || now_ms >= last_emit_wall_ms + min_interval_ms;
 }
 
 }  // namespace commaview::telemetry

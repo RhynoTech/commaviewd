@@ -60,6 +60,8 @@ using commaview::runtime_debug::runtime_debug_stats_path;
 using commaview::runtime_debug::service_mode_to_string;
 using commaview::telemetry::default_service_policy_for_name;
 using commaview::telemetry::service_policy_subscribes;
+using commaview::telemetry::telemetry_policy_allows_emit;
+using commaview::telemetry::telemetry_policy_fetches_latest;
 
 
 static constexpr uint8_t MSG_VIDEO = 0x05;
@@ -683,6 +685,7 @@ static void telemetry_loop(int client_fd,
   auto next_telem_poll = std::chrono::steady_clock::now();
   auto next_stats_flush = next_telem_poll + std::chrono::milliseconds(1000);
   std::array<uint64_t, static_cast<size_t>(NUM_TELEM)> last_ui_emit_ms = {};
+  std::array<uint64_t, static_cast<size_t>(NUM_TELEM)> last_ui_emit_wall_ms = {};
 
   while (g_running && !disconnect_requested->load()) {
     if (!client_socket_alive(client_fd)) {
@@ -708,6 +711,12 @@ static void telemetry_loop(int client_fd,
     std::array<bool, static_cast<size_t>(NUM_TELEM)> ui_fresh = {};
     if (g_ui_export_socket != nullptr) {
       for (int i = 0; i < NUM_TELEM; ++i) {
+        const char* service_name = kTelemetryServices[static_cast<size_t>(i)];
+        const ServicePolicy policy = policy_for_service(g_runtime_state.effective_config, service_name);
+        if (!telemetry_policy_fetches_latest(policy)) {
+          continue;
+        }
+
         commaview::ui_export::LatestFrame frame;
         if (!g_ui_export_socket->latest_frame(static_cast<uint8_t>(i),
                                               commaview::ui_export::kFreshFrameWindowMs,
@@ -715,7 +724,14 @@ static void telemetry_loop(int client_fd,
           continue;
         }
         ui_fresh[static_cast<size_t>(i)] = true;
-        if (frame.updated_at_ms <= last_ui_emit_ms[static_cast<size_t>(i)]) continue;
+        const uint64_t now_ms = runtime_now_ms();
+        if (!telemetry_policy_allows_emit(policy,
+                                          frame.updated_at_ms,
+                                          now_ms,
+                                          last_ui_emit_ms[static_cast<size_t>(i)],
+                                          last_ui_emit_wall_ms[static_cast<size_t>(i)])) {
+          continue;
+        }
 
         const auto send_started = std::chrono::steady_clock::now();
         const bool sent = send_meta_raw_frame(client_fd,
@@ -726,9 +742,10 @@ static void telemetry_loop(int client_fd,
                                                       send_mutex);
         const auto send_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - send_started);
+        const bool sampled = service_policy_samples(policy);
         note_runtime_emit(i,
                           frame.payload.size(),
-                          false,
+                          sampled,
                           sent,
                           static_cast<uint64_t>(send_elapsed.count()));
         if (!sent) {
@@ -737,6 +754,7 @@ static void telemetry_loop(int client_fd,
           break;
         }
         last_ui_emit_ms[static_cast<size_t>(i)] = frame.updated_at_ms;
+        last_ui_emit_wall_ms[static_cast<size_t>(i)] = now_ms;
         telem_raw_count++;
       }
     }
