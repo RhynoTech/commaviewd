@@ -57,12 +57,20 @@ int main() {
   assert(std::string(video_state.client_role) == "video");
   assert(!video_state.telemetry_on_video);
 
+  bool video_suppress = true;
+  assert(commaview::control::get_session_policy("session-1", &video_suppress));
+  assert(video_suppress == false);
+
   commaview::control::ClientControlState telemetry_state;
   consume_control_json("{\"op\":\"set_policy\",\"sessionId\":\"session-1\",\"suppressVideo\":true,\"transportVersion\":2,\"clientRole\":\"telemetry\"}",
                        &telemetry_state);
   assert(telemetry_state.transport_version == 2);
   assert(std::string(telemetry_state.client_role) == "telemetry");
   assert(!telemetry_state.telemetry_on_video);
+
+  bool after_telemetry_suppress = true;
+  assert(commaview::control::get_session_policy("session-1", &after_telemetry_suppress));
+  assert(after_telemetry_suppress == false);
 
   return 0;
 }

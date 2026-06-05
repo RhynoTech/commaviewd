@@ -198,7 +198,9 @@ void consume_client_control_frames(int client_fd,
       bool suppress_video = false;
       if (parse_set_policy_control(json, &session_id, &suppress_video, state)) {
         state->bound_session_id = session_id;
-        set_session_policy(session_id, suppress_video);
+        if (state->client_role != "telemetry") {
+          set_session_policy(session_id, suppress_video);
+        }
         state->control_update_count++;
         if (state->control_update_count <= 3 || (state->control_update_count % 100) == 0) {
           printf("[%s] control update session=%s suppress=%s transportVersion=%d clientRole=%s telemetryOnVideo=%s\n",
