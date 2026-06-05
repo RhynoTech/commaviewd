@@ -70,9 +70,42 @@ bool extract_json_bool_field(const std::string& json,
   return false;
 }
 
+bool extract_json_int_field(const std::string& json,
+                            const char* key,
+                            int* out) {
+  if (out == nullptr || key == nullptr) return false;
+
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t pos = json.find(needle);
+  if (pos == std::string::npos) return false;
+
+  pos = json.find(':', pos + needle.size());
+  if (pos == std::string::npos) return false;
+  pos++;
+
+  while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+  if (pos >= json.size()) return false;
+
+  int sign = 1;
+  if (json[pos] == '-') {
+    sign = -1;
+    pos++;
+  }
+  if (pos >= json.size() || !std::isdigit(static_cast<unsigned char>(json[pos]))) return false;
+
+  int value = 0;
+  while (pos < json.size() && std::isdigit(static_cast<unsigned char>(json[pos]))) {
+    value = (value * 10) + (json[pos] - '0');
+    pos++;
+  }
+  *out = value * sign;
+  return true;
+}
+
 bool parse_set_policy_control(const std::string& json,
                               std::string* session_id,
-                              bool* suppress_video) {
+                              bool* suppress_video,
+                              ClientControlState* state) {
   std::string op;
   if (!extract_json_string_field(json, "op", &op) || op != "set_policy") return false;
 
@@ -81,8 +114,21 @@ bool parse_set_policy_control(const std::string& json,
   if (!extract_json_string_field(json, "sessionId", &sid)) return false;
   if (!extract_json_bool_field(json, "suppressVideo", &suppress)) return false;
 
+  int transport_version = 1;
+  std::string client_role = "legacy";
+  bool telemetry_on_video = true;
+  extract_json_int_field(json, "transportVersion", &transport_version);
+  extract_json_string_field(json, "clientRole", &client_role);
+  telemetry_on_video = transport_version < 2;
+  extract_json_bool_field(json, "telemetryOnVideo", &telemetry_on_video);
+
   if (session_id != nullptr) *session_id = sid;
   if (suppress_video != nullptr) *suppress_video = suppress;
+  if (state != nullptr) {
+    state->transport_version = transport_version;
+    state->client_role = client_role;
+    state->telemetry_on_video = telemetry_on_video;
+  }
   return true;
 }
 
@@ -150,15 +196,18 @@ void consume_client_control_frames(int client_fd,
                              frame_len > 1 ? frame_len - 1 : 0);
       std::string session_id;
       bool suppress_video = false;
-      if (parse_set_policy_control(json, &session_id, &suppress_video)) {
+      if (parse_set_policy_control(json, &session_id, &suppress_video, state)) {
         state->bound_session_id = session_id;
         set_session_policy(session_id, suppress_video);
         state->control_update_count++;
         if (state->control_update_count <= 3 || (state->control_update_count % 100) == 0) {
-          printf("[%s] control update session=%s suppress=%s\n",
+          printf("[%s] control update session=%s suppress=%s transportVersion=%d clientRole=%s telemetryOnVideo=%s\n",
                  video_service,
                  session_id.c_str(),
-                 suppress_video ? "true" : "false");
+                 suppress_video ? "true" : "false",
+                 state->transport_version,
+                 state->client_role.c_str(),
+                 state->telemetry_on_video ? "true" : "false");
           fflush(stdout);
         }
       } else {

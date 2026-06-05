@@ -9,6 +9,9 @@ namespace commaview::control {
 struct ClientControlState {
   std::vector<uint8_t> rx_buf;
   std::string bound_session_id;
+  int transport_version = 1;
+  std::string client_role = "legacy";
+  bool telemetry_on_video = true;
   uint64_t control_update_count = 0;
   uint64_t parse_error_count = 0;
 };

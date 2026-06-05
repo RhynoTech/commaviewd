@@ -8,10 +8,10 @@
 /**
  * CommaView Unified Bridge (C++)
  *
- * Streams HEVC video and raw telemetry on road+wide ports.
+ * Streams HEVC video and raw telemetry on legacy road+wide ports, plus a telemetry-only stream.
  *
  * Ports:
- *   8200 road, 8201 wide, 8202 driver
+ *   8200 road, 8201 wide, 8202 driver, 8203 telemetry
  *
  * Framing:
  *   [4-byte big-endian length][payload]
@@ -73,6 +73,7 @@ static constexpr uint8_t RAW_META_ENVELOPE_V5 = 0x05;
 static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;
 static constexpr int PORT_DRIVER = 8202;
+static constexpr int PORT_TELEMETRY = 8203;
 static constexpr uint64_t VIDEO_SEND_BUDGET_MICROS = 16000ULL;
 
 // Runtime policy defaults favor the upstream-organized onroad domains we export over the UI socket.
@@ -149,9 +150,10 @@ static void put_be64(uint8_t* buf, uint64_t val) {
 
 
 static void telemetry_loop(int client_fd,
-                           const char* video_service,
+                           const char* stream_name,
                            std::atomic<bool>* disconnect_requested,
-                           std::mutex* send_mutex);
+                           std::mutex* send_mutex,
+                           std::atomic<bool>* telemetry_enabled);
 
 static bool send_meta_raw_frame(int fd,
                                         uint8_t envelope_version,
@@ -461,7 +463,7 @@ static cereal::EncodeData::Reader read_encode_data(cereal::Event::Reader event, 
   return commaview::video::read_encode_data(event, port, false);
 }
 
-static void handle_client(int client_fd, const char* video_service, int port) {
+static void handle_video_client(int client_fd, const char* video_service, int port) {
   char addr_str[64] = {};
   struct sockaddr_in peer = {};
   socklen_t peer_len = sizeof(peer);
@@ -502,6 +504,7 @@ static void handle_client(int client_fd, const char* video_service, int port) {
   if (video_sock != nullptr) video_poller->registerSocket(video_sock);
 
   std::atomic<bool> telemetry_disconnect_requested{false};
+  std::atomic<bool> telemetry_enabled_for_client{include_telemetry};
   std::thread telemetry_thread;
   std::mutex send_mutex;
   if (include_telemetry) {
@@ -509,7 +512,8 @@ static void handle_client(int client_fd, const char* video_service, int port) {
                                    client_fd,
                                    video_service,
                                    &telemetry_disconnect_requested,
-                                   &send_mutex);
+                                   &send_mutex,
+                                   &telemetry_enabled_for_client);
   }
 
   uint64_t frame_count = 0;
@@ -525,6 +529,9 @@ static void handle_client(int client_fd, const char* video_service, int port) {
     if (!client_socket_alive(client_fd)) break;
 
     consume_client_control_frames(client_fd, &control_state, video_service);
+    if (include_telemetry) {
+      telemetry_enabled_for_client.store(control_state.telemetry_on_video);
+    }
 
     if (include_telemetry && telemetry_disconnect_requested.load()) break;
 
@@ -677,9 +684,10 @@ disconnect:
   delete ctx;
 }
 static void telemetry_loop(int client_fd,
-                           const char* video_service,
+                           const char* stream_name,
                            std::atomic<bool>* disconnect_requested,
-                           std::mutex* send_mutex) {
+                           std::mutex* send_mutex,
+                           std::atomic<bool>* telemetry_enabled) {
   if (disconnect_requested == nullptr) return;
   uint64_t telem_raw_count = 0;
   auto next_telem_poll = std::chrono::steady_clock::now();
@@ -691,6 +699,11 @@ static void telemetry_loop(int client_fd,
     if (!client_socket_alive(client_fd)) {
       disconnect_requested->store(true);
       break;
+    }
+
+    if (telemetry_enabled != nullptr && !telemetry_enabled->load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(g_telemetry_emit_ms));
+      continue;
     }
 
     const auto telemetry_started = std::chrono::steady_clock::now();
@@ -763,7 +776,7 @@ static void telemetry_loop(int client_fd,
 
     if (telem_raw_count > 0 && (telem_raw_count <= 3 || (telem_raw_count % 200) == 0)) {
       printf("[%s] telem_raw=%llu [DIRECT_UI_SOCKET_ONLY] (read+send throttled %dms)\n",
-             video_service,
+             stream_name,
              static_cast<unsigned long long>(telem_raw_count),
              g_telemetry_emit_ms);
       fflush(stdout);
@@ -782,6 +795,52 @@ static void telemetry_loop(int client_fd,
   }
 }
 
+static void handle_telemetry_client(int client_fd) {
+  const char* stream_name = "telemetry";
+  char addr_str[64] = {};
+  struct sockaddr_in peer = {};
+  socklen_t peer_len = sizeof(peer);
+  if (getpeername(client_fd, reinterpret_cast<struct sockaddr*>(&peer), &peer_len) == 0) {
+    inet_ntop(AF_INET, &peer.sin_addr, addr_str, sizeof(addr_str));
+  }
+
+  printf("[%s] client connected: %s (fd=%d)\n", stream_name, addr_str, client_fd);
+  fflush(stdout);
+
+  int opt = 1;
+  setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+  int sndbuf = 524288;
+  setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+
+  note_runtime_connect();
+
+  std::atomic<bool> disconnect_requested{false};
+  std::atomic<bool> telemetry_enabled_for_client{true};
+  std::mutex send_mutex;
+  std::thread telemetry_thread(telemetry_loop,
+                               client_fd,
+                               stream_name,
+                               &disconnect_requested,
+                               &send_mutex,
+                               &telemetry_enabled_for_client);
+  ClientControlState control_state;
+
+  while (g_running && !disconnect_requested.load()) {
+    if (!client_socket_alive(client_fd)) break;
+    consume_client_control_frames(client_fd, &control_state, stream_name);
+    telemetry_enabled_for_client.store(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  printf("[%s] client disconnected: %s\n", stream_name, addr_str);
+  fflush(stdout);
+
+  disconnect_requested.store(true);
+  shutdown(client_fd, SHUT_RDWR);
+  if (telemetry_thread.joinable()) telemetry_thread.join();
+  close(client_fd);
+}
+
 static void accept_loop(int server_fd, const char* service_name, int port) {
   printf("[%s] listening on :%d\n", service_name, port);
   fflush(stdout);
@@ -794,7 +853,11 @@ static void accept_loop(int server_fd, const char* service_name, int port) {
       if (g_running) perror("accept");
       continue;
     }
-    std::thread(handle_client, client_fd, service_name, port).detach();
+    if (port == PORT_TELEMETRY) {
+      std::thread(handle_telemetry_client, client_fd).detach();
+    } else {
+      std::thread(handle_video_client, client_fd, service_name, port).detach();
+    }
   }
 }
 
@@ -824,6 +887,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
   streams.push_back({PORT_ROAD, video_services[0]});
   streams.push_back({PORT_WIDE, video_services[1]});
   streams.push_back({PORT_DRIVER, video_services[2]});
+  streams.push_back({PORT_TELEMETRY, "telemetry"});
 
   std::vector<std::thread> threads;
   std::vector<int> server_fds;
