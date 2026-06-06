@@ -183,6 +183,48 @@ start_runtime_log_rotation_loop() {
   echo $! > "$RUN_DIR/log-rotation.pid"
 }
 
+runtime_event_ts_ms() {
+  python3 - <<'PY' 2>/dev/null || date +%s000
+import time
+print(int(time.time() * 1000))
+PY
+}
+
+append_runtime_run_event() {
+  event="$1"
+  component="$2"
+  pid="$3"
+  exit_status="${4:-}"
+  ts_ms="$(runtime_event_ts_ms)"
+  {
+    printf '{"tsMs":%s,"event":"%s","component":"%s","pid":%s,"restartReason":"%s"' "$ts_ms" "$event" "$component" "$pid" "$RESTART_REASON"
+    if [ -n "$exit_status" ]; then
+      printf ',"exitStatus":%s' "$exit_status"
+    fi
+    printf '}\n'
+  } >> "$LOG_DIR/runtime-run-events.jsonl" 2>/dev/null || true
+}
+
+start_runtime_process() {
+  component="$1"
+  pid_file="$2"
+  supervisor_pid_file="$3"
+  log_file="$4"
+  mode="$5"
+  shift 5
+  (
+    "$@" /data/commaview/commaviewd "$mode" >> "$log_file" 2>&1 &
+    child_pid="$!"
+    echo "$child_pid" > "$RUN_DIR/$pid_file"
+    append_runtime_run_event process_launch "$component" "$child_pid"
+    wait "$child_pid"
+    exit_status="$?"
+    append_runtime_run_event process_exit "$component" "$child_pid" "$exit_status"
+    exit "$exit_status"
+  ) >/dev/null 2>&1 &
+  echo $! > "$RUN_DIR/$supervisor_pid_file"
+}
+
 refresh_onroad_ui_export_status
 restart_openpilot_ui_if_pending
 rotate_runtime_logs
@@ -191,23 +233,25 @@ rotate_runtime_logs
 bash /data/commaview/stop.sh >/dev/null 2>&1 || true
 
 # Launch bridge mode (video/telemetry stream)
-COMMAVIEWD_RUNTIME_DEBUG_CONFIG="$RUNTIME_DEBUG_CONFIG" \
-COMMAVIEWD_RUNTIME_DEBUG_DEFAULTS="$DEFAULTS_FILE" \
-COMMAVIEWD_RUNTIME_DEBUG_EFFECTIVE="$RUNTIME_DEBUG_EFFECTIVE" \
-COMMAVIEWD_RUNTIME_STATS="$RUNTIME_DEBUG_STATS" \
-COMMAVIEWD_RESTART_REASON="$RESTART_REASON" \
-nohup nice -n 19 /data/commaview/commaviewd bridge >> "$LOG_DIR/commaviewd-bridge.log" 2>&1 &
-echo $! > "$RUN_DIR/bridge.pid"
+start_runtime_process bridge bridge.pid bridge-supervisor.pid "$LOG_DIR/commaviewd-bridge.log" bridge \
+  nohup env \
+  COMMAVIEWD_RUNTIME_DEBUG_CONFIG="$RUNTIME_DEBUG_CONFIG" \
+  COMMAVIEWD_RUNTIME_DEBUG_DEFAULTS="$DEFAULTS_FILE" \
+  COMMAVIEWD_RUNTIME_DEBUG_EFFECTIVE="$RUNTIME_DEBUG_EFFECTIVE" \
+  COMMAVIEWD_RUNTIME_STATS="$RUNTIME_DEBUG_STATS" \
+  COMMAVIEWD_RESTART_REASON="$RESTART_REASON" \
+  nice -n 19
 
 # Launch control mode (API + pairing/runtime status)
-COMMAVIEWD_API_TOKEN_FILE=/data/commaview/api/auth.token \
-COMMAVIEWD_RUNTIME_DEBUG_CONFIG="$RUNTIME_DEBUG_CONFIG" \
-COMMAVIEWD_RUNTIME_DEBUG_DEFAULTS="$DEFAULTS_FILE" \
-COMMAVIEWD_RUNTIME_DEBUG_EFFECTIVE="$RUNTIME_DEBUG_EFFECTIVE" \
-COMMAVIEWD_RUNTIME_STATS="$RUNTIME_DEBUG_STATS" \
-COMMAVIEWD_RESTART_REASON="$RESTART_REASON" \
-nohup nice -n 19 /data/commaview/commaviewd control >> "$LOG_DIR/commaviewd-control.log" 2>&1 &
-echo $! > "$RUN_DIR/control.pid"
+start_runtime_process control control.pid control-supervisor.pid "$LOG_DIR/commaviewd-control.log" control \
+  nohup env \
+  COMMAVIEWD_API_TOKEN_FILE=/data/commaview/api/auth.token \
+  COMMAVIEWD_RUNTIME_DEBUG_CONFIG="$RUNTIME_DEBUG_CONFIG" \
+  COMMAVIEWD_RUNTIME_DEBUG_DEFAULTS="$DEFAULTS_FILE" \
+  COMMAVIEWD_RUNTIME_DEBUG_EFFECTIVE="$RUNTIME_DEBUG_EFFECTIVE" \
+  COMMAVIEWD_RUNTIME_STATS="$RUNTIME_DEBUG_STATS" \
+  COMMAVIEWD_RESTART_REASON="$RESTART_REASON" \
+  nice -n 19
 
 start_runtime_log_rotation_loop
 

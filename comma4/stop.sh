@@ -56,7 +56,7 @@ stop_pids() {
 }
 
 tracked_pids=""
-for f in bridge.pid control.pid log-rotation.pid; do
+for f in bridge.pid control.pid bridge-supervisor.pid control-supervisor.pid log-rotation.pid; do
   if [ -f "$RUN/$f" ]; then
     pid="$(cat "$RUN/$f" 2>/dev/null)"
     case "$pid" in
@@ -80,5 +80,5 @@ if [ -n "$leftover" ]; then
   exit 1
 fi
 
-rm -f "$RUN/bridge.pid" "$RUN/control.pid" "$RUN/log-rotation.pid"
+rm -f "$RUN/bridge.pid" "$RUN/control.pid" "$RUN/bridge-supervisor.pid" "$RUN/control-supervisor.pid" "$RUN/log-rotation.pid"
 echo "CommaView stopped"
