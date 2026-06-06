@@ -8,6 +8,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
@@ -39,6 +40,25 @@ constexpr int kPairingCodeTtlSec = 300;
 constexpr const char* kOnroadUiExportStatusFile = "/data/commaview/run/onroad-ui-export-status.json";
 constexpr const char* kOnroadUiExportApplyScript = "/data/commaview/scripts/apply_onroad_ui_export_patch.sh";
 constexpr const char* kOnroadUiExportVerifyScript = "/data/commaview/scripts/verify_onroad_ui_export_patch.sh";
+constexpr size_t kSupportLogPerFileCapBytes = 512 * 1024;
+constexpr size_t kSupportLogTotalCapBytes = 2 * 1024 * 1024;
+
+struct SupportLogFileSpec {
+  const char* entry_name;
+  const char* path;
+  bool text;
+};
+
+const std::array<SupportLogFileSpec, 8> kSupportLogFiles{{
+    {"commaviewd-bridge.log", "/data/commaview/logs/commaviewd-bridge.log", true},
+    {"commaviewd-control.log", "/data/commaview/logs/commaviewd-control.log", true},
+    {"onroad-ui-export-startup.log", "/data/commaview/logs/onroad-ui-export-startup.log", true},
+    {"runtime-run-events.jsonl", "/data/commaview/logs/runtime-run-events.jsonl", true},
+    {"telemetry-stats.json", "/data/commaview/run/telemetry-stats.json", true},
+    {"runtime-debug-effective.json", "/data/commaview/run/runtime-debug-effective.json", true},
+    {"onroad-ui-export-status.json", "/data/commaview/run/onroad-ui-export-status.json", true},
+    {"last-restart-reason.txt", "/data/commaview/run/last-restart-reason.txt", true},
+}};
 
 struct PairingGrant {
   std::string code;
@@ -184,6 +204,83 @@ std::string read_file_raw(const std::string& path) {
   std::stringstream ss;
   ss << f.rdbuf();
   return ss.str();
+}
+
+uint64_t now_ms() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+std::string read_file_tail_capped(const std::string& path, size_t cap, bool* exists, bool* truncated) {
+  if (exists) *exists = false;
+  if (truncated) *truncated = false;
+
+  int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return "";
+  if (exists) *exists = true;
+
+  struct stat st{};
+  if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+    close(fd);
+    return "";
+  }
+
+  off_t start = 0;
+  if (static_cast<uint64_t>(st.st_size) > cap) {
+    start = st.st_size - static_cast<off_t>(cap);
+    if (truncated) *truncated = true;
+  }
+  if (lseek(fd, start, SEEK_SET) < 0) {
+    close(fd);
+    return "";
+  }
+
+  std::string out;
+  out.resize(static_cast<size_t>(st.st_size - start));
+  const ssize_t n = read(fd, out.data(), out.size());
+  close(fd);
+  if (n < 0) return "";
+  out.resize(static_cast<size_t>(n));
+  return out;
+}
+
+std::string support_logs_response_json() {
+  std::ostringstream out;
+  size_t total = 0;
+  out << "{\"ok\":true,";
+  out << "\"generatedAtMs\":" << now_ms() << ",";
+  out << "\"perFileCapBytes\":" << kSupportLogPerFileCapBytes << ",";
+  out << "\"totalCapBytes\":" << kSupportLogTotalCapBytes << ",";
+  out << "\"files\":[";
+
+  bool first = true;
+  for (const auto& spec : kSupportLogFiles) {
+    bool exists = false;
+    bool truncated = false;
+    std::string body = read_file_tail_capped(spec.path, kSupportLogPerFileCapBytes, &exists, &truncated);
+    if (total + body.size() > kSupportLogTotalCapBytes) {
+      truncated = true;
+      const size_t remaining = total >= kSupportLogTotalCapBytes ? 0 : kSupportLogTotalCapBytes - total;
+      body.resize(std::min(body.size(), remaining));
+    }
+    total += body.size();
+
+    if (!first) out << ",";
+    first = false;
+    out << "{";
+    out << "\"name\":\"" << json_escape(spec.entry_name) << "\",";
+    out << "\"path\":\"" << json_escape(spec.path) << "\",";
+    out << "\"exists\":" << (exists ? "true" : "false") << ",";
+    out << "\"truncated\":" << (truncated ? "true" : "false") << ",";
+    out << "\"encoding\":\"text\",";
+    out << "\"content\":\"" << json_escape(body) << "\"";
+    out << "}";
+
+    if (total >= kSupportLogTotalCapBytes) break;
+  }
+
+  out << "],\"totalBytes\":" << total << "}";
+  return out.str();
 }
 
 std::string runtime_restart_reason() {
@@ -783,6 +880,12 @@ int run_control_mode(int argc, char* argv[]) {
       }
       if (req.path == "/commaview/runtime-debug/config") {
         return make_json(200, runtime_debug_state_json());
+      }
+      if (req.path == "/commaview/support/logs") {
+        if (!is_authorized(req, api_token)) {
+          return make_json(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
+        }
+        return make_json(200, support_logs_response_json());
       }
       return make_json(404, "{\"error\":\"not found\"}");
     }
