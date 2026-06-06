@@ -155,24 +155,46 @@ static void telemetry_loop(int client_fd,
                            std::mutex* send_mutex,
                            std::atomic<bool>* telemetry_enabled);
 
-static bool send_meta_raw_frame(int fd,
-                                        uint8_t envelope_version,
-                                        uint8_t service_index,
-                                        const uint8_t* raw_data,
-                                        size_t raw_size,
-                                        std::mutex* send_mutex) {
-  if (raw_data == nullptr || raw_size == 0) return true;
+static commaview::net::SendResult send_meta_bytes_bounded(int fd,
+                                                           const uint8_t* bytes,
+                                                           size_t bytes_len,
+                                                           uint8_t msg_type,
+                                                           std::mutex* send_mutex) {
+  commaview::net::SendResult empty_ok{};
+  if (bytes == nullptr || bytes_len == 0) return empty_ok;
+  std::vector<uint8_t> framed_payload(1 + bytes_len);
+  framed_payload[0] = msg_type;
+  memcpy(&framed_payload[1], bytes, bytes_len);
+  if (send_mutex != nullptr) {
+    std::lock_guard<std::mutex> send_lock(*send_mutex);
+    return commaview::net::send_frame_bounded(
+        fd,
+        framed_payload.data(),
+        framed_payload.size(),
+        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
+  }
+  return commaview::net::send_frame_bounded(
+      fd,
+      framed_payload.data(),
+      framed_payload.size(),
+      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
+}
+
+static commaview::net::SendResult send_meta_raw_frame(int fd,
+                                                       uint8_t envelope_version,
+                                                       uint8_t service_index,
+                                                       const uint8_t* raw_data,
+                                                       size_t raw_size,
+                                                       std::mutex* send_mutex) {
+  commaview::net::SendResult empty_ok{};
+  if (raw_data == nullptr || raw_size == 0) return empty_ok;
   const uint32_t raw_len = static_cast<uint32_t>(raw_size);
   std::vector<uint8_t> payload(1 + 1 + 4 + raw_len);
   payload[0] = envelope_version;
   payload[1] = service_index;
   put_be32(&payload[2], raw_len);
   memcpy(&payload[6], raw_data, raw_len);
-  if (send_mutex != nullptr) {
-    std::lock_guard<std::mutex> send_lock(*send_mutex);
-    return commaview::net::send_meta_bytes(fd, payload.data(), payload.size(), MSG_META_RAW);
-  }
-  return commaview::net::send_meta_bytes(fd, payload.data(), payload.size(), MSG_META_RAW);
+  return send_meta_bytes_bounded(fd, payload.data(), payload.size(), MSG_META_RAW, send_mutex);
 }
 
 struct RuntimeServiceStats {
@@ -206,6 +228,24 @@ struct RuntimeVideoSendStats {
   uint64_t partial_reset_count = 0;
   uint64_t zero_byte_drop_count = 0;
   uint64_t max_send_micros = 0;
+  std::string last_status = "ok";
+  int last_error = 0;
+  std::string last_error_name = "none";
+  uint64_t last_bytes_sent = 0;
+  uint64_t last_elapsed_micros = 0;
+  uint64_t last_at_ms = 0;
+};
+
+struct RuntimePeerDisconnectStats {
+  uint64_t count = 0;
+  std::string stream = "";
+  std::string phase = "";
+  std::string status = "ok";
+  int error = 0;
+  std::string error_name = "none";
+  uint64_t bytes_sent = 0;
+  uint64_t elapsed_micros = 0;
+  uint64_t at_ms = 0;
 };
 
 struct RuntimeState {
@@ -215,6 +255,7 @@ struct RuntimeState {
   RuntimeLoopStats telemetry_loop = {};
   RuntimeLoopStats video_loop = {};
   RuntimeVideoSendStats video_send = {};
+  RuntimePeerDisconnectStats peer_disconnect = {};
   std::chrono::steady_clock::time_point started_at = std::chrono::steady_clock::now();
   uint64_t reconnect_count = 0;
   std::string last_restart_reason = "startup";
@@ -278,7 +319,23 @@ static std::string build_runtime_stats_json_locked() {
   out << "\"disconnectCount\":" << g_runtime_state.video_send.disconnect_count << ",";
   out << "\"partialResetCount\":" << g_runtime_state.video_send.partial_reset_count << ",";
   out << "\"zeroByteDropCount\":" << g_runtime_state.video_send.zero_byte_drop_count << ",";
-  out << "\"maxSendMicros\":" << g_runtime_state.video_send.max_send_micros << "},";
+  out << "\"maxSendMicros\":" << g_runtime_state.video_send.max_send_micros << ",";
+  out << "\"lastStatus\":\"" << runtime_json_escape(g_runtime_state.video_send.last_status) << "\",";
+  out << "\"lastError\":" << g_runtime_state.video_send.last_error << ",";
+  out << "\"lastErrorName\":\"" << runtime_json_escape(g_runtime_state.video_send.last_error_name) << "\",";
+  out << "\"lastBytesSent\":" << g_runtime_state.video_send.last_bytes_sent << ",";
+  out << "\"lastElapsedMicros\":" << g_runtime_state.video_send.last_elapsed_micros << ",";
+  out << "\"lastAtMs\":" << g_runtime_state.video_send.last_at_ms << "},";
+  out << "\"peerDisconnect\":{"
+      << "\"count\":" << g_runtime_state.peer_disconnect.count << ","
+      << "\"stream\":\"" << runtime_json_escape(g_runtime_state.peer_disconnect.stream) << "\","
+      << "\"phase\":\"" << runtime_json_escape(g_runtime_state.peer_disconnect.phase) << "\","
+      << "\"status\":\"" << runtime_json_escape(g_runtime_state.peer_disconnect.status) << "\","
+      << "\"error\":" << g_runtime_state.peer_disconnect.error << ","
+      << "\"errorName\":\"" << runtime_json_escape(g_runtime_state.peer_disconnect.error_name) << "\","
+      << "\"bytesSent\":" << g_runtime_state.peer_disconnect.bytes_sent << ","
+      << "\"elapsedMicros\":" << g_runtime_state.peer_disconnect.elapsed_micros << ","
+      << "\"atMs\":" << g_runtime_state.peer_disconnect.at_ms << "},";
   out << "\"services\":{";
   for (int i = 0; i < NUM_TELEM; ++i) {
     if (i > 0) out << ",";
@@ -398,10 +455,20 @@ static void note_runtime_loop_sample(bool telemetry_loop, uint64_t elapsed_micro
   }
 }
 
+static void note_video_send_failure_details(const commaview::net::SendResult& result) {
+  g_runtime_state.video_send.last_status = commaview::net::send_status_name(result.status);
+  g_runtime_state.video_send.last_error = result.error;
+  g_runtime_state.video_send.last_error_name = commaview::net::send_error_name(result.error);
+  g_runtime_state.video_send.last_bytes_sent = static_cast<uint64_t>(result.bytes_sent);
+  g_runtime_state.video_send.last_elapsed_micros = result.elapsed_micros;
+  g_runtime_state.video_send.last_at_ms = runtime_now_ms();
+}
+
 static void note_video_send_result(const commaview::net::SendResult& result) {
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
   g_runtime_state.video_send.max_send_micros = std::max(g_runtime_state.video_send.max_send_micros,
                                                         result.elapsed_micros);
+  if (result.status != commaview::net::SendStatus::Ok) note_video_send_failure_details(result);
   switch (result.status) {
     case commaview::net::SendStatus::Ok:
       g_runtime_state.video_send.ok_count += 1;
@@ -416,6 +483,39 @@ static void note_video_send_result(const commaview::net::SendResult& result) {
       g_runtime_state.video_send.disconnect_count += 1;
       break;
   }
+}
+
+static commaview::net::SendResult peer_closed_result() {
+  commaview::net::SendResult result{};
+  result.status = commaview::net::SendStatus::Disconnected;
+  return result;
+}
+
+static void note_runtime_peer_disconnect(const char* stream,
+                                         const char* phase,
+                                         const commaview::net::SendResult& result) {
+  {
+    std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+    g_runtime_state.peer_disconnect.count += 1;
+    g_runtime_state.peer_disconnect.stream = stream == nullptr ? "" : stream;
+    g_runtime_state.peer_disconnect.phase = phase == nullptr ? "" : phase;
+    g_runtime_state.peer_disconnect.status = commaview::net::send_status_name(result.status);
+    g_runtime_state.peer_disconnect.error = result.error;
+    g_runtime_state.peer_disconnect.error_name = commaview::net::send_error_name(result.error);
+    g_runtime_state.peer_disconnect.bytes_sent = static_cast<uint64_t>(result.bytes_sent);
+    g_runtime_state.peer_disconnect.elapsed_micros = result.elapsed_micros;
+    g_runtime_state.peer_disconnect.at_ms = runtime_now_ms();
+  }
+  printf("[%s] peer disconnect phase=%s status=%s errno=%s(%d) bytes=%zu elapsed_us=%llu\n",
+         stream == nullptr ? "unknown" : stream,
+         phase == nullptr ? "unknown" : phase,
+         commaview::net::send_status_name(result.status),
+         commaview::net::send_error_name(result.error).c_str(),
+         result.error,
+         result.bytes_sent,
+         static_cast<unsigned long long>(result.elapsed_micros));
+  fflush(stdout);
+  flush_runtime_state();
 }
 
 static void set_session_policy(const std::string& session_id, bool suppress_video) {
@@ -547,7 +647,10 @@ static void handle_video_client(int client_fd, const char* video_service, int po
 
   while (g_running) {
     const auto loop_started = std::chrono::steady_clock::now();
-    if (!client_socket_alive(client_fd)) break;
+    if (!client_socket_alive(client_fd)) {
+      note_runtime_peer_disconnect(video_service, "client_socket_alive", peer_closed_result());
+      break;
+    }
 
     consume_client_control_frames(client_fd, &control_state, video_service);
     if (include_telemetry) {
@@ -645,6 +748,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
             continue;
           }
           if (send_result.status != commaview::net::SendStatus::Ok) {
+            note_runtime_peer_disconnect(video_service, "video_send", send_result);
             shutdown(client_fd, SHUT_RDWR);
             goto disconnect;
           }
@@ -718,6 +822,7 @@ static void telemetry_loop(int client_fd,
 
   while (g_running && !disconnect_requested->load()) {
     if (!client_socket_alive(client_fd)) {
+      note_runtime_peer_disconnect(stream_name, "telemetry_socket_alive", peer_closed_result());
       disconnect_requested->store(true);
       break;
     }
@@ -768,21 +873,25 @@ static void telemetry_loop(int client_fd,
         }
 
         const auto send_started = std::chrono::steady_clock::now();
-        const bool sent = send_meta_raw_frame(client_fd,
-                                                      RAW_META_ENVELOPE_V5,
-                                                      static_cast<uint8_t>(i),
-                                                      frame.payload.data(),
-                                                      frame.payload.size(),
-                                                      send_mutex);
+        auto send_result = send_meta_raw_frame(client_fd,
+                                               RAW_META_ENVELOPE_V5,
+                                               static_cast<uint8_t>(i),
+                                               frame.payload.data(),
+                                               frame.payload.size(),
+                                               send_mutex);
         const auto send_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - send_started);
+        send_result.elapsed_micros = std::max(send_result.elapsed_micros,
+                                              static_cast<uint64_t>(send_elapsed.count()));
         const bool sampled = service_policy_samples(policy);
+        const bool sent = send_result.status == commaview::net::SendStatus::Ok;
         note_runtime_emit(i,
                           frame.payload.size(),
                           sampled,
                           sent,
-                          static_cast<uint64_t>(send_elapsed.count()));
+                          send_result.elapsed_micros);
         if (!sent) {
+          note_runtime_peer_disconnect(stream_name, "telemetry_send", send_result);
           disconnect_requested->store(true);
           shutdown(client_fd, SHUT_RDWR);
           break;
@@ -846,7 +955,10 @@ static void handle_telemetry_client(int client_fd) {
   ClientControlState control_state;
 
   while (g_running && !disconnect_requested.load()) {
-    if (!client_socket_alive(client_fd)) break;
+    if (!client_socket_alive(client_fd)) {
+      note_runtime_peer_disconnect(stream_name, "client_socket_alive", peer_closed_result());
+      break;
+    }
     consume_client_control_frames(client_fd, &control_state, stream_name);
     telemetry_enabled_for_client.store(true);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));

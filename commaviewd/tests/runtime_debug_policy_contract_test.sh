@@ -60,6 +60,11 @@ runtime_debug_policy_contract_main() {
   assert_contains_fixed 'UI_SOCKET_PREFERRED=' "$bridge_cpp" 'bridge startup should report ui socket state'
   assert_not_contains_fixed 'SubSocket::create(ctx, service_name, "127.0.0.1", true, true, segment_size);' "$bridge_cpp" 'legacy direct-v2 telemetry subscribers should be removed from bridge runtime'
   assert_contains_fixed 'runtime_debug_stats_path()' "$bridge_cpp" 'runtime stats should still be written to the runtime stats path'
+  assert_contains_fixed 'peerDisconnect' "$bridge_cpp" 'runtime stats should expose peer disconnect diagnostics'
+  assert_contains_fixed 'note_runtime_peer_disconnect' "$bridge_cpp" 'runtime should record peer disconnect/send-loop context'
+  assert_contains_fixed 'send_status_name(result.status)' "$bridge_cpp" 'runtime disconnect diagnostics should record bounded-send status names'
+  assert_contains_fixed 'send_error_name(result.error)' "$bridge_cpp" 'runtime disconnect diagnostics should record errno names'
+  assert_contains_fixed 'note_video_send_failure_details(result)' "$bridge_cpp" 'video send hot path should only format diagnostic strings for failures'
 
   echo 'PASS: runtime debug policy contract checks passed'
 }

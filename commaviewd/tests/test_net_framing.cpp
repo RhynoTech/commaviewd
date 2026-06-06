@@ -115,6 +115,18 @@ static void test_bounded_send_classifies_ewouldblock_as_backpressure() {
   assert(sender.call_index == sender.calls.size());
 }
 
+static void test_send_diagnostics_names_are_stable() {
+  assert(std::string(commaview::net::send_status_name(commaview::net::SendStatus::Ok)) == "ok");
+  assert(std::string(commaview::net::send_status_name(commaview::net::SendStatus::Backpressure)) == "backpressure");
+  assert(std::string(commaview::net::send_status_name(commaview::net::SendStatus::Disconnected)) == "disconnected");
+  assert(std::string(commaview::net::send_status_name(commaview::net::SendStatus::InvalidArgument)) == "invalid_argument");
+  assert(commaview::net::send_error_name(EPIPE) == "EPIPE");
+  assert(commaview::net::send_error_name(ECONNRESET) == "ECONNRESET");
+  assert(commaview::net::send_error_name(ENOTCONN) == "ENOTCONN");
+  assert(commaview::net::send_error_name(EAGAIN) == "EAGAIN");
+  assert(commaview::net::send_error_name(0) == "none");
+}
+
 static void test_bounded_send_classifies_epipe_as_disconnected() {
   std::vector<uint8_t> payload{0x01, 0x02};
   ScriptedSender sender{{{-1, EPIPE}}};
@@ -163,6 +175,7 @@ static void test_send_iov_handles_partial_iovec_boundaries() {
 }
 
 int main() {
+  test_send_diagnostics_names_are_stable();
   test_bounded_send_retries_eintr_and_partial_success();
   test_bounded_send_classifies_eagain_as_backpressure();
   test_bounded_send_reports_partial_progress_before_backpressure();

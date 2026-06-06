@@ -25,6 +25,9 @@ struct SendResult {
   uint64_t elapsed_micros = 0;
 };
 
+const char* send_status_name(SendStatus status);
+std::string send_error_name(int error);
+
 class SendDeadline {
  public:
   static SendDeadline after_micros(uint64_t budget_micros);

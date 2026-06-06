@@ -80,6 +80,32 @@ size_t max_iov_per_sendmsg() {
 
 namespace commaview::net {
 
+const char* send_status_name(SendStatus status) {
+  switch (status) {
+    case SendStatus::Ok:
+      return "ok";
+    case SendStatus::Backpressure:
+      return "backpressure";
+    case SendStatus::Disconnected:
+      return "disconnected";
+    case SendStatus::InvalidArgument:
+      return "invalid_argument";
+  }
+  return "unknown";
+}
+
+std::string send_error_name(int error) {
+  if (error == 0) return "none";
+  if (error == EPIPE) return "EPIPE";
+  if (error == ECONNRESET) return "ECONNRESET";
+  if (error == ENOTCONN) return "ENOTCONN";
+  if (error == EAGAIN) return "EAGAIN";
+  if (error == EWOULDBLOCK) return "EWOULDBLOCK";
+  if (error == EINTR) return "EINTR";
+  if (error == EINVAL) return "EINVAL";
+  return std::string("errno_") + std::to_string(error);
+}
+
 void put_be32(uint8_t* buf, uint32_t val) {
   buf[0] = (val >> 24) & 0xFF;
   buf[1] = (val >> 16) & 0xFF;
