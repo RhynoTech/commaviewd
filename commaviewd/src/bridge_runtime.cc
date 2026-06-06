@@ -293,6 +293,31 @@ static void write_text_file_best_effort(const std::string& path, const std::stri
   out << body;
 }
 
+static void append_runtime_run_event(const std::string& event,
+                                     const std::string& stream = "",
+                                     const std::string& peer = "",
+                                     const std::string& phase = "",
+                                     const std::string& status = "") {
+  std::ofstream out("/data/commaview/logs/runtime-run-events.jsonl", std::ios::app);
+  if (!out) return;
+  std::string restart_reason;
+  {
+    std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+    restart_reason = g_runtime_state.last_restart_reason;
+  }
+  out << "{"
+      << "\"tsMs\":" << runtime_now_ms() << ","
+      << "\"event\":\"" << runtime_json_escape(event) << "\"," 
+      << "\"pid\":" << getpid() << ","
+      << "\"mode\":\"bridge\"," 
+      << "\"restartReason\":\"" << runtime_json_escape(restart_reason) << "\"";
+  if (!stream.empty()) out << ",\"stream\":\"" << runtime_json_escape(stream) << "\"";
+  if (!peer.empty()) out << ",\"peer\":\"" << runtime_json_escape(peer) << "\"";
+  if (!phase.empty()) out << ",\"phase\":\"" << runtime_json_escape(phase) << "\"";
+  if (!status.empty()) out << ",\"status\":\"" << runtime_json_escape(status) << "\"";
+  out << "}\n";
+}
+
 static std::string build_runtime_stats_json_locked() {
   std::ostringstream out;
   const uint64_t uptime_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -506,6 +531,11 @@ static void note_runtime_peer_disconnect(const char* stream,
     g_runtime_state.peer_disconnect.elapsed_micros = result.elapsed_micros;
     g_runtime_state.peer_disconnect.at_ms = runtime_now_ms();
   }
+  append_runtime_run_event("peer_disconnect",
+                           stream == nullptr ? "unknown" : stream,
+                           "",
+                           phase == nullptr ? "unknown" : phase,
+                           commaview::net::send_status_name(result.status));
   printf("[%s] peer disconnect phase=%s status=%s errno=%s(%d) bytes=%zu elapsed_us=%llu\n",
          stream == nullptr ? "unknown" : stream,
          phase == nullptr ? "unknown" : phase,
@@ -592,6 +622,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     inet_ntop(AF_INET, &peer.sin_addr, addr_str, sizeof(addr_str));
   }
 
+  append_runtime_run_event("client_connected", video_service, addr_str);
   printf("[%s] client connected: %s (fd=%d)\n", video_service, addr_str, client_fd);
   fflush(stdout);
 
@@ -795,6 +826,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   }
 
 disconnect:
+  append_runtime_run_event("client_disconnected", video_service, addr_str);
   printf("[%s] client disconnected: %s\n", video_service, addr_str);
   fflush(stdout);
 
@@ -933,6 +965,7 @@ static void handle_telemetry_client(int client_fd) {
     inet_ntop(AF_INET, &peer.sin_addr, addr_str, sizeof(addr_str));
   }
 
+  append_runtime_run_event("client_connected", stream_name, addr_str);
   printf("[%s] client connected: %s (fd=%d)\n", stream_name, addr_str, client_fd);
   fflush(stdout);
 
@@ -964,6 +997,7 @@ static void handle_telemetry_client(int client_fd) {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
 
+  append_runtime_run_event("client_disconnected", stream_name, addr_str);
   printf("[%s] client disconnected: %s\n", stream_name, addr_str);
   fflush(stdout);
 
@@ -1005,6 +1039,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
   (void)argc;
   (void)argv;
   initialize_runtime_state_once();
+  append_runtime_run_event("process_start");
 
   g_ui_export_socket = std::make_unique<commaview::ui_export::SocketServer>();
   const bool ui_export_socket_ready = g_ui_export_socket->start();
@@ -1034,6 +1069,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
     threads.emplace_back(accept_loop, fd, s.second, s.first);
   }
 
+  append_runtime_run_event("ready");
   printf("ready. waiting for connections...\n");
   fflush(stdout);
 
@@ -1041,6 +1077,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
   for (int fd : server_fds) close(fd);
   if (g_ui_export_socket != nullptr) g_ui_export_socket->stop();
 
+  append_runtime_run_event("process_stop");
   printf("CommaView Bridge stopped.\n");
   return 0;
 }
