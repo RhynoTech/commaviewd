@@ -44,21 +44,38 @@ constexpr size_t kSupportLogPerFileCapBytes = 512 * 1024;
 constexpr size_t kSupportLogTotalCapBytes = 2 * 1024 * 1024;
 
 struct SupportLogFileSpec {
-  const char* entry_name;
-  const char* path;
+  std::string entry_name;
+  std::string path;
   bool text;
+  bool rotated;
 };
 
-const std::array<SupportLogFileSpec, 8> kSupportLogFiles{{
-    {"commaviewd-bridge.log", "/data/commaview/logs/commaviewd-bridge.log", true},
-    {"commaviewd-control.log", "/data/commaview/logs/commaviewd-control.log", true},
-    {"onroad-ui-export-startup.log", "/data/commaview/logs/onroad-ui-export-startup.log", true},
-    {"runtime-run-events.jsonl", "/data/commaview/logs/runtime-run-events.jsonl", true},
-    {"telemetry-stats.json", "/data/commaview/run/telemetry-stats.json", true},
-    {"runtime-debug-effective.json", "/data/commaview/run/runtime-debug-effective.json", true},
-    {"onroad-ui-export-status.json", "/data/commaview/run/onroad-ui-export-status.json", true},
-    {"last-restart-reason.txt", "/data/commaview/run/last-restart-reason.txt", true},
-}};
+std::vector<SupportLogFileSpec> support_log_files() {
+  std::vector<SupportLogFileSpec> files = {
+      {"commaviewd-bridge.log", "/data/commaview/logs/commaviewd-bridge.log", true, false},
+      {"commaviewd-control.log", "/data/commaview/logs/commaviewd-control.log", true, false},
+      {"onroad-ui-export-startup.log", "/data/commaview/logs/onroad-ui-export-startup.log", true, false},
+      {"runtime-run-events.jsonl", "/data/commaview/logs/runtime-run-events.jsonl", true, false},
+      {"telemetry-stats.json", "/data/commaview/run/telemetry-stats.json", true, false},
+      {"runtime-debug-effective.json", "/data/commaview/run/runtime-debug-effective.json", true, false},
+      {"onroad-ui-export-status.json", "/data/commaview/run/onroad-ui-export-status.json", true, false},
+      {"last-restart-reason.txt", "/data/commaview/run/last-restart-reason.txt", true, false},
+  };
+  const std::array<std::string, 4> rotated = {{
+      "commaviewd-bridge.log",
+      "commaviewd-control.log",
+      "onroad-ui-export-startup.log",
+      "runtime-run-events.jsonl",
+  }};
+  for (const auto& name : rotated) {
+    for (int idx = 1; idx <= 14; ++idx) {
+      const std::string rotated_name = name + "." + std::to_string(idx);
+      const std::string rotated_path = "/data/commaview/logs/" + rotated_name;
+      files.push_back({rotated_name, rotated_path, true, true});
+    }
+  }
+  return files;
+}
 
 struct PairingGrant {
   std::string code;
@@ -254,7 +271,8 @@ std::string support_logs_response_json() {
   out << "\"files\":[";
 
   bool first = true;
-  for (const auto& spec : kSupportLogFiles) {
+  const std::vector<SupportLogFileSpec> log_files = support_log_files();
+  for (const auto& spec : log_files) {
     bool exists = false;
     bool truncated = false;
     std::string body = read_file_tail_capped(spec.path, kSupportLogPerFileCapBytes, &exists, &truncated);
@@ -272,6 +290,7 @@ std::string support_logs_response_json() {
     out << "\"path\":\"" << json_escape(spec.path) << "\",";
     out << "\"exists\":" << (exists ? "true" : "false") << ",";
     out << "\"truncated\":" << (truncated ? "true" : "false") << ",";
+    out << "\"rotated\":" << (spec.rotated ? "true" : "false") << ",";
     out << "\"encoding\":\"text\",";
     out << "\"content\":\"" << json_escape(body) << "\"";
     out << "}";
