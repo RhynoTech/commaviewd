@@ -15,6 +15,7 @@ ONROAD_UI_EXPORT_APPLY="$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh"
 ONROAD_UI_EXPORT_LOG="$LOG_DIR/onroad-ui-export-startup.log"
 ONROAD_UI_EXPORT_RESTART_MARKER="$RUN_DIR/onroad-ui-export-ui-restart-needed"
 COMMAVIEWD_LOG_MAX_BYTES="${COMMAVIEWD_LOG_MAX_BYTES:-8388608}"
+COMMAVIEWD_LOG_ROTATE_INTERVAL_SEC="${COMMAVIEWD_LOG_ROTATE_INTERVAL_SEC:-600}"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR" "$CONFIG_DIR"
 echo "$RESTART_REASON" > "$RUN_DIR/last-restart-reason.txt"
@@ -105,7 +106,15 @@ rotate_runtime_log_if_large() {
   if [ "$size_bytes" -le "$max_bytes" ]; then
     return 0
   fi
-  mv -f "$log_file" "$log_file.1" 2>/dev/null || true
+  tmp_file="$log_file.tmp"
+  cp "$log_file" "$log_file.1" 2>/dev/null || true
+  tail -c "$max_bytes" "$log_file" > "$tmp_file" 2>/dev/null || true
+  if [ -s "$tmp_file" ]; then
+    cat "$tmp_file" > "$log_file" 2>/dev/null || true
+  else
+    : > "$log_file" 2>/dev/null || true
+  fi
+  rm -f "$tmp_file"
 }
 
 rotate_runtime_logs() {
@@ -113,6 +122,16 @@ rotate_runtime_logs() {
   rotate_runtime_log_if_large "$LOG_DIR/commaviewd-control.log" "$COMMAVIEWD_LOG_MAX_BYTES"
   rotate_runtime_log_if_large "$LOG_DIR/onroad-ui-export-startup.log" "$COMMAVIEWD_LOG_MAX_BYTES"
   rotate_runtime_log_if_large "$LOG_DIR/runtime-run-events.jsonl" "$COMMAVIEWD_LOG_MAX_BYTES"
+}
+
+start_runtime_log_rotation_loop() {
+  (
+    while true; do
+      sleep "$COMMAVIEWD_LOG_ROTATE_INTERVAL_SEC"
+      rotate_runtime_logs
+    done
+  ) >/dev/null 2>&1 &
+  echo $! > "$RUN_DIR/log-rotation.pid"
 }
 
 refresh_onroad_ui_export_status
@@ -140,5 +159,7 @@ COMMAVIEWD_RUNTIME_STATS="$RUNTIME_DEBUG_STATS" \
 COMMAVIEWD_RESTART_REASON="$RESTART_REASON" \
 nohup nice -n 19 /data/commaview/commaviewd control >> "$LOG_DIR/commaviewd-control.log" 2>&1 &
 echo $! > "$RUN_DIR/control.pid"
+
+start_runtime_log_rotation_loop
 
 echo "CommaView runtime started (bridge+control)"
