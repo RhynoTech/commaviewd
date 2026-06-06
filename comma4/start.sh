@@ -14,6 +14,7 @@ ONROAD_UI_EXPORT_VERIFY="$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
 ONROAD_UI_EXPORT_APPLY="$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh"
 ONROAD_UI_EXPORT_LOG="$LOG_DIR/onroad-ui-export-startup.log"
 ONROAD_UI_EXPORT_RESTART_MARKER="$RUN_DIR/onroad-ui-export-ui-restart-needed"
+COMMAVIEWD_LOG_MAX_BYTES="${COMMAVIEWD_LOG_MAX_BYTES:-8388608}"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR" "$CONFIG_DIR"
 echo "$RESTART_REASON" > "$RUN_DIR/last-restart-reason.txt"
@@ -91,8 +92,32 @@ refresh_onroad_ui_export_status() {
   fi
 }
 
+rotate_runtime_log_if_large() {
+  log_file="$1"
+  max_bytes="$2"
+  if [ ! -f "$log_file" ]; then
+    return 0
+  fi
+  size_bytes="$(wc -c < "$log_file" 2>/dev/null || echo 0)"
+  case "$size_bytes" in
+    ''|*[!0-9]*) size_bytes=0 ;;
+  esac
+  if [ "$size_bytes" -le "$max_bytes" ]; then
+    return 0
+  fi
+  mv -f "$log_file" "$log_file.1" 2>/dev/null || true
+}
+
+rotate_runtime_logs() {
+  rotate_runtime_log_if_large "$LOG_DIR/commaviewd-bridge.log" "$COMMAVIEWD_LOG_MAX_BYTES"
+  rotate_runtime_log_if_large "$LOG_DIR/commaviewd-control.log" "$COMMAVIEWD_LOG_MAX_BYTES"
+  rotate_runtime_log_if_large "$LOG_DIR/onroad-ui-export-startup.log" "$COMMAVIEWD_LOG_MAX_BYTES"
+  rotate_runtime_log_if_large "$LOG_DIR/runtime-run-events.jsonl" "$COMMAVIEWD_LOG_MAX_BYTES"
+}
+
 refresh_onroad_ui_export_status
 restart_openpilot_ui_if_pending
+rotate_runtime_logs
 
 # Stop stale runtime processes first
 bash /data/commaview/stop.sh >/dev/null 2>&1 || true
