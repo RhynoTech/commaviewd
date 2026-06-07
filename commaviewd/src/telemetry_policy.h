@@ -1,5 +1,7 @@
 #pragma once
 
+#include "framing.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -77,6 +79,10 @@ inline bool telemetry_policy_allows_emit(const ServicePolicy& policy,
   const uint64_t interval_ms = static_cast<uint64_t>(1000 / policy.sample_hz);
   const uint64_t min_interval_ms = interval_ms == 0 ? 1 : interval_ms;
   return last_emit_wall_ms == 0 || now_ms >= last_emit_wall_ms + min_interval_ms;
+}
+
+inline bool telemetry_send_failure_is_droppable(const commaview::net::SendResult& result) {
+  return result.status == commaview::net::SendStatus::Backpressure && result.bytes_sent == 0;
 }
 
 }  // namespace commaview::telemetry

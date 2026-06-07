@@ -923,6 +923,16 @@ static void telemetry_loop(int client_fd,
                           sent,
                           send_result.elapsed_micros);
         if (!sent) {
+          if (commaview::telemetry::telemetry_send_failure_is_droppable(send_result)) {
+            append_runtime_run_event("telemetry_drop",
+                                     stream_name,
+                                     "",
+                                     "telemetry_send",
+                                     commaview::net::send_status_name(send_result.status));
+            last_ui_emit_ms[static_cast<size_t>(i)] = frame.updated_at_ms;
+            last_ui_emit_wall_ms[static_cast<size_t>(i)] = now_ms;
+            continue;
+          }
           note_runtime_peer_disconnect(stream_name, "telemetry_send", send_result);
           disconnect_requested->store(true);
           shutdown(client_fd, SHUT_RDWR);
