@@ -2,8 +2,11 @@
 
 #include <cassert>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
+#include <string>
 #include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -174,6 +177,73 @@ static void test_send_iov_handles_partial_iovec_boundaries() {
   assert(sender.bytes == expected);
 }
 
+static void fill_socket_until_backpressure(int fd) {
+  std::vector<uint8_t> filler(4096, 0xEE);
+  while (::send(fd, filler.data(), filler.size(), MSG_DONTWAIT | MSG_NOSIGNAL) > 0) {}
+  assert(errno == EAGAIN || errno == EWOULDBLOCK);
+}
+
+static std::thread drain_socket_after_delay(int fd) {
+  return std::thread([fd] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::vector<uint8_t> drain(64 * 1024);
+    for (int i = 0; i < 8; ++i) {
+      const ssize_t n = ::recv(fd, drain.data(), drain.size(), 0);
+      if (n <= 0) break;
+    }
+  });
+}
+
+static void close_socketpair_and_join(int fds[2], std::thread* drainer) {
+  shutdown(fds[0], SHUT_RDWR);
+  shutdown(fds[1], SHUT_RDWR);
+  if (drainer != nullptr && drainer->joinable()) drainer->join();
+  close(fds[0]);
+  close(fds[1]);
+}
+
+static void test_bounded_send_waits_for_socket_writability_before_deadline() {
+  int fds[2]{};
+  assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+  fill_socket_until_backpressure(fds[0]);
+  auto drainer = drain_socket_after_delay(fds[1]);
+
+  std::vector<uint8_t> payload{0x41, 0x42, 0x43, 0x44};
+  const auto result = commaview::net::send_all_bounded(
+      fds[0],
+      payload.data(),
+      payload.size(),
+      commaview::net::SendDeadline::after_micros(200000));
+
+  close_socketpair_and_join(fds, &drainer);
+
+  assert(result.status == commaview::net::SendStatus::Ok);
+  assert(result.bytes_sent == payload.size());
+  assert(result.elapsed_micros >= 1000);
+}
+
+static void test_bounded_send_buffers_waits_for_socket_writability_before_deadline() {
+  int fds[2]{};
+  assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+  fill_socket_until_backpressure(fds[0]);
+  auto drainer = drain_socket_after_delay(fds[1]);
+
+  uint8_t a[] = {0x51, 0x52};
+  uint8_t b[] = {0x53, 0x54};
+  commaview::net::SendBuffer buffers[] = {{a, sizeof(a)}, {b, sizeof(b)}};
+  const auto result = commaview::net::send_buffers_bounded(
+      fds[0],
+      buffers,
+      2,
+      commaview::net::SendDeadline::after_micros(200000));
+
+  close_socketpair_and_join(fds, &drainer);
+
+  assert(result.status == commaview::net::SendStatus::Ok);
+  assert(result.bytes_sent == sizeof(a) + sizeof(b));
+  assert(result.elapsed_micros >= 1000);
+}
+
 int main() {
   test_send_diagnostics_names_are_stable();
   test_bounded_send_retries_eintr_and_partial_success();
@@ -182,6 +252,8 @@ int main() {
   test_bounded_send_classifies_ewouldblock_as_backpressure();
   test_bounded_send_classifies_epipe_as_disconnected();
   test_send_iov_handles_partial_iovec_boundaries();
+  test_bounded_send_waits_for_socket_writability_before_deadline();
+  test_bounded_send_buffers_waits_for_socket_writability_before_deadline();
 
   uint8_t b[4]{};
   commaview::net::put_be32(b, 0xA1B2C3D4u);

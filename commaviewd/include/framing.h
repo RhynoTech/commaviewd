@@ -35,6 +35,7 @@ class SendDeadline {
 
   bool expired() const;
   uint64_t elapsed_micros() const;
+  uint64_t remaining_micros() const;
 
  private:
   explicit SendDeadline(uint64_t budget_micros, bool force_expired = false);

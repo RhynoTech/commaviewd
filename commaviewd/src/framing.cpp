@@ -4,7 +4,9 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <limits.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -76,6 +78,30 @@ size_t max_iov_per_sendmsg() {
 #endif
 }
 
+bool wait_for_socket_writable(int fd, const commaview::net::SendDeadline& deadline) {
+  if (fd < 0) return false;
+  while (!deadline.expired()) {
+    const uint64_t remaining_us = deadline.remaining_micros();
+    int timeout_ms = -1;
+    if (remaining_us != std::numeric_limits<uint64_t>::max()) {
+      timeout_ms = static_cast<int>(std::max<uint64_t>(1, std::min<uint64_t>(remaining_us / 1000, 100)));
+    }
+
+    pollfd pfd{};
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+    const int ready = poll(&pfd, 1, timeout_ms);
+    if (ready > 0) {
+      if ((pfd.revents & POLLOUT) != 0) return true;
+      return false;
+    }
+    if (ready == 0) continue;
+    if (errno == EINTR) continue;
+    return false;
+  }
+  return false;
+}
+
 }  // namespace
 
 namespace commaview::net {
@@ -144,6 +170,13 @@ uint64_t SendDeadline::elapsed_micros() const {
       std::chrono::steady_clock::now() - started_at_).count());
 }
 
+uint64_t SendDeadline::remaining_micros() const {
+  if (force_expired_) return 0;
+  if (budget_micros_ == 0) return std::numeric_limits<uint64_t>::max();
+  const uint64_t elapsed = elapsed_micros();
+  return elapsed >= budget_micros_ ? 0 : budget_micros_ - elapsed;
+}
+
 SendResult send_all_for_test(int fd,
                              const void* data,
                              size_t len,
@@ -200,7 +233,54 @@ SendResult send_all_for_test(int fd,
 }
 
 SendResult send_all_bounded(int fd, const void* data, size_t len, SendDeadline deadline) {
-  return send_all_for_test(fd, data, len, deadline, system_send, nullptr);
+  SendResult result{};
+  if (data == nullptr && len > 0) {
+    result.status = SendStatus::InvalidArgument;
+    result.error = EINVAL;
+    return result;
+  }
+
+  const auto* p = static_cast<const uint8_t*>(data);
+  while (result.bytes_sent < len) {
+    if (deadline.expired()) {
+      result.status = SendStatus::Backpressure;
+      result.error = EAGAIN;
+      result.elapsed_micros = deadline.elapsed_micros();
+      return result;
+    }
+
+    const ssize_t n = system_send(nullptr,
+                                  fd,
+                                  p + result.bytes_sent,
+                                  len - result.bytes_sent,
+                                  MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (n > 0) {
+      result.bytes_sent += static_cast<size_t>(n);
+      continue;
+    }
+    if (n == 0) {
+      result.status = SendStatus::Disconnected;
+      result.elapsed_micros = deadline.elapsed_micros();
+      return result;
+    }
+
+    const int err = errno;
+    if (err == EINTR) continue;
+    result.status = classify_send_error(err);
+    result.error = err;
+    result.elapsed_micros = deadline.elapsed_micros();
+    if (result.status == SendStatus::Backpressure && wait_for_socket_writable(fd, deadline)) {
+      result.status = SendStatus::Ok;
+      result.error = 0;
+      continue;
+    }
+    result.elapsed_micros = deadline.elapsed_micros();
+    return result;
+  }
+
+  result.status = SendStatus::Ok;
+  result.elapsed_micros = deadline.elapsed_micros();
+  return result;
 }
 
 SendResult send_buffers_for_test(int fd,
@@ -300,6 +380,12 @@ SendResult send_buffers_bounded(int fd,
     if (err == EINTR) continue;
     result.status = classify_send_error(err);
     result.error = err;
+    result.elapsed_micros = deadline.elapsed_micros();
+    if (result.status == SendStatus::Backpressure && wait_for_socket_writable(fd, deadline)) {
+      result.status = SendStatus::Ok;
+      result.error = 0;
+      continue;
+    }
     result.elapsed_micros = deadline.elapsed_micros();
     return result;
   }
