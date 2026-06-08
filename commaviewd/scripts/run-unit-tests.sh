@@ -82,6 +82,11 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
   "$ROOT/tests/test_telemetry_policy.cpp" \
   -o "$TMP/test_telemetry_policy"
 
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
+  "$ROOT/tests/test_video_transport_policy.cpp" \
+  "$ROOT/src/video_transport_policy.cpp" \
+  -o "$TMP/test_video_transport_policy"
+
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_http_server_cloexec.cpp" \
   "$ROOT/src/http_server.cpp" \
@@ -98,6 +103,7 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
 "$TMP/test_telemetry_json"
 "$TMP/test_telemetry_stats"
 "$TMP/test_telemetry_policy"
+"$TMP/test_video_transport_policy"
 "$TMP/test_http_server_cloexec"
 "$TMP/test_ui_export_socket"
 
