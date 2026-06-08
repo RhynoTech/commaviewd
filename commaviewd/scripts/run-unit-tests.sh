@@ -87,7 +87,7 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
   "$ROOT/src/video_transport_policy.cpp" \
   -o "$TMP/test_video_transport_policy"
 
-"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" -DCOMMAVIEW_VIDEO_CHUNK_PROTOCOL_TESTING \
   "$ROOT/tests/test_video_chunk_protocol.cpp" \
   "$ROOT/src/video_chunk_protocol.cpp" \
   -o "$TMP/test_video_chunk_protocol"

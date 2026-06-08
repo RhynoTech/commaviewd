@@ -41,6 +41,9 @@ struct VideoChunk {
 
 std::vector<VideoChunk> plan_video_chunks(const VideoFrameForChunking& frame, size_t chunk_bytes);
 std::vector<uint8_t> encode_video_chunk_payload(const VideoChunk& chunk);
+
+#ifdef COMMAVIEW_VIDEO_CHUNK_PROTOCOL_TESTING
 VideoChunk decode_video_chunk_payload_for_test(const std::vector<uint8_t>& payload);
+#endif
 
 }  // namespace commaview::video

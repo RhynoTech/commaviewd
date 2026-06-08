@@ -27,6 +27,7 @@ void append_u64_be(std::vector<uint8_t>& out, uint64_t value) {
   }
 }
 
+#ifdef COMMAVIEW_VIDEO_CHUNK_PROTOCOL_TESTING
 uint16_t read_u16_be(const std::vector<uint8_t>& payload, size_t* pos) {
   assert(*pos + 2 <= payload.size());
   const uint16_t value = static_cast<uint16_t>((static_cast<uint16_t>(payload[*pos]) << 8) |
@@ -54,6 +55,7 @@ uint64_t read_u64_be(const std::vector<uint8_t>& payload, size_t* pos) {
   *pos += 8;
   return value;
 }
+#endif
 
 uint8_t chunk_flags(bool is_keyframe, bool is_first, bool is_final) {
   uint8_t flags = 0;
@@ -63,17 +65,32 @@ uint8_t chunk_flags(bool is_keyframe, bool is_first, bool is_final) {
   return flags;
 }
 
+size_t checked_add_size(size_t lhs, size_t rhs, const char* message) {
+  if (rhs > std::numeric_limits<size_t>::max() - lhs) {
+    throw std::length_error(message);
+  }
+  return lhs + rhs;
+}
+
 }  // namespace
 
 std::vector<VideoChunk> plan_video_chunks(const VideoFrameForChunking& frame, size_t chunk_bytes) {
   const size_t max_chunk_bytes = chunk_bytes == 0 ? DEFAULT_VIDEO_CHUNK_BYTES : chunk_bytes;
-  const size_t logical_size = frame.codec_header.size() + frame.data.size();
-  const size_t chunk_count_size = std::max<size_t>(1, (logical_size + max_chunk_bytes - 1) / max_chunk_bytes);
-  if (chunk_count_size > std::numeric_limits<uint16_t>::max() ||
-      logical_size > std::numeric_limits<uint32_t>::max() ||
-      frame.codec_header.size() > std::numeric_limits<uint32_t>::max() ||
+  if (frame.codec_header.size() > std::numeric_limits<uint32_t>::max() ||
       frame.data.size() > std::numeric_limits<uint32_t>::max()) {
     throw std::length_error("video frame is too large to chunk");
+  }
+  const size_t logical_size = checked_add_size(frame.codec_header.size(), frame.data.size(),
+                                              "video frame is too large to chunk");
+  if (logical_size == 0) {
+    throw std::invalid_argument("video frame must not be empty");
+  }
+  if (logical_size > std::numeric_limits<uint32_t>::max()) {
+    throw std::length_error("video frame is too large to chunk");
+  }
+  const size_t chunk_count_size = 1 + ((logical_size - 1) / max_chunk_bytes);
+  if (chunk_count_size > std::numeric_limits<uint16_t>::max()) {
+    throw std::length_error("video frame has too many chunks");
   }
 
   std::vector<uint8_t> logical_frame;
@@ -83,9 +100,9 @@ std::vector<VideoChunk> plan_video_chunks(const VideoFrameForChunking& frame, si
 
   std::vector<VideoChunk> chunks;
   chunks.reserve(chunk_count_size);
+  size_t offset = 0;
   for (size_t index = 0; index < chunk_count_size; ++index) {
-    const size_t offset = index * max_chunk_bytes;
-    const size_t remaining = offset < logical_frame.size() ? logical_frame.size() - offset : 0;
+    const size_t remaining = logical_frame.size() - offset;
     const size_t len = std::min(max_chunk_bytes, remaining);
 
     VideoChunk chunk;
@@ -105,6 +122,7 @@ std::vector<VideoChunk> plan_video_chunks(const VideoFrameForChunking& frame, si
     chunk.bytes.assign(logical_frame.begin() + static_cast<std::ptrdiff_t>(offset),
                        logical_frame.begin() + static_cast<std::ptrdiff_t>(offset + len));
     chunks.push_back(std::move(chunk));
+    offset += len;
   }
 
   return chunks;
@@ -121,7 +139,7 @@ std::vector<uint8_t> encode_video_chunk_payload(const VideoChunk& chunk) {
   append_u32_be(payload, chunk.frame_sequence);
   append_u16_be(payload, chunk.chunk_index);
   append_u16_be(payload, chunk.chunk_count);
-  payload.push_back(chunk.flags);
+  payload.push_back(chunk_flags(chunk.is_keyframe, chunk.is_first, chunk.is_final));
   append_u64_be(payload, chunk.timestamp_ns);
   append_u32_be(payload, chunk.width);
   append_u32_be(payload, chunk.height);
@@ -133,6 +151,7 @@ std::vector<uint8_t> encode_video_chunk_payload(const VideoChunk& chunk) {
   return payload;
 }
 
+#ifdef COMMAVIEW_VIDEO_CHUNK_PROTOCOL_TESTING
 VideoChunk decode_video_chunk_payload_for_test(const std::vector<uint8_t>& payload) {
   assert(!payload.empty());
   size_t pos = 0;
@@ -158,5 +177,6 @@ VideoChunk decode_video_chunk_payload_for_test(const std::vector<uint8_t>& paylo
   chunk.bytes.assign(payload.begin() + static_cast<std::ptrdiff_t>(pos), payload.end());
   return chunk;
 }
+#endif
 
 }  // namespace commaview::video
