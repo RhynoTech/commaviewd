@@ -29,10 +29,12 @@ assert_not_contains_fixed() {
 }
 
 assert_contains_fixed "static constexpr uint8_t MSG_VIDEO_CHUNK = 0x06;" "$CHUNK_HEADER" "runtime must define chunked video frame type"
-assert_contains_fixed "MSG_VIDEO_CHUNK" "$BRIDGE_CPP" "runtime must send chunked video payloads"
-assert_contains_fixed "plan_video_chunks" "$BRIDGE_CPP" "runtime must plan video chunks before send"
+assert_contains_fixed "const auto chunks = commaview::video::plan_video_chunks(" "$BRIDGE_CPP" "runtime bridge must plan chunks in the video send path"
+assert_contains_fixed "const auto payload = commaview::video::encode_video_chunk_payload(chunk);" "$BRIDGE_CPP" "runtime bridge must encode chunk payloads before sending"
+assert_contains_fixed "const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);" "$BRIDGE_CPP" "runtime bridge must send encoded chunk payloads"
 assert_contains_fixed "frame_abandon_count" "$BRIDGE_CPP" "runtime must track abandoned chunked frames"
 assert_not_contains_fixed "Legacy contract marker: video used to call send_frame_locked" "$BRIDGE_CPP" "old whole-frame contract marker should be gone"
+assert_not_contains_fixed "send_buffers_locked(client_fd" "$BRIDGE_CPP" "old whole-frame scatter/gather send path should be gone"
 assert_contains_fixed "ed.getUnixTimestampNanos()" "$BRIDGE_CPP" "runtime must export source video timestamp"
 assert_contains_fixed "ed.getWidth()" "$BRIDGE_CPP" "runtime must export source video width"
 assert_contains_fixed "ed.getHeight()" "$BRIDGE_CPP" "runtime must export source video height"

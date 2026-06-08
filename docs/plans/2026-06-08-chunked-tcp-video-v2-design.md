@@ -56,7 +56,7 @@ u8  msg_type                 // video chunk
 u32 frame_sequence_be
 u16 chunk_index_be
 u16 chunk_count_be
-u8  flags                    // keyframe, first_chunk, final_chunk, has_codec_header
+u8  flags                    // keyframe, first_chunk, final_chunk
 u64 timestamp_ns_be
 u32 width_be
 u32 height_be
@@ -72,6 +72,8 @@ u8  chunk_bytes[chunk_len]
 ```text
 codec_header || frame_data
 ```
+
+Flags are limited to keyframe, first chunk, and final chunk. Header presence is represented by `codec_header_len > 0`, not by a separate flag.
 
 For non-keyframes, `codec_header_len` is normally `0`. For keyframes, header bytes are included at the start of the logical frame buffer.
 
