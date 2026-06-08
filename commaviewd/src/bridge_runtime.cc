@@ -72,6 +72,8 @@ static constexpr uint8_t MSG_CONTROL = 0x03;
 static constexpr uint8_t MSG_META_RAW = 0x04;
 static constexpr uint8_t RAW_META_ENVELOPE_V4 = 0x04;
 static constexpr uint8_t RAW_META_ENVELOPE_V5 = 0x05;
+static_assert(commaview::video::MSG_VIDEO_CHUNK == 0x06,
+              "bridge runtime must send chunked video payloads");
 
 static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;

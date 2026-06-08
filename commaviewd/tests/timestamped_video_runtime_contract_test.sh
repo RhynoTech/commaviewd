@@ -17,7 +17,22 @@ assert_contains_fixed() {
   fi
 }
 
+assert_not_contains_fixed() {
+  local needle="$1"
+  local file="$2"
+  local message="$3"
+  if grep -Fq "$needle" "$file"; then
+    echo "FAIL: $message" >&2
+    echo "unexpected: $needle" >&2
+    exit 1
+  fi
+}
+
 assert_contains_fixed "static constexpr uint8_t MSG_VIDEO_CHUNK = 0x06;" "$CHUNK_HEADER" "runtime must define chunked video frame type"
+assert_contains_fixed "MSG_VIDEO_CHUNK" "$BRIDGE_CPP" "runtime must send chunked video payloads"
+assert_contains_fixed "plan_video_chunks" "$BRIDGE_CPP" "runtime must plan video chunks before send"
+assert_contains_fixed "frame_abandon_count" "$BRIDGE_CPP" "runtime must track abandoned chunked frames"
+assert_not_contains_fixed "Legacy contract marker: video used to call send_frame_locked" "$BRIDGE_CPP" "old whole-frame contract marker should be gone"
 assert_contains_fixed "ed.getUnixTimestampNanos()" "$BRIDGE_CPP" "runtime must export source video timestamp"
 assert_contains_fixed "ed.getWidth()" "$BRIDGE_CPP" "runtime must export source video width"
 assert_contains_fixed "ed.getHeight()" "$BRIDGE_CPP" "runtime must export source video height"

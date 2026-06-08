@@ -24,6 +24,9 @@ accounting = pathlib.Path(sys.argv[2]).read_text()
 
 bridge_required = {
     'video transport policy include': '#include "video_transport_policy.h"',
+    'chunked video payload marker': 'MSG_VIDEO_CHUNK',
+    'chunk planner before send': 'plan_video_chunks',
+    'chunked frame abandon accounting': 'frame_abandon_count',
     'video queue instance': 'commaview::video::VideoFrameQueue video_queue',
     'HEVC IDR classification': 'commaview::video::contains_hevc_idr',
     'queue push before send': 'video_queue.push',
@@ -40,6 +43,8 @@ accounting_required = {
 for label, needle in bridge_required.items():
     if needle not in bridge:
         raise SystemExit(f'missing {label}: {needle}')
+if 'Legacy contract marker: video used to call send_frame_locked' in bridge:
+    raise SystemExit('old whole-frame contract marker should be gone')
 for label, needle in accounting_required.items():
     if needle not in accounting:
         raise SystemExit(f'missing {label}: {needle}')
