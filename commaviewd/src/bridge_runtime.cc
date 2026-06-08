@@ -6,6 +6,7 @@
 #include "runtime_debug_config.h"
 #include "ui_export_socket.h"
 #include "video_chunk_protocol.h"
+#include "video_send_accounting.h"
 #include "video_transport_policy.h"
 /**
  * CommaView Unified Bridge (C++)
@@ -17,7 +18,7 @@
  *
  * Framing:
  *   [4-byte big-endian length][payload]
- *   payload[0] = 0x05 (video): [type][timestamp_ns_be64][width_be32][height_be32][header_len_be32][header][data]
+ *   payload[0] = 0x06 (video chunk): chunked timestamp/geometry/header-length envelope + bytes
  *   payload[0] = 0x02 (meta):  [type][json bytes]
  *   payload[0] = 0x03 (control inbound): [type][json bytes]
  *   payload[0] = 0x04 (meta-raw): [type][version][service_idx][raw_len_be32][raw_event]
@@ -67,7 +68,6 @@ using commaview::telemetry::telemetry_policy_allows_emit;
 using commaview::telemetry::telemetry_policy_fetches_latest;
 
 
-static constexpr uint8_t MSG_VIDEO = 0x05;
 static constexpr uint8_t MSG_CONTROL = 0x03;
 static constexpr uint8_t MSG_META_RAW = 0x04;
 static constexpr uint8_t RAW_META_ENVELOPE_V4 = 0x04;
@@ -144,14 +144,6 @@ static size_t queue_size_for_service(const char* service_name) {
 static void put_be32(uint8_t* buf, uint32_t val) {
   commaview::net::put_be32(buf, val);
 }
-
-static void put_be64(uint8_t* buf, uint64_t val) {
-  for (int i = 7; i >= 0; --i) {
-    buf[7 - i] = static_cast<uint8_t>((val >> (i * 8)) & 0xFF);
-  }
-}
-
-
 
 static void telemetry_loop(int client_fd,
                            const char* stream_name,
@@ -568,22 +560,10 @@ static void note_video_chunk_send_result(const char* /*stream*/,
   note_video_send_result(result);
 
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  if (chunk.is_first) g_runtime_state.video_send.frames_chunked += 1;
-  g_runtime_state.video_send.max_chunks_per_frame = std::max<uint64_t>(
-      g_runtime_state.video_send.max_chunks_per_frame,
-      static_cast<uint64_t>(chunk.chunk_count));
-  g_runtime_state.video_send.max_chunk_send_micros = std::max(
-      g_runtime_state.video_send.max_chunk_send_micros,
-      result.elapsed_micros);
-  if (result.status == commaview::net::SendStatus::Ok) {
-    g_runtime_state.video_send.chunks_sent += 1;
-  } else if (result.status == commaview::net::SendStatus::Backpressure) {
-    if (result.bytes_sent == 0) {
-      g_runtime_state.video_send.zero_byte_chunk_backpressure_count += 1;
-    } else {
-      g_runtime_state.video_send.partial_chunk_reset_count += 1;
-    }
-  }
+  commaview::video::note_video_chunk_send_counters(
+      g_runtime_state.video_send,
+      chunk,
+      result);
 }
 
 static void note_video_frame_abandoned(const char* stream, uint64_t sequence, uint16_t chunk_index) {
@@ -596,6 +576,12 @@ static void note_video_frame_abandoned(const char* stream, uint64_t sequence, ui
          static_cast<unsigned long long>(sequence),
          static_cast<unsigned int>(chunk_index));
   fflush(stdout);
+}
+
+static uint32_t chunk_wire_sequence(uint64_t queue_sequence) {
+  // Chunk protocol carries a 32-bit frame sequence; the long-running queue sequence
+  // intentionally wraps modulo 2^32 on the wire.
+  return static_cast<uint32_t>(queue_sequence);
 }
 
 static commaview::net::SendResult peer_closed_result() {
@@ -877,7 +863,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
             note_video_queued_frame_age(runtime_now_ms() - queued->created_at_ms);
             const uint32_t queued_header_len = static_cast<uint32_t>(queued->codec_header.size());
             commaview::video::VideoFrameForChunking frame;
-            frame.sequence = static_cast<uint32_t>(queued->sequence);
+            frame.sequence = chunk_wire_sequence(queued->sequence);
             frame.timestamp_ns = queued->timestamp_ns;
             frame.width = queued->width;
             frame.height = queued->height;

@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRIDGE_CPP="$ROOT/commaviewd/src/bridge_runtime.cc"
+CHUNK_HEADER="$ROOT/commaviewd/src/video_chunk_protocol.h"
+CHUNK_CPP="$ROOT/commaviewd/src/video_chunk_protocol.cpp"
 
 assert_contains_fixed() {
   local needle="$1"
@@ -15,14 +17,18 @@ assert_contains_fixed() {
   fi
 }
 
-assert_contains_fixed "static constexpr uint8_t MSG_VIDEO = 0x05;" "$BRIDGE_CPP" "runtime must define timestamped video frame type"
+assert_contains_fixed "static constexpr uint8_t MSG_VIDEO_CHUNK = 0x06;" "$CHUNK_HEADER" "runtime must define chunked video frame type"
 assert_contains_fixed "ed.getUnixTimestampNanos()" "$BRIDGE_CPP" "runtime must export source video timestamp"
 assert_contains_fixed "ed.getWidth()" "$BRIDGE_CPP" "runtime must export source video width"
 assert_contains_fixed "ed.getHeight()" "$BRIDGE_CPP" "runtime must export source video height"
-assert_contains_fixed "put_be64(&payload[1], timestamp_ns);" "$BRIDGE_CPP" "video v2 frame must include timestamp first"
-assert_contains_fixed "put_be32(&payload[9], video_width);" "$BRIDGE_CPP" "video v2 frame must include width"
-assert_contains_fixed "put_be32(&payload[13], video_height);" "$BRIDGE_CPP" "video v2 frame must include height"
-assert_contains_fixed "put_be32(&payload[17], header_len);" "$BRIDGE_CPP" "video v2 frame must preserve header length"
-assert_contains_fixed "payload[0] = MSG_VIDEO;" "$BRIDGE_CPP" "runtime must send timestamped video frames"
+assert_contains_fixed "frame.timestamp_ns = queued->timestamp_ns;" "$BRIDGE_CPP" "bridge must pass timestamp into chunk planner"
+assert_contains_fixed "frame.width = queued->width;" "$BRIDGE_CPP" "bridge must pass width into chunk planner"
+assert_contains_fixed "frame.height = queued->height;" "$BRIDGE_CPP" "bridge must pass height into chunk planner"
+assert_contains_fixed "chunk.timestamp_ns = frame.timestamp_ns;" "$CHUNK_CPP" "chunk planner must preserve timestamp"
+assert_contains_fixed "append_u64_be(payload, chunk.timestamp_ns);" "$CHUNK_CPP" "chunk payload must include timestamp"
+assert_contains_fixed "append_u32_be(payload, chunk.width);" "$CHUNK_CPP" "chunk payload must include width"
+assert_contains_fixed "append_u32_be(payload, chunk.height);" "$CHUNK_CPP" "chunk payload must include height"
+assert_contains_fixed "append_u32_be(payload, chunk.codec_header_len);" "$CHUNK_CPP" "chunk payload must preserve header length"
+assert_contains_fixed "payload.push_back(MSG_VIDEO_CHUNK);" "$CHUNK_CPP" "runtime must send chunked timestamped video frames"
 
 echo "timestamped_video_runtime_contract_test: PASS"
