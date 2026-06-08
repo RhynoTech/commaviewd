@@ -35,6 +35,11 @@ void test_non_idr_is_not_keyframe() {
   assert(!commaview::video::contains_hevc_idr(payload.data(), payload.size()));
 }
 
+void test_truncated_hevc_nal_header_is_not_keyframe() {
+  const std::vector<uint8_t> payload = {0x00, 0x00, 0x00, 0x01, static_cast<uint8_t>(19 << 1)};
+  assert(!commaview::video::contains_hevc_idr(payload.data(), payload.size()));
+}
+
 void test_queue_keeps_latest_when_full() {
   commaview::video::VideoFrameQueue queue(2);
   queue.push(frame(1, true));
@@ -70,6 +75,7 @@ int main() {
   test_detects_idr_w_radl();
   test_detects_idr_n_lp();
   test_non_idr_is_not_keyframe();
+  test_truncated_hevc_nal_header_is_not_keyframe();
   test_queue_keeps_latest_when_full();
   test_pressure_waits_for_keyframe_after_drops();
   return 0;

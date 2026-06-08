@@ -1,6 +1,7 @@
 #include "video_transport_policy.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace commaview::video {
 namespace {
@@ -30,7 +31,7 @@ bool contains_hevc_idr(const uint8_t* data, size_t len) {
     size_t start_code_len = 0;
     if (!is_start_code(data, len, pos, &start_code_len)) continue;
     const size_t nal_header = pos + start_code_len;
-    if (nal_header >= len) return false;
+    if (nal_header + 1 >= len) continue;
     const uint8_t nal_type = static_cast<uint8_t>((data[nal_header] >> 1) & 0x3f);
     if (nal_type == 19 || nal_type == 20) return true;
   }
@@ -46,7 +47,7 @@ void VideoFrameQueue::push(PendingVideoFrame frame) {
     frames_.pop_front();
     drop_count_ += 1;
   }
-  frames_.push_back(frame);
+  frames_.push_back(std::move(frame));
   high_watermark_ = std::max(high_watermark_, frames_.size());
 }
 
@@ -66,7 +67,7 @@ std::optional<PendingVideoFrame> VideoFrameQueue::pop_next() {
   }
 
   if (frames_.empty()) return std::nullopt;
-  auto frame = frames_.front();
+  auto frame = std::move(frames_.front());
   frames_.pop_front();
   return frame;
 }
