@@ -47,6 +47,7 @@ void VideoFrameQueue::push(PendingVideoFrame frame) {
     drop_count_ += 1;
   }
   frames_.push_back(frame);
+  high_watermark_ = std::max(high_watermark_, frames_.size());
 }
 
 void VideoFrameQueue::note_backpressure_without_partial_send() {
@@ -80,6 +81,10 @@ uint64_t VideoFrameQueue::drop_count() const {
 
 uint64_t VideoFrameQueue::keyframe_wait_drop_count() const {
   return keyframe_wait_drop_count_;
+}
+
+size_t VideoFrameQueue::high_watermark() const {
+  return high_watermark_;
 }
 
 }  // namespace commaview::video

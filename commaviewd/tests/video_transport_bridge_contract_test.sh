@@ -23,6 +23,11 @@ required = {
     'queue push before send': 'video_queue.push',
     'queue pop send path': 'video_queue.pop_next',
     'zero-byte backpressure keyframe wait': 'video_queue.note_backpressure_without_partial_send',
+    'queue drop runtime stat': 'queueDropCount',
+    'queue high watermark runtime stat': 'queueHighWatermark',
+    'keyframe wait drop runtime stat': 'keyframeWaitDropCount',
+    'zero-byte recovered runtime stat': 'zeroByteBackpressureRecoveredCount',
+    'queued frame age runtime stat': 'maxQueuedFrameAgeMs',
 }
 for label, needle in required.items():
     if needle not in bridge:

@@ -34,12 +34,14 @@ class VideoFrameQueue {
   size_t size() const;
   uint64_t drop_count() const;
   uint64_t keyframe_wait_drop_count() const;
+  size_t high_watermark() const;
 
  private:
   size_t capacity_ = 1;
   bool waiting_for_keyframe_ = false;
   uint64_t drop_count_ = 0;
   uint64_t keyframe_wait_drop_count_ = 0;
+  size_t high_watermark_ = 0;
   std::deque<PendingVideoFrame> frames_;
 };
 

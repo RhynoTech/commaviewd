@@ -230,6 +230,11 @@ struct RuntimeVideoSendStats {
   uint64_t disconnect_count = 0;
   uint64_t partial_reset_count = 0;
   uint64_t zero_byte_drop_count = 0;
+  uint64_t queue_drop_count = 0;
+  uint64_t keyframe_wait_drop_count = 0;
+  uint64_t queue_high_watermark = 0;
+  uint64_t zero_byte_backpressure_recovered_count = 0;
+  uint64_t max_queued_frame_age_ms = 0;
   uint64_t max_send_micros = 0;
   std::string last_status = "ok";
   int last_error = 0;
@@ -347,6 +352,11 @@ static std::string build_runtime_stats_json_locked() {
   out << "\"disconnectCount\":" << g_runtime_state.video_send.disconnect_count << ",";
   out << "\"partialResetCount\":" << g_runtime_state.video_send.partial_reset_count << ",";
   out << "\"zeroByteDropCount\":" << g_runtime_state.video_send.zero_byte_drop_count << ",";
+  out << "\"queueDropCount\":" << g_runtime_state.video_send.queue_drop_count << ",";
+  out << "\"keyframeWaitDropCount\":" << g_runtime_state.video_send.keyframe_wait_drop_count << ",";
+  out << "\"queueHighWatermark\":" << g_runtime_state.video_send.queue_high_watermark << ",";
+  out << "\"zeroByteBackpressureRecoveredCount\":" << g_runtime_state.video_send.zero_byte_backpressure_recovered_count << ",";
+  out << "\"maxQueuedFrameAgeMs\":" << g_runtime_state.video_send.max_queued_frame_age_ms << ",";
   out << "\"maxSendMicros\":" << g_runtime_state.video_send.max_send_micros << ",";
   out << "\"lastStatus\":\"" << runtime_json_escape(g_runtime_state.video_send.last_status) << "\",";
   out << "\"lastError\":" << g_runtime_state.video_send.last_error << ",";
@@ -490,6 +500,30 @@ static void note_video_send_failure_details(const commaview::net::SendResult& re
   g_runtime_state.video_send.last_bytes_sent = static_cast<uint64_t>(result.bytes_sent);
   g_runtime_state.video_send.last_elapsed_micros = result.elapsed_micros;
   g_runtime_state.video_send.last_at_ms = runtime_now_ms();
+}
+
+static void note_video_queue_deltas(uint64_t queue_drop_delta,
+                                    uint64_t keyframe_wait_drop_delta,
+                                    size_t queue_high_watermark) {
+  if (queue_drop_delta == 0 && keyframe_wait_drop_delta == 0 && queue_high_watermark == 0) return;
+  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+  g_runtime_state.video_send.queue_drop_count += queue_drop_delta;
+  g_runtime_state.video_send.keyframe_wait_drop_count += keyframe_wait_drop_delta;
+  g_runtime_state.video_send.queue_high_watermark = std::max<uint64_t>(
+      g_runtime_state.video_send.queue_high_watermark,
+      static_cast<uint64_t>(queue_high_watermark));
+}
+
+static void note_video_zero_byte_backpressure_recovered() {
+  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+  g_runtime_state.video_send.zero_byte_backpressure_recovered_count += 1;
+}
+
+static void note_video_queued_frame_age(uint64_t age_ms) {
+  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+  g_runtime_state.video_send.max_queued_frame_age_ms = std::max(
+      g_runtime_state.video_send.max_queued_frame_age_ms,
+      age_ms);
 }
 
 static void note_video_send_result(const commaview::net::SendResult& result) {
@@ -677,6 +711,8 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   uint64_t wrong_union_count = 0;
   uint64_t suppressed_video_count = 0;
   commaview::video::VideoFrameQueue video_queue(VIDEO_FRAME_QUEUE_CAPACITY);
+  uint64_t last_queue_drop_count = 0;
+  uint64_t last_keyframe_wait_drop_count = 0;
   auto t0 = std::chrono::steady_clock::now();
   AlignedBuffer aligned_buf;
   ClientControlState control_state;
@@ -773,8 +809,21 @@ static void handle_video_client(int client_fd, const char* video_service, int po
           pending.codec_header.assign(header.begin(), header.begin() + header_len);
           pending.data.assign(data.begin(), data.begin() + data_len);
           video_queue.push(std::move(pending));
+          note_video_queue_deltas(
+              video_queue.drop_count() - last_queue_drop_count,
+              video_queue.keyframe_wait_drop_count() - last_keyframe_wait_drop_count,
+              video_queue.high_watermark());
+          last_queue_drop_count = video_queue.drop_count();
+          last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
 
           while (auto queued = video_queue.pop_next()) {
+            note_video_queue_deltas(
+                video_queue.drop_count() - last_queue_drop_count,
+                video_queue.keyframe_wait_drop_count() - last_keyframe_wait_drop_count,
+                video_queue.high_watermark());
+            last_queue_drop_count = video_queue.drop_count();
+            last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
+            note_video_queued_frame_age(runtime_now_ms() - queued->created_at_ms);
             uint8_t outer_len[4];
             uint8_t video_header[1 + 8 + 4 + 4 + 4];
             const uint32_t queued_header_len = static_cast<uint32_t>(queued->codec_header.size());
@@ -800,6 +849,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
             if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
               // No bytes from this frame entered the stream; preserve framing and resume on a clean HEVC keyframe.
               video_queue.note_backpressure_without_partial_send();
+              note_video_zero_byte_backpressure_recovered();
               break;
             }
             if (send_result.status != commaview::net::SendStatus::Ok) {
