@@ -25,9 +25,11 @@ runtime_debug_policy_contract_main() {
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   local bridge_cpp="$root/src/bridge_runtime.cc"
   local policy_header="$root/src/telemetry_policy.h"
+  local video_send_accounting_cpp="$root/src/runtime_video_send_accounting.cpp"
 
   [ -f "$bridge_cpp" ] || fail "missing $bridge_cpp"
   [ -f "$policy_header" ] || fail "missing $policy_header"
+  [ -f "$video_send_accounting_cpp" ] || fail "missing $video_send_accounting_cpp"
 
   assert_contains_fixed 'enum class ServiceMode { Off, Sample, Pass };' "$policy_header" 'missing telemetry service mode enum'
   assert_contains_fixed '{"uiStateOnroad", {ServiceMode::Pass, 0}}' "$policy_header" 'uiStateOnroad telemetry should default to pass'
@@ -64,7 +66,7 @@ runtime_debug_policy_contract_main() {
   assert_contains_fixed 'note_runtime_peer_disconnect' "$bridge_cpp" 'runtime should record peer disconnect/send-loop context'
   assert_contains_fixed 'send_status_name(result.status)' "$bridge_cpp" 'runtime disconnect diagnostics should record bounded-send status names'
   assert_contains_fixed 'send_error_name(result.error)' "$bridge_cpp" 'runtime disconnect diagnostics should record errno names'
-  assert_contains_fixed 'note_video_send_failure_details(result)' "$bridge_cpp" 'video send hot path should only format diagnostic strings for failures'
+  assert_contains_fixed 'note_video_send_failure_details(stats, result, now_ms)' "$video_send_accounting_cpp" 'video send hot path should only format diagnostic strings for failures'
 
   echo 'PASS: runtime debug policy contract checks passed'
 }

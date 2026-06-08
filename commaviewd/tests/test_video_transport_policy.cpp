@@ -15,7 +15,6 @@ commaview::video::PendingVideoFrame frame(uint64_t sequence, bool keyframe) {
   commaview::video::PendingVideoFrame pending;
   pending.sequence = sequence;
   pending.is_keyframe = keyframe;
-  pending.payload_bytes = 100;
   pending.created_at_ms = sequence * 10;
   return pending;
 }

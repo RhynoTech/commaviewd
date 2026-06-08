@@ -13,7 +13,6 @@ bool contains_hevc_idr(const uint8_t* data, size_t len);
 struct PendingVideoFrame {
   uint64_t sequence = 0;
   bool is_keyframe = false;
-  size_t payload_bytes = 0;
   uint64_t created_at_ms = 0;
   uint64_t timestamp_ns = 0;
   uint32_t width = 0;

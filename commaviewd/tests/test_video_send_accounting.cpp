@@ -1,19 +1,11 @@
-#include "video_send_accounting.h"
+#include "runtime_video_send_accounting.h"
 
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace {
-
-struct Counters {
-  uint64_t chunks_sent = 0;
-  uint64_t frames_chunked = 0;
-  uint64_t zero_byte_chunk_backpressure_count = 0;
-  uint64_t partial_chunk_reset_count = 0;
-  uint64_t max_chunks_per_frame = 0;
-  uint64_t max_chunk_send_micros = 0;
-};
 
 commaview::video::VideoChunk chunk(bool first = false) {
   commaview::video::VideoChunk chunk;
@@ -32,76 +24,126 @@ commaview::net::SendResult result(commaview::net::SendStatus status, size_t byte
   return result;
 }
 
-void test_partial_backpressure_increments_partial_reset() {
-  Counters counters;
-  commaview::video::note_video_chunk_send_counters(
-      counters,
+void test_partial_backpressure_increments_bridge_partial_reset() {
+  commaview::runtime::RuntimeVideoSendStats stats;
+  commaview::runtime::note_video_chunk_send_result(
+      stats,
       chunk(),
-      result(commaview::net::SendStatus::Backpressure, 12));
+      result(commaview::net::SendStatus::Backpressure, 12),
+      1000);
 
-  assert(counters.partial_chunk_reset_count == 1);
-  assert(counters.zero_byte_chunk_backpressure_count == 0);
-  assert(counters.chunks_sent == 0);
+  assert(stats.backpressure_count == 1);
+  assert(stats.partial_reset_count == 1);
+  assert(stats.partial_chunk_reset_count == 1);
+  assert(stats.zero_byte_drop_count == 0);
+  assert(stats.zero_byte_chunk_backpressure_count == 0);
+  assert(stats.chunks_sent == 0);
+  assert(stats.last_status == "backpressure");
+  assert(stats.last_bytes_sent == 12);
+  assert(stats.last_at_ms == 1000);
 }
 
-void test_partial_disconnect_increments_partial_reset() {
-  Counters counters;
-  commaview::video::note_video_chunk_send_counters(
-      counters,
+void test_partial_disconnect_increments_bridge_partial_chunk_reset() {
+  commaview::runtime::RuntimeVideoSendStats stats;
+  commaview::runtime::note_video_chunk_send_result(
+      stats,
       chunk(),
-      result(commaview::net::SendStatus::Disconnected, 12));
+      result(commaview::net::SendStatus::Disconnected, 12),
+      1001);
 
-  assert(counters.partial_chunk_reset_count == 1);
-  assert(counters.zero_byte_chunk_backpressure_count == 0);
-  assert(counters.chunks_sent == 0);
+  assert(stats.disconnect_count == 1);
+  assert(stats.partial_reset_count == 0);
+  assert(stats.partial_chunk_reset_count == 1);
+  assert(stats.zero_byte_chunk_backpressure_count == 0);
+  assert(stats.chunks_sent == 0);
+  assert(stats.last_status == "disconnected");
+  assert(stats.last_bytes_sent == 12);
 }
 
-void test_partial_invalid_argument_increments_partial_reset() {
-  Counters counters;
-  commaview::video::note_video_chunk_send_counters(
-      counters,
+void test_partial_invalid_argument_increments_bridge_partial_chunk_reset() {
+  commaview::runtime::RuntimeVideoSendStats stats;
+  commaview::runtime::note_video_chunk_send_result(
+      stats,
       chunk(),
-      result(commaview::net::SendStatus::InvalidArgument, 12));
+      result(commaview::net::SendStatus::InvalidArgument, 12),
+      1002);
 
-  assert(counters.partial_chunk_reset_count == 1);
-  assert(counters.zero_byte_chunk_backpressure_count == 0);
-  assert(counters.chunks_sent == 0);
+  assert(stats.disconnect_count == 1);
+  assert(stats.partial_chunk_reset_count == 1);
+  assert(stats.zero_byte_chunk_backpressure_count == 0);
+  assert(stats.chunks_sent == 0);
+  assert(stats.last_status == "invalid_argument");
 }
 
-void test_zero_byte_backpressure_counts_abandon_path_only() {
-  Counters counters;
-  commaview::video::note_video_chunk_send_counters(
-      counters,
+void test_zero_byte_backpressure_counts_bridge_abandon_path_only() {
+  commaview::runtime::RuntimeVideoSendStats stats;
+  commaview::runtime::note_video_chunk_send_result(
+      stats,
       chunk(),
-      result(commaview::net::SendStatus::Backpressure, 0));
+      result(commaview::net::SendStatus::Backpressure, 0),
+      1003);
 
-  assert(counters.zero_byte_chunk_backpressure_count == 1);
-  assert(counters.partial_chunk_reset_count == 0);
-  assert(counters.chunks_sent == 0);
+  assert(stats.backpressure_count == 1);
+  assert(stats.zero_byte_drop_count == 1);
+  assert(stats.zero_byte_chunk_backpressure_count == 1);
+  assert(stats.partial_reset_count == 0);
+  assert(stats.partial_chunk_reset_count == 0);
+  assert(stats.chunks_sent == 0);
 }
 
-void test_ok_counts_sent_chunk_without_reset() {
-  Counters counters;
-  commaview::video::note_video_chunk_send_counters(
-      counters,
+void test_ok_counts_bridge_chunk_counters_only() {
+  commaview::runtime::RuntimeVideoSendStats stats;
+  commaview::runtime::note_video_chunk_send_result(
+      stats,
       chunk(true),
-      result(commaview::net::SendStatus::Ok, 12));
+      result(commaview::net::SendStatus::Ok, 12),
+      1004);
 
-  assert(counters.chunks_sent == 1);
-  assert(counters.frames_chunked == 1);
-  assert(counters.max_chunks_per_frame == 3);
-  assert(counters.max_chunk_send_micros == 123);
-  assert(counters.zero_byte_chunk_backpressure_count == 0);
-  assert(counters.partial_chunk_reset_count == 0);
+  assert(stats.ok_count == 1);
+  assert(stats.chunks_sent == 1);
+  assert(stats.frames_chunked == 1);
+  assert(stats.max_chunks_per_frame == 3);
+  assert(stats.max_chunk_send_micros == 123);
+  assert(stats.max_send_micros == 123);
+  assert(stats.backpressure_count == 0);
+  assert(stats.disconnect_count == 0);
+  assert(stats.zero_byte_chunk_backpressure_count == 0);
+  assert(stats.partial_chunk_reset_count == 0);
+  assert(stats.last_status == "ok");
+}
+
+void test_serialized_video_send_json_includes_chunk_accounting() {
+  commaview::runtime::RuntimeVideoSendStats stats;
+  commaview::runtime::note_video_chunk_send_result(
+      stats,
+      chunk(true),
+      result(commaview::net::SendStatus::Ok, 12),
+      1005);
+  commaview::runtime::note_video_chunk_send_result(
+      stats,
+      chunk(),
+      result(commaview::net::SendStatus::Backpressure, 0),
+      1006);
+  stats.frame_abandon_count = 1;
+
+  const std::string json = commaview::runtime::video_send_stats_json(stats);
+  assert(json.find("\"okCount\":1") != std::string::npos);
+  assert(json.find("\"chunksSent\":1") != std::string::npos);
+  assert(json.find("\"framesChunked\":1") != std::string::npos);
+  assert(json.find("\"frameAbandonCount\":1") != std::string::npos);
+  assert(json.find("\"zeroByteChunkBackpressureCount\":1") != std::string::npos);
+  assert(json.find("\"partialChunkResetCount\":0") != std::string::npos);
+  assert(json.find("\"lastStatus\":\"backpressure\"") != std::string::npos);
 }
 
 }  // namespace
 
 int main() {
-  test_partial_backpressure_increments_partial_reset();
-  test_partial_disconnect_increments_partial_reset();
-  test_partial_invalid_argument_increments_partial_reset();
-  test_zero_byte_backpressure_counts_abandon_path_only();
-  test_ok_counts_sent_chunk_without_reset();
+  test_partial_backpressure_increments_bridge_partial_reset();
+  test_partial_disconnect_increments_bridge_partial_chunk_reset();
+  test_partial_invalid_argument_increments_bridge_partial_chunk_reset();
+  test_zero_byte_backpressure_counts_bridge_abandon_path_only();
+  test_ok_counts_bridge_chunk_counters_only();
+  test_serialized_video_send_json_includes_chunk_accounting();
   return 0;
 }

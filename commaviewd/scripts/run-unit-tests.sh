@@ -94,6 +94,8 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
 
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
   "$ROOT/tests/test_video_send_accounting.cpp" \
+  "$ROOT/src/runtime_video_send_accounting.cpp" \
+  "$ROOT/src/framing.cpp" \
   -o "$TMP/test_video_send_accounting"
 
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \

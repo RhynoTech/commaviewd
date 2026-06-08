@@ -4,9 +4,9 @@
 #include "router.h"
 #include "telemetry_policy.h"
 #include "runtime_debug_config.h"
+#include "runtime_video_send_accounting.h"
 #include "ui_export_socket.h"
 #include "video_chunk_protocol.h"
-#include "video_send_accounting.h"
 #include "video_transport_policy.h"
 /**
  * CommaView Unified Bridge (C++)
@@ -217,33 +217,6 @@ struct RuntimeLoopStats {
   uint64_t over_budget = 0;
 };
 
-struct RuntimeVideoSendStats {
-  uint64_t ok_count = 0;
-  uint64_t backpressure_count = 0;
-  uint64_t disconnect_count = 0;
-  uint64_t partial_reset_count = 0;
-  uint64_t zero_byte_drop_count = 0;
-  uint64_t chunks_sent = 0;
-  uint64_t frames_chunked = 0;
-  uint64_t frame_abandon_count = 0;
-  uint64_t zero_byte_chunk_backpressure_count = 0;
-  uint64_t partial_chunk_reset_count = 0;
-  uint64_t max_chunks_per_frame = 0;
-  uint64_t max_chunk_send_micros = 0;
-  uint64_t queue_drop_count = 0;
-  uint64_t keyframe_wait_drop_count = 0;
-  uint64_t queue_high_watermark = 0;
-  uint64_t zero_byte_backpressure_recovered_count = 0;
-  uint64_t max_queued_frame_age_ms = 0;
-  uint64_t max_send_micros = 0;
-  std::string last_status = "ok";
-  int last_error = 0;
-  std::string last_error_name = "none";
-  uint64_t last_bytes_sent = 0;
-  uint64_t last_elapsed_micros = 0;
-  uint64_t last_at_ms = 0;
-};
-
 struct RuntimePeerDisconnectStats {
   uint64_t count = 0;
   std::string stream = "";
@@ -262,7 +235,7 @@ struct RuntimeState {
   std::vector<RuntimeServiceStats> services = std::vector<RuntimeServiceStats>(NUM_TELEM);
   RuntimeLoopStats telemetry_loop = {};
   RuntimeLoopStats video_loop = {};
-  RuntimeVideoSendStats video_send = {};
+  commaview::runtime::RuntimeVideoSendStats video_send = {};
   RuntimePeerDisconnectStats peer_disconnect = {};
   std::chrono::steady_clock::time_point started_at = std::chrono::steady_clock::now();
   uint64_t reconnect_count = 0;
@@ -346,31 +319,7 @@ static std::string build_runtime_stats_json_locked() {
   out << "\"avgMicros\":" << runtime_loop_avg_micros(g_runtime_state.video_loop) << ",";
   out << "\"maxMicros\":" << g_runtime_state.video_loop.max_micros << ",";
   out << "\"overBudget\":" << g_runtime_state.video_loop.over_budget << "},";
-  out << "\"videoSend\":{";
-  out << "\"okCount\":" << g_runtime_state.video_send.ok_count << ",";
-  out << "\"backpressureCount\":" << g_runtime_state.video_send.backpressure_count << ",";
-  out << "\"disconnectCount\":" << g_runtime_state.video_send.disconnect_count << ",";
-  out << "\"partialResetCount\":" << g_runtime_state.video_send.partial_reset_count << ",";
-  out << "\"zeroByteDropCount\":" << g_runtime_state.video_send.zero_byte_drop_count << ",";
-  out << "\"chunksSent\":" << g_runtime_state.video_send.chunks_sent << ",";
-  out << "\"framesChunked\":" << g_runtime_state.video_send.frames_chunked << ",";
-  out << "\"frameAbandonCount\":" << g_runtime_state.video_send.frame_abandon_count << ",";
-  out << "\"zeroByteChunkBackpressureCount\":" << g_runtime_state.video_send.zero_byte_chunk_backpressure_count << ",";
-  out << "\"partialChunkResetCount\":" << g_runtime_state.video_send.partial_chunk_reset_count << ",";
-  out << "\"maxChunksPerFrame\":" << g_runtime_state.video_send.max_chunks_per_frame << ",";
-  out << "\"maxChunkSendMicros\":" << g_runtime_state.video_send.max_chunk_send_micros << ",";
-  out << "\"queueDropCount\":" << g_runtime_state.video_send.queue_drop_count << ",";
-  out << "\"keyframeWaitDropCount\":" << g_runtime_state.video_send.keyframe_wait_drop_count << ",";
-  out << "\"queueHighWatermark\":" << g_runtime_state.video_send.queue_high_watermark << ",";
-  out << "\"zeroByteBackpressureRecoveredCount\":" << g_runtime_state.video_send.zero_byte_backpressure_recovered_count << ",";
-  out << "\"maxQueuedFrameAgeMs\":" << g_runtime_state.video_send.max_queued_frame_age_ms << ",";
-  out << "\"maxSendMicros\":" << g_runtime_state.video_send.max_send_micros << ",";
-  out << "\"lastStatus\":\"" << runtime_json_escape(g_runtime_state.video_send.last_status) << "\",";
-  out << "\"lastError\":" << g_runtime_state.video_send.last_error << ",";
-  out << "\"lastErrorName\":\"" << runtime_json_escape(g_runtime_state.video_send.last_error_name) << "\",";
-  out << "\"lastBytesSent\":" << g_runtime_state.video_send.last_bytes_sent << ",";
-  out << "\"lastElapsedMicros\":" << g_runtime_state.video_send.last_elapsed_micros << ",";
-  out << "\"lastAtMs\":" << g_runtime_state.video_send.last_at_ms << "},";
+  out << "\"videoSend\":" << commaview::runtime::video_send_stats_json(g_runtime_state.video_send) << ",";
   out << "\"peerDisconnect\":{"
       << "\"count\":" << g_runtime_state.peer_disconnect.count << ","
       << "\"stream\":\"" << runtime_json_escape(g_runtime_state.peer_disconnect.stream) << "\","
@@ -500,15 +449,6 @@ static void note_runtime_loop_sample(bool telemetry_loop, uint64_t elapsed_micro
   }
 }
 
-static void note_video_send_failure_details(const commaview::net::SendResult& result) {
-  g_runtime_state.video_send.last_status = commaview::net::send_status_name(result.status);
-  g_runtime_state.video_send.last_error = result.error;
-  g_runtime_state.video_send.last_error_name = commaview::net::send_error_name(result.error);
-  g_runtime_state.video_send.last_bytes_sent = static_cast<uint64_t>(result.bytes_sent);
-  g_runtime_state.video_send.last_elapsed_micros = result.elapsed_micros;
-  g_runtime_state.video_send.last_at_ms = runtime_now_ms();
-}
-
 static void note_video_queue_deltas(uint64_t queue_drop_delta,
                                     uint64_t keyframe_wait_drop_delta,
                                     size_t queue_high_watermark) {
@@ -533,37 +473,15 @@ static void note_video_queued_frame_age(uint64_t age_ms) {
       age_ms);
 }
 
-static void note_video_send_result(const commaview::net::SendResult& result) {
-  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  g_runtime_state.video_send.max_send_micros = std::max(g_runtime_state.video_send.max_send_micros,
-                                                        result.elapsed_micros);
-  if (result.status != commaview::net::SendStatus::Ok) note_video_send_failure_details(result);
-  switch (result.status) {
-    case commaview::net::SendStatus::Ok:
-      g_runtime_state.video_send.ok_count += 1;
-      break;
-    case commaview::net::SendStatus::Backpressure:
-      g_runtime_state.video_send.backpressure_count += 1;
-      if (result.bytes_sent == 0) g_runtime_state.video_send.zero_byte_drop_count += 1;
-      if (result.bytes_sent > 0) g_runtime_state.video_send.partial_reset_count += 1;
-      break;
-    case commaview::net::SendStatus::Disconnected:
-    case commaview::net::SendStatus::InvalidArgument:
-      g_runtime_state.video_send.disconnect_count += 1;
-      break;
-  }
-}
-
 static void note_video_chunk_send_result(const char* /*stream*/,
                                          const commaview::video::VideoChunk& chunk,
                                          const commaview::net::SendResult& result) {
-  note_video_send_result(result);
-
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  commaview::video::note_video_chunk_send_counters(
+  commaview::runtime::note_video_chunk_send_result(
       g_runtime_state.video_send,
       chunk,
-      result);
+      result,
+      runtime_now_ms());
 }
 
 static void note_video_frame_abandoned(const char* stream, uint64_t sequence, uint16_t chunk_index) {
@@ -654,25 +572,6 @@ static commaview::net::SendResult send_frame_locked(int fd,
       fd,
       payload,
       payload_len,
-      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
-}
-
-static commaview::net::SendResult send_buffers_locked(int fd,
-                                                      const commaview::net::SendBuffer* buffers,
-                                                      size_t buffer_count,
-                                                      std::mutex* send_mutex) {
-  if (send_mutex != nullptr) {
-    std::lock_guard<std::mutex> send_lock(*send_mutex);
-    return commaview::net::send_buffers_bounded(
-        fd,
-        buffers,
-        buffer_count,
-        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
-  }
-  return commaview::net::send_buffers_bounded(
-      fd,
-      buffers,
-      buffer_count,
       commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
 }
 
@@ -831,14 +730,12 @@ static void handle_video_client(int client_fd, const char* video_service, int po
             continue;
           }
 
-          const size_t frame_payload_len = sizeof(uint8_t) + sizeof(uint64_t) + sizeof(uint32_t) * 3 + header_len + data_len;
           const bool is_keyframe =
               commaview::video::contains_hevc_idr(header.begin(), header_len) ||
               commaview::video::contains_hevc_idr(data.begin(), data_len);
           commaview::video::PendingVideoFrame pending;
           pending.sequence = ++parsed_frame_count;
           pending.is_keyframe = is_keyframe;
-          pending.payload_bytes = frame_payload_len;
           pending.created_at_ms = runtime_now_ms();
           pending.timestamp_ns = timestamp_ns;
           pending.width = video_width;
