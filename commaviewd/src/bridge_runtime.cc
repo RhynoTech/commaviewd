@@ -5,6 +5,7 @@
 #include "telemetry_policy.h"
 #include "runtime_debug_config.h"
 #include "ui_export_socket.h"
+#include "video_transport_policy.h"
 /**
  * CommaView Unified Bridge (C++)
  *
@@ -44,6 +45,7 @@
 #include <array>
 #include <sstream>
 #include <fstream>
+#include <utility>
 
 #include <capnp/serialize.h>
 #include "cereal/gen/cpp/log.capnp.h"
@@ -75,6 +77,7 @@ static constexpr int PORT_WIDE = 8201;
 static constexpr int PORT_DRIVER = 8202;
 static constexpr int PORT_TELEMETRY = 8203;
 static constexpr uint64_t VIDEO_SEND_BUDGET_MICROS = 16000ULL;
+static constexpr size_t VIDEO_FRAME_QUEUE_CAPACITY = 3;
 
 // Runtime policy defaults favor the upstream-organized onroad domains we export over the UI socket.
 static constexpr std::array<const char*, 20> kTelemetryServices = {
@@ -669,9 +672,11 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   }
 
   uint64_t frame_count = 0;
+  uint64_t parsed_frame_count = 0;
   uint64_t parse_error_count = 0;
   uint64_t wrong_union_count = 0;
   uint64_t suppressed_video_count = 0;
+  commaview::video::VideoFrameQueue video_queue(VIDEO_FRAME_QUEUE_CAPACITY);
   auto t0 = std::chrono::steady_clock::now();
   AlignedBuffer aligned_buf;
   ClientControlState control_state;
@@ -753,49 +758,70 @@ static void handle_video_client(int client_fd, const char* video_service, int po
             continue;
           }
 
-          uint8_t outer_len[4];
-          uint8_t video_header[1 + 8 + 4 + 4 + 4];
-          const size_t frame_payload_len = sizeof(video_header) + header_len + data_len;
-          put_be32(outer_len, static_cast<uint32_t>(frame_payload_len));
-          video_header[0] = MSG_VIDEO;
-          put_be64(&video_header[1], timestamp_ns);
-          put_be32(&video_header[9], video_width);
-          put_be32(&video_header[13], video_height);
-          put_be32(&video_header[17], header_len);
+          const size_t frame_payload_len = sizeof(uint8_t) + sizeof(uint64_t) + sizeof(uint32_t) * 3 + header_len + data_len;
+          const bool is_keyframe =
+              commaview::video::contains_hevc_idr(header.begin(), header_len) ||
+              commaview::video::contains_hevc_idr(data.begin(), data_len);
+          commaview::video::PendingVideoFrame pending;
+          pending.sequence = ++parsed_frame_count;
+          pending.is_keyframe = is_keyframe;
+          pending.payload_bytes = frame_payload_len;
+          pending.created_at_ms = runtime_now_ms();
+          pending.timestamp_ns = timestamp_ns;
+          pending.width = video_width;
+          pending.height = video_height;
+          pending.codec_header.assign(header.begin(), header.begin() + header_len);
+          pending.data.assign(data.begin(), data.begin() + data_len);
+          video_queue.push(std::move(pending));
 
-          std::array<commaview::net::SendBuffer, 4> buffers{{
-              {outer_len, sizeof(outer_len)},
-              {video_header, sizeof(video_header)},
-              {header.begin(), header_len},
-              {data.begin(), data_len},
-          }};
+          while (auto queued = video_queue.pop_next()) {
+            uint8_t outer_len[4];
+            uint8_t video_header[1 + 8 + 4 + 4 + 4];
+            const uint32_t queued_header_len = static_cast<uint32_t>(queued->codec_header.size());
+            const size_t queued_payload_len = sizeof(video_header) + queued->codec_header.size() + queued->data.size();
+            put_be32(outer_len, static_cast<uint32_t>(queued_payload_len));
+            video_header[0] = MSG_VIDEO;
+            put_be64(&video_header[1], queued->timestamp_ns);
+            put_be32(&video_header[9], queued->width);
+            put_be32(&video_header[13], queued->height);
+            put_be32(&video_header[17], queued_header_len);
 
-          // Legacy contract marker: video used to call send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex).
-          // Task 4 keeps the same mutex/status semantics but sends the frame as scatter/gather buffers.
-          const auto send_result = send_buffers_locked(client_fd, buffers.data(), buffers.size(), &send_mutex);
-          note_video_send_result(send_result);
-          if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
-            // No bytes from this frame entered the stream; preserve framing and prefer freshness.
-            continue;
-          }
-          if (send_result.status != commaview::net::SendStatus::Ok) {
-            note_runtime_peer_disconnect(video_service, "video_send", send_result);
-            shutdown(client_fd, SHUT_RDWR);
-            goto disconnect;
-          }
+            std::array<commaview::net::SendBuffer, 4> buffers{{
+                {outer_len, sizeof(outer_len)},
+                {video_header, sizeof(video_header)},
+                {queued->codec_header.data(), queued->codec_header.size()},
+                {queued->data.data(), queued->data.size()},
+            }};
 
-          frame_count++;
-          if (frame_count <= 5 || (frame_count % 200) == 0) {
-            auto now = std::chrono::steady_clock::now();
-            const double elapsed = std::chrono::duration<double>(now - t0).count();
-            const double fps = elapsed > 0 ? frame_count / elapsed : 0.0;
-            printf("[%s] frames=%llu fps=%.1f header=%u data=%zu\n",
-                   video_service,
-                   static_cast<unsigned long long>(frame_count),
-                   fps,
-                   header_len,
-                   data_len);
-            fflush(stdout);
+            // Legacy contract marker: video used to call send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex).
+            // Task 4 keeps the same mutex/status semantics but sends the frame as scatter/gather buffers.
+            const auto send_result = send_buffers_locked(client_fd, buffers.data(), buffers.size(), &send_mutex);
+            note_video_send_result(send_result);
+            if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
+              // No bytes from this frame entered the stream; preserve framing and resume on a clean HEVC keyframe.
+              video_queue.note_backpressure_without_partial_send();
+              break;
+            }
+            if (send_result.status != commaview::net::SendStatus::Ok) {
+              note_runtime_peer_disconnect(video_service, "video_send", send_result);
+              shutdown(client_fd, SHUT_RDWR);
+              goto disconnect;
+            }
+
+            frame_count++;
+            if (frame_count <= 5 || (frame_count % 200) == 0) {
+              auto now = std::chrono::steady_clock::now();
+              const double elapsed = std::chrono::duration<double>(now - t0).count();
+              const double fps = elapsed > 0 ? frame_count / elapsed : 0.0;
+              printf("[%s] frames=%llu fps=%.1f header=%u data=%zu key=%d\n",
+                     video_service,
+                     static_cast<unsigned long long>(frame_count),
+                     fps,
+                     queued_header_len,
+                     queued->data.size(),
+                     queued->is_keyframe ? 1 : 0);
+              fflush(stdout);
+            }
           }
         }
       } catch (const std::exception& e) {

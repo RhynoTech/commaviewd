@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <optional>
+#include <vector>
 
 namespace commaview::video {
 
@@ -14,6 +15,11 @@ struct PendingVideoFrame {
   bool is_keyframe = false;
   size_t payload_bytes = 0;
   uint64_t created_at_ms = 0;
+  uint64_t timestamp_ns = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::vector<uint8_t> codec_header;
+  std::vector<uint8_t> data;
 };
 
 class VideoFrameQueue {
