@@ -53,6 +53,7 @@ void VideoFrameQueue::push(PendingVideoFrame frame) {
 
 void VideoFrameQueue::note_backpressure_without_partial_send() {
   waiting_for_keyframe_ = true;
+  frame_abandon_count_ += 1;
 }
 
 std::optional<PendingVideoFrame> VideoFrameQueue::pop_next() {
@@ -82,6 +83,10 @@ uint64_t VideoFrameQueue::drop_count() const {
 
 uint64_t VideoFrameQueue::keyframe_wait_drop_count() const {
   return keyframe_wait_drop_count_;
+}
+
+uint64_t VideoFrameQueue::frame_abandon_count() const {
+  return frame_abandon_count_;
 }
 
 size_t VideoFrameQueue::high_watermark() const {

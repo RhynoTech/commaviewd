@@ -5,6 +5,7 @@
 #include "telemetry_policy.h"
 #include "runtime_debug_config.h"
 #include "ui_export_socket.h"
+#include "video_chunk_protocol.h"
 #include "video_transport_policy.h"
 /**
  * CommaView Unified Bridge (C++)
@@ -230,6 +231,13 @@ struct RuntimeVideoSendStats {
   uint64_t disconnect_count = 0;
   uint64_t partial_reset_count = 0;
   uint64_t zero_byte_drop_count = 0;
+  uint64_t chunks_sent = 0;
+  uint64_t frames_chunked = 0;
+  uint64_t frame_abandon_count = 0;
+  uint64_t zero_byte_chunk_backpressure_count = 0;
+  uint64_t partial_chunk_reset_count = 0;
+  uint64_t max_chunks_per_frame = 0;
+  uint64_t max_chunk_send_micros = 0;
   uint64_t queue_drop_count = 0;
   uint64_t keyframe_wait_drop_count = 0;
   uint64_t queue_high_watermark = 0;
@@ -352,6 +360,13 @@ static std::string build_runtime_stats_json_locked() {
   out << "\"disconnectCount\":" << g_runtime_state.video_send.disconnect_count << ",";
   out << "\"partialResetCount\":" << g_runtime_state.video_send.partial_reset_count << ",";
   out << "\"zeroByteDropCount\":" << g_runtime_state.video_send.zero_byte_drop_count << ",";
+  out << "\"chunksSent\":" << g_runtime_state.video_send.chunks_sent << ",";
+  out << "\"framesChunked\":" << g_runtime_state.video_send.frames_chunked << ",";
+  out << "\"frameAbandonCount\":" << g_runtime_state.video_send.frame_abandon_count << ",";
+  out << "\"zeroByteChunkBackpressureCount\":" << g_runtime_state.video_send.zero_byte_chunk_backpressure_count << ",";
+  out << "\"partialChunkResetCount\":" << g_runtime_state.video_send.partial_chunk_reset_count << ",";
+  out << "\"maxChunksPerFrame\":" << g_runtime_state.video_send.max_chunks_per_frame << ",";
+  out << "\"maxChunkSendMicros\":" << g_runtime_state.video_send.max_chunk_send_micros << ",";
   out << "\"queueDropCount\":" << g_runtime_state.video_send.queue_drop_count << ",";
   out << "\"keyframeWaitDropCount\":" << g_runtime_state.video_send.keyframe_wait_drop_count << ",";
   out << "\"queueHighWatermark\":" << g_runtime_state.video_send.queue_high_watermark << ",";
@@ -545,6 +560,42 @@ static void note_video_send_result(const commaview::net::SendResult& result) {
       g_runtime_state.video_send.disconnect_count += 1;
       break;
   }
+}
+
+static void note_video_chunk_send_result(const char* /*stream*/,
+                                         const commaview::video::VideoChunk& chunk,
+                                         const commaview::net::SendResult& result) {
+  note_video_send_result(result);
+
+  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+  if (chunk.is_first) g_runtime_state.video_send.frames_chunked += 1;
+  g_runtime_state.video_send.max_chunks_per_frame = std::max<uint64_t>(
+      g_runtime_state.video_send.max_chunks_per_frame,
+      static_cast<uint64_t>(chunk.chunk_count));
+  g_runtime_state.video_send.max_chunk_send_micros = std::max(
+      g_runtime_state.video_send.max_chunk_send_micros,
+      result.elapsed_micros);
+  if (result.status == commaview::net::SendStatus::Ok) {
+    g_runtime_state.video_send.chunks_sent += 1;
+  } else if (result.status == commaview::net::SendStatus::Backpressure) {
+    if (result.bytes_sent == 0) {
+      g_runtime_state.video_send.zero_byte_chunk_backpressure_count += 1;
+    } else {
+      g_runtime_state.video_send.partial_chunk_reset_count += 1;
+    }
+  }
+}
+
+static void note_video_frame_abandoned(const char* stream, uint64_t sequence, uint16_t chunk_index) {
+  {
+    std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+    g_runtime_state.video_send.frame_abandon_count += 1;
+  }
+  printf("[%s] abandoned video frame seq=%llu at chunk=%u\n",
+         stream == nullptr ? "unknown" : stream,
+         static_cast<unsigned long long>(sequence),
+         static_cast<unsigned int>(chunk_index));
+  fflush(stdout);
 }
 
 static commaview::net::SendResult peer_closed_result() {
@@ -824,39 +875,40 @@ static void handle_video_client(int client_fd, const char* video_service, int po
             last_queue_drop_count = video_queue.drop_count();
             last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
             note_video_queued_frame_age(runtime_now_ms() - queued->created_at_ms);
-            uint8_t outer_len[4];
-            uint8_t video_header[1 + 8 + 4 + 4 + 4];
             const uint32_t queued_header_len = static_cast<uint32_t>(queued->codec_header.size());
-            const size_t queued_payload_len = sizeof(video_header) + queued->codec_header.size() + queued->data.size();
-            put_be32(outer_len, static_cast<uint32_t>(queued_payload_len));
-            video_header[0] = MSG_VIDEO;
-            put_be64(&video_header[1], queued->timestamp_ns);
-            put_be32(&video_header[9], queued->width);
-            put_be32(&video_header[13], queued->height);
-            put_be32(&video_header[17], queued_header_len);
+            commaview::video::VideoFrameForChunking frame;
+            frame.sequence = static_cast<uint32_t>(queued->sequence);
+            frame.timestamp_ns = queued->timestamp_ns;
+            frame.width = queued->width;
+            frame.height = queued->height;
+            frame.is_keyframe = queued->is_keyframe;
+            frame.codec_header = queued->codec_header;
+            frame.data = queued->data;
 
-            std::array<commaview::net::SendBuffer, 4> buffers{{
-                {outer_len, sizeof(outer_len)},
-                {video_header, sizeof(video_header)},
-                {queued->codec_header.data(), queued->codec_header.size()},
-                {queued->data.data(), queued->data.size()},
-            }};
+            const auto chunks = commaview::video::plan_video_chunks(
+                frame,
+                commaview::video::DEFAULT_VIDEO_CHUNK_BYTES);
 
-            // Legacy contract marker: video used to call send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex).
-            // Task 4 keeps the same mutex/status semantics but sends the frame as scatter/gather buffers.
-            const auto send_result = send_buffers_locked(client_fd, buffers.data(), buffers.size(), &send_mutex);
-            note_video_send_result(send_result);
-            if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
-              // No bytes from this frame entered the stream; preserve framing and resume on a clean HEVC keyframe.
-              video_queue.note_backpressure_without_partial_send();
-              note_video_zero_byte_backpressure_recovered();
-              break;
+            bool frame_sent_successfully = true;
+            for (const auto& chunk : chunks) {
+              const auto payload = commaview::video::encode_video_chunk_payload(chunk);
+              const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);
+              note_video_chunk_send_result(video_service, chunk, send_result);
+              if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
+                video_queue.note_backpressure_without_partial_send();
+                note_video_zero_byte_backpressure_recovered();
+                note_video_frame_abandoned(video_service, queued->sequence, chunk.chunk_index);
+                frame_sent_successfully = false;
+                break;
+              }
+              if (send_result.status != commaview::net::SendStatus::Ok) {
+                note_runtime_peer_disconnect(video_service, "video_chunk_send", send_result);
+                shutdown(client_fd, SHUT_RDWR);
+                goto disconnect;
+              }
             }
-            if (send_result.status != commaview::net::SendStatus::Ok) {
-              note_runtime_peer_disconnect(video_service, "video_send", send_result);
-              shutdown(client_fd, SHUT_RDWR);
-              goto disconnect;
-            }
+
+            if (!frame_sent_successfully) break;
 
             frame_count++;
             if (frame_count <= 5 || (frame_count % 200) == 0) {

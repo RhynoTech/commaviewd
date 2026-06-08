@@ -69,6 +69,27 @@ void test_pressure_waits_for_keyframe_after_drops() {
   assert(next->is_keyframe);
 }
 
+void test_zero_byte_chunk_backpressure_abandons_frame_and_requires_keyframe_resume() {
+  commaview::video::VideoFrameQueue queue(4);
+  queue.push(frame(1, false));
+  auto first = queue.pop_next();
+  assert(first.has_value());
+  assert(first->sequence == 1);
+
+  queue.note_backpressure_without_partial_send();
+  assert(queue.frame_abandon_count() == 1);
+
+  queue.push(frame(2, false));
+  assert(!queue.pop_next().has_value());
+  assert(queue.keyframe_wait_drop_count() == 1);
+
+  queue.push(frame(3, true));
+  auto resumed = queue.pop_next();
+  assert(resumed.has_value());
+  assert(resumed->sequence == 3);
+  assert(resumed->is_keyframe);
+}
+
 }  // namespace
 
 int main() {
@@ -78,5 +99,6 @@ int main() {
   test_truncated_hevc_nal_header_is_not_keyframe();
   test_queue_keeps_latest_when_full();
   test_pressure_waits_for_keyframe_after_drops();
+  test_zero_byte_chunk_backpressure_abandons_frame_and_requires_keyframe_resume();
   return 0;
 }
