@@ -72,26 +72,38 @@ size_t checked_add_size(size_t lhs, size_t rhs, const char* message) {
   return lhs + rhs;
 }
 
-}  // namespace
+struct VideoChunkLayout {
+  size_t logical_size = 0;
+  size_t chunk_bytes = 0;
+  size_t chunk_count = 0;
+};
 
-std::vector<VideoChunk> plan_video_chunks(const VideoFrameForChunking& frame, size_t chunk_bytes) {
+VideoChunkLayout plan_video_chunk_layout(size_t codec_header_size, size_t data_size, size_t chunk_bytes) {
   const size_t max_chunk_bytes = chunk_bytes == 0 ? DEFAULT_VIDEO_CHUNK_BYTES : chunk_bytes;
-  if (frame.codec_header.size() > std::numeric_limits<uint32_t>::max() ||
-      frame.data.size() > std::numeric_limits<uint32_t>::max()) {
-    throw std::length_error("video frame is too large to chunk");
-  }
-  const size_t logical_size = checked_add_size(frame.codec_header.size(), frame.data.size(),
+  const size_t logical_size = checked_add_size(codec_header_size, data_size,
                                               "video frame is too large to chunk");
   if (logical_size == 0) {
     throw std::invalid_argument("video frame must not be empty");
   }
-  if (logical_size > std::numeric_limits<uint32_t>::max()) {
+  if (codec_header_size > std::numeric_limits<uint32_t>::max() ||
+      data_size > std::numeric_limits<uint32_t>::max() ||
+      logical_size > std::numeric_limits<uint32_t>::max()) {
     throw std::length_error("video frame is too large to chunk");
   }
   const size_t chunk_count_size = 1 + ((logical_size - 1) / max_chunk_bytes);
   if (chunk_count_size > std::numeric_limits<uint16_t>::max()) {
     throw std::length_error("video frame has too many chunks");
   }
+  return {logical_size, max_chunk_bytes, chunk_count_size};
+}
+
+}  // namespace
+
+std::vector<VideoChunk> plan_video_chunks(const VideoFrameForChunking& frame, size_t chunk_bytes) {
+  const VideoChunkLayout layout = plan_video_chunk_layout(frame.codec_header.size(), frame.data.size(), chunk_bytes);
+  const size_t logical_size = layout.logical_size;
+  const size_t max_chunk_bytes = layout.chunk_bytes;
+  const size_t chunk_count_size = layout.chunk_count;
 
   std::vector<uint8_t> logical_frame;
   logical_frame.reserve(logical_size);
@@ -112,7 +124,6 @@ std::vector<VideoChunk> plan_video_chunks(const VideoFrameForChunking& frame, si
     chunk.is_keyframe = frame.is_keyframe;
     chunk.is_first = index == 0;
     chunk.is_final = index + 1 == chunk_count_size;
-    chunk.flags = chunk_flags(chunk.is_keyframe, chunk.is_first, chunk.is_final);
     chunk.timestamp_ns = frame.timestamp_ns;
     chunk.width = frame.width;
     chunk.height = frame.height;
@@ -152,6 +163,12 @@ std::vector<uint8_t> encode_video_chunk_payload(const VideoChunk& chunk) {
 }
 
 #ifdef COMMAVIEW_VIDEO_CHUNK_PROTOCOL_TESTING
+VideoChunkLayoutForTest plan_video_chunk_layout_for_test(size_t codec_header_size, size_t data_size,
+                                                         size_t chunk_bytes) {
+  const VideoChunkLayout layout = plan_video_chunk_layout(codec_header_size, data_size, chunk_bytes);
+  return {layout.logical_size, layout.chunk_bytes, static_cast<uint16_t>(layout.chunk_count)};
+}
+
 VideoChunk decode_video_chunk_payload_for_test(const std::vector<uint8_t>& payload) {
   assert(!payload.empty());
   size_t pos = 0;
@@ -162,10 +179,10 @@ VideoChunk decode_video_chunk_payload_for_test(const std::vector<uint8_t>& paylo
   chunk.chunk_index = read_u16_be(payload, &pos);
   chunk.chunk_count = read_u16_be(payload, &pos);
   assert(pos < payload.size());
-  chunk.flags = payload[pos++];
-  chunk.is_keyframe = (chunk.flags & VIDEO_CHUNK_KEYFRAME) != 0;
-  chunk.is_first = (chunk.flags & VIDEO_CHUNK_FIRST) != 0;
-  chunk.is_final = (chunk.flags & VIDEO_CHUNK_FINAL) != 0;
+  const uint8_t flags = payload[pos++];
+  chunk.is_keyframe = (flags & VIDEO_CHUNK_KEYFRAME) != 0;
+  chunk.is_first = (flags & VIDEO_CHUNK_FIRST) != 0;
+  chunk.is_final = (flags & VIDEO_CHUNK_FINAL) != 0;
   chunk.timestamp_ns = read_u64_be(payload, &pos);
   chunk.width = read_u32_be(payload, &pos);
   chunk.height = read_u32_be(payload, &pos);

@@ -26,7 +26,6 @@ struct VideoChunk {
   uint32_t frame_sequence = 0;
   uint16_t chunk_index = 0;
   uint16_t chunk_count = 0;
-  uint8_t flags = 0;
   bool is_keyframe = false;
   bool is_first = false;
   bool is_final = false;
@@ -43,6 +42,14 @@ std::vector<VideoChunk> plan_video_chunks(const VideoFrameForChunking& frame, si
 std::vector<uint8_t> encode_video_chunk_payload(const VideoChunk& chunk);
 
 #ifdef COMMAVIEW_VIDEO_CHUNK_PROTOCOL_TESTING
+struct VideoChunkLayoutForTest {
+  size_t logical_size = 0;
+  size_t chunk_bytes = 0;
+  uint16_t chunk_count = 0;
+};
+
+VideoChunkLayoutForTest plan_video_chunk_layout_for_test(size_t codec_header_size, size_t data_size,
+                                                         size_t chunk_bytes);
 VideoChunk decode_video_chunk_payload_for_test(const std::vector<uint8_t>& payload);
 #endif
 

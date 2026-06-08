@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -45,9 +46,6 @@ void test_single_chunk_frame() {
   assert(chunks[0].is_keyframe);
   assert(chunks[0].is_first);
   assert(chunks[0].is_final);
-  assert(chunks[0].flags == (commaview::video::VIDEO_CHUNK_KEYFRAME |
-                             commaview::video::VIDEO_CHUNK_FIRST |
-                             commaview::video::VIDEO_CHUNK_FINAL));
 }
 
 void test_multi_chunk_frame_preserves_offsets() {
@@ -111,12 +109,29 @@ void test_empty_frames_are_rejected() {
   });
 }
 
-void test_too_many_chunks_are_rejected() {
-  assert_throws_length_error("too many chunks", []() {
-    commaview::video::VideoFrameForChunking frame;
-    frame.data.resize(static_cast<size_t>(UINT16_MAX) + 1);
-    (void)commaview::video::plan_video_chunks(frame, 1);
+void test_size_overflow_is_rejected_without_allocation() {
+  assert_throws_length_error("too large", []() {
+    (void)commaview::video::plan_video_chunk_layout_for_test(std::numeric_limits<size_t>::max(), 1, 16);
   });
+}
+
+void test_logical_size_above_wire_limit_is_rejected_without_allocation() {
+  assert_throws_length_error("too large", []() {
+    (void)commaview::video::plan_video_chunk_layout_for_test(std::numeric_limits<uint32_t>::max(), 1, 16);
+  });
+}
+
+void test_too_many_chunks_are_rejected_without_allocation() {
+  assert_throws_length_error("too many chunks", []() {
+    (void)commaview::video::plan_video_chunk_layout_for_test(static_cast<size_t>(UINT16_MAX) + 1, 0, 1);
+  });
+}
+
+void test_exact_boundary_layout_for_test_returns_expected_count() {
+  const auto layout = commaview::video::plan_video_chunk_layout_for_test(2, 4, 3);
+  assert(layout.logical_size == 6);
+  assert(layout.chunk_bytes == 3);
+  assert(layout.chunk_count == 2);
 }
 
 void test_encoded_chunk_matches_golden_wire_payload() {
@@ -124,7 +139,6 @@ void test_encoded_chunk_matches_golden_wire_payload() {
   chunk.frame_sequence = 0x01020304;
   chunk.chunk_index = 0x0506;
   chunk.chunk_count = 0x0708;
-  chunk.flags = 0;  // Encoding derives flags from booleans, not this potentially stale field.
   chunk.is_keyframe = true;
   chunk.is_first = false;
   chunk.is_final = true;
@@ -189,7 +203,10 @@ int main() {
   test_exact_boundary_chunking_has_no_empty_tail_chunk();
   test_default_chunk_size_used_when_zero_requested();
   test_empty_frames_are_rejected();
-  test_too_many_chunks_are_rejected();
+  test_size_overflow_is_rejected_without_allocation();
+  test_logical_size_above_wire_limit_is_rejected_without_allocation();
+  test_too_many_chunks_are_rejected_without_allocation();
+  test_exact_boundary_layout_for_test_returns_expected_count();
   test_encoded_chunk_matches_golden_wire_payload();
   test_encoded_chunk_round_trips_header_fields();
   return 0;
