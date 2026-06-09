@@ -57,6 +57,14 @@ required_stage_files=(
   "start.sh"
   "stop.sh"
   "uninstall.sh"
+  "install.sh"
+  "scripts/apply_onroad_ui_export_patch.sh"
+  "scripts/revert_onroad_ui_export_patch.sh"
+  "scripts/verify_onroad_ui_export_patch.sh"
+  "scripts/transform_onroad_ui_export.py"
+  "scripts/smoke_onroad_ui_export_helper.py"
+  "src/commaview_export.openpilot.py"
+  "src/commaview_export.sunnypilot.py"
 )
 
 validate_stage_contents() {
@@ -86,7 +94,7 @@ validate_stage_contents() {
 
 mkdir -p "$OUT_DIR"
 rm -rf "$STAGE_DIR"
-mkdir -p "$STAGE_DIR/lib"
+mkdir -p "$STAGE_DIR/lib" "$STAGE_DIR/scripts" "$STAGE_DIR/src"
 
 if [[ "$SKIP_BUILD" -eq 1 ]]; then
   echo "[1/3] Skipping build (using existing dist artifacts)..."
@@ -119,6 +127,14 @@ done
 install -m 755 "${ROOT}/comma4/start.sh" "${STAGE_DIR}/start.sh"
 install -m 755 "${ROOT}/comma4/stop.sh" "${STAGE_DIR}/stop.sh"
 install -m 755 "${ROOT}/comma4/uninstall.sh" "${STAGE_DIR}/uninstall.sh"
+install -m 755 "${ROOT}/comma4/install.sh" "${STAGE_DIR}/install.sh"
+install -m 755 "${ROOT}/comma4/scripts/apply_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/apply_onroad_ui_export_patch.sh"
+install -m 755 "${ROOT}/comma4/scripts/revert_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/revert_onroad_ui_export_patch.sh"
+install -m 755 "${ROOT}/comma4/scripts/verify_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/verify_onroad_ui_export_patch.sh"
+install -m 755 "${ROOT}/comma4/scripts/transform_onroad_ui_export.py" "${STAGE_DIR}/scripts/transform_onroad_ui_export.py"
+install -m 755 "${ROOT}/comma4/scripts/smoke_onroad_ui_export_helper.py" "${STAGE_DIR}/scripts/smoke_onroad_ui_export_helper.py"
+install -m 644 "${ROOT}/comma4/src/commaview_export.openpilot.py" "${STAGE_DIR}/src/commaview_export.openpilot.py"
+install -m 644 "${ROOT}/comma4/src/commaview_export.sunnypilot.py" "${STAGE_DIR}/src/commaview_export.sunnypilot.py"
 
 cat > "${STAGE_DIR}/VERSION" <<VER
 ${TAG}
