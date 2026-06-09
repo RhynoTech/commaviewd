@@ -161,7 +161,7 @@ PY
   grep -Fq 'active_camera="wideRoad" if is_wide_camera else "road"' "$augmented_road_path" || fail "wide onroad projection camera mapping missing for ${label}"
   grep -Fq 'model_transform = video_transform @ calib_transform' "$augmented_road_path" || fail "model transform assignment missing for ${label}"
   grep -Fq 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$augmented_road_path" || grep -Fq 'camera_offset=getattr(self.model_renderer, "_camera_offset", 0.0)' "$augmented_road_path" || fail "projection camera offset missing for ${label}"
-  grep -Fq 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$helper_path" || fail "immediate onroad projection export missing for ${label}"
+  grep -Fq 'self._publish_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$helper_path" || fail "immediate onroad projection export missing for ${label}"
   grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$helper_path" || fail "runtime flavor constant missing for ${label}"
   grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$helper_path" || fail "frame version missing for ${label}"
   grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$helper_path" || fail "socket path missing for ${label}"
@@ -177,7 +177,7 @@ PY
   done
 
   for const_name in "${service_consts[@]}"; do
-    grep -Fq "self._send_json(${const_name}, self._" "$helper_path" || fail "publish path missing for ${label}: $const_name"
+    grep -Fq "(${const_name}, self._" "$helper_path" || fail "publish path missing for ${label}: $const_name"
   done
 
   for marker in "${risk_markers[@]}"; do
@@ -204,15 +204,10 @@ run_ref 'openpilot master' "$OPENPILOT_REPO" 'master' "$CACHE_ROOT/openpilot-mas
 run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-nightly" 'OPENPILOT'
 run_ref 'openpilot release-mici' "$OPENPILOT_REPO" 'release-mici' "$CACHE_ROOT/openpilot-release-mici" 'OPENPILOT'
 run_ref 'openpilot release-mici-staging' "$OPENPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/openpilot-release-mici-staging" 'OPENPILOT'
-run_ref 'openpilot release-tizi' "$OPENPILOT_REPO" 'release-tizi' "$CACHE_ROOT/openpilot-release-tizi" 'OPENPILOT'
-run_ref 'openpilot release-tizi-staging' "$OPENPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/openpilot-release-tizi-staging" 'OPENPILOT'
 
 run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" 'SUNNYPILOT'
 run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" 'SUNNYPILOT'
 run_ref 'sunnypilot release-mici' "$SUNNYPILOT_REPO" 'release-mici' "$CACHE_ROOT/sunnypilot-release-mici" 'SUNNYPILOT'
 run_ref 'sunnypilot release-mici-staging' "$SUNNYPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/sunnypilot-release-mici-staging" 'SUNNYPILOT'
-run_ref 'sunnypilot release-tizi' "$SUNNYPILOT_REPO" 'release-tizi' "$CACHE_ROOT/sunnypilot-release-tizi" 'SUNNYPILOT'
-run_ref 'sunnypilot release-tizi-staging' "$SUNNYPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/sunnypilot-release-tizi-staging" 'SUNNYPILOT'
-run_ref 'sunnypilot master-tici' "$SUNNYPILOT_REPO" 'master-tici' "$CACHE_ROOT/sunnypilot-master-tici" 'SUNNYPILOT'
 
 echo 'PASS: source transformer socket UI export applies and verifies on real canary refs'

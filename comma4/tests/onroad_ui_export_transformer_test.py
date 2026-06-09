@@ -6,10 +6,13 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import types
+import importlib.util
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRANSFORMER = REPO_ROOT / "comma4" / "scripts" / "transform_onroad_ui_export.py"
+SMOKE_SCRIPT = REPO_ROOT / "comma4" / "scripts" / "smoke_onroad_ui_export_helper.py"
 APPLY_SCRIPT = REPO_ROOT / "comma4" / "scripts" / "apply_onroad_ui_export_patch.sh"
 REVERT_SCRIPT = REPO_ROOT / "comma4" / "scripts" / "revert_onroad_ui_export_patch.sh"
 OPENPILOT_TEMPLATE = REPO_ROOT / "comma4" / "src" / "commaview_export.openpilot.py"
@@ -146,6 +149,170 @@ def test_transformer_installs_openpilot_export_helper_template(tmp_path):
     helper_text = (op_root / HELPER_PATH).read_text()
     assert 'COMMAVIEW_RUNTIME_FLAVOR = "OPENPILOT"' in helper_text
     assert "class _CommaViewSocketExporter:" in helper_text
+
+
+def load_export_template(template_path: Path):
+    sys.modules.setdefault("opendbc", types.ModuleType("opendbc"))
+    car_module = types.ModuleType("opendbc.car")
+    car_module.ACCELERATION_DUE_TO_GRAVITY = 9.81
+    sys.modules["opendbc.car"] = car_module
+    spec = importlib.util.spec_from_file_location("commaview_export_under_test", template_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeSubMaster:
+    def __init__(self, values):
+        self.values = values
+        self.recv_frame = {key: 10 for key in values}
+        self.logMonoTime = {key: 1000 for key in values}
+        self.valid = {key: True for key in values}
+        self.alive = {key: True for key in values}
+
+    def __getitem__(self, key):
+        return self.values[key]
+
+
+class FakeUiState:
+    def __init__(self, values):
+        self.started_frame = 1
+        self.sm = FakeSubMaster(values)
+
+
+def export_templates():
+    return [
+        (OPENPILOT_TEMPLATE, "OPENPILOT"),
+        (SUNNYPILOT_TEMPLATE, "SUNNYPILOT"),
+    ]
+
+
+def test_exporter_preserves_top_level_driver_monitoring_schema():
+    for template_path, flavor in export_templates():
+        module = load_export_template(template_path)
+        exporter = module._CommaViewSocketExporter(flavor)
+        driver_monitoring = types.SimpleNamespace(
+            faceDetected=True,
+            isDistracted=True,
+            isRHD=True,
+            poseYawOffset=-0.12,
+            posePitchOffset=0.34,
+            poseYawValidCount=12,
+            posePitchValidCount=34,
+            isLowStd=True,
+            isActiveMode=True,
+        )
+        ui_state = FakeUiState({"driverMonitoringState": driver_monitoring})
+
+        payload = exporter._driver_monitoring_state_payload(ui_state)
+
+        assert payload["faceDetected"] is True
+        assert payload["isDistracted"] is True
+        assert payload["isRHD"] is True
+        assert payload["poseYawOffset"] == -0.12
+        assert payload["posePitchOffset"] == 0.34
+        assert payload["poseYawValidCount"] == 12
+        assert payload["posePitchValidCount"] == 34
+        assert payload["isLowStd"] is True
+        assert payload["isActiveMode"] is True
+
+
+def test_exporter_handles_nested_driver_monitoring_schema():
+    for template_path, flavor in export_templates():
+        module = load_export_template(template_path)
+        exporter = module._CommaViewSocketExporter(flavor)
+        pose = types.SimpleNamespace(
+            pitch=0.11,
+            yaw=-0.22,
+            pitchCalib=types.SimpleNamespace(offset=0.01, calibratedPercent=88),
+            yawCalib=types.SimpleNamespace(offset=-0.02, calibratedPercent=77),
+            uncertainty=0.03,
+        )
+        driver_monitoring = types.SimpleNamespace(
+            isRHD=True,
+            visionPolicyState=types.SimpleNamespace(
+                faceDetected=True,
+                isDistracted=True,
+                awarenessPercent=65,
+                awarenessStep=0.02,
+                pose=pose,
+            ),
+        )
+        ui_state = FakeUiState({"driverMonitoringState": driver_monitoring})
+
+        payload = exporter._driver_monitoring_state_payload(ui_state)
+
+        assert payload["faceDetected"] is True
+        assert payload["isDistracted"] is True
+        assert payload["isRHD"] is True
+        assert payload["poseYawOffset"] == -0.02
+        assert payload["poseYawValidCount"] == 77
+
+
+def test_exporter_publish_continues_after_service_payload_error():
+    for template_path, flavor in export_templates():
+        module = load_export_template(template_path)
+        exporter = module._CommaViewSocketExporter(flavor)
+        sent = []
+        exporter._send_json = lambda service_index, payload: sent.append(service_index)
+        exporter._latest_onroad_projection = {"exportVersion": 1}
+        exporter._ui_state_onroad_payload = lambda ui_state: {"service": "uiStateOnroad"}
+        exporter._selfdrive_state_payload = lambda ui_state: {"service": "selfdriveState"}
+        exporter._car_state_payload = lambda ui_state: {"service": "carState"}
+        exporter._controls_state_payload = lambda ui_state: {"service": "controlsState"}
+        exporter._onroad_events_payload = lambda ui_state: {"service": "onroadEvents"}
+        exporter._driver_monitoring_state_payload = lambda ui_state: (_ for _ in ()).throw(AttributeError("schema drift"))
+        exporter._driver_state_v2_payload = lambda ui_state: {"service": "driverStateV2"}
+        exporter._model_v2_payload = lambda ui_state: {"service": "modelV2"}
+        exporter._radar_state_payload = lambda ui_state: {"service": "radarState"}
+        exporter._live_calibration_payload = lambda ui_state: {"service": "liveCalibration"}
+        exporter._car_output_payload = lambda ui_state: {"service": "carOutput"}
+        exporter._car_control_payload = lambda ui_state: {"service": "carControl"}
+        exporter._live_parameters_payload = lambda ui_state: {"service": "liveParameters"}
+        exporter._longitudinal_plan_payload = lambda ui_state: {"service": "longitudinalPlan"}
+        exporter._car_params_payload = lambda ui_state: {"service": "carParams"}
+        exporter._device_state_payload = lambda ui_state: {"service": "deviceState"}
+        exporter._road_camera_state_payload = lambda ui_state: {"service": "roadCameraState"}
+        exporter._panda_states_summary_payload = lambda ui_state: {"service": "pandaStates"}
+        exporter._wide_road_camera_state_payload = lambda ui_state: {"service": "wideRoadCameraState"}
+
+        exporter.publish(FakeUiState({}))
+
+        assert module.COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX not in sent
+        assert module.COMMAVIEW_DRIVER_STATE_V2_SERVICE_INDEX in sent
+        assert module.COMMAVIEW_MODEL_V2_SERVICE_INDEX in sent
+        assert module.COMMAVIEW_LIVE_CALIBRATION_SERVICE_INDEX in sent
+        assert module.COMMAVIEW_CAR_OUTPUT_SERVICE_INDEX in sent
+        assert module.COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX in sent
+
+
+def test_generated_export_helper_smoke_runs_after_transform(tmp_path):
+    for flavor in ("openpilot", "sunnypilot"):
+        op_root = write_upstream_tree(tmp_path / flavor, ui_state=NEW_UI_STATE, augmented_road_view=AUGMENTED_ROAD_VIEW)
+
+        result = subprocess.run(
+            [sys.executable, str(TRANSFORMER), "--op-root", str(op_root), "--flavor", flavor],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+        smoke = subprocess.run(
+            [sys.executable, str(SMOKE_SCRIPT), str(op_root / HELPER_PATH), flavor.upper()],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        assert smoke.returncode == 0, smoke.stderr
+        smoke_status = json.loads(smoke.stdout)
+        assert smoke_status["payloadSmokePassed"] is True
+        assert smoke_status["criticalServicesPublishable"] is True
+        assert smoke_status["serviceSendCount"] >= 19
 
 
 def test_transformer_handles_new_background_params_ui_state_layout(tmp_path):

@@ -5,6 +5,7 @@ INSTALL_DIR="${COMMAVIEWD_INSTALL_DIR:-/data/commaview}"
 OP_ROOT="${COMMAVIEWD_OP_ROOT:-/data/openpilot}"
 SRC_ROOT="$INSTALL_DIR/src"
 TRANSFORMER="$INSTALL_DIR/scripts/transform_onroad_ui_export.py"
+SMOKE_SCRIPT="$INSTALL_DIR/scripts/smoke_onroad_ui_export_helper.py"
 STATE_JSON="$INSTALL_DIR/run/onroad-ui-export-status.json"
 STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
 HELPER_PATH="$OP_ROOT/selfdrive/ui/commaview_export.py"
@@ -199,6 +200,10 @@ onroad_camera_relay_present=false
 onroad_projection_present=false
 transformer_present=false
 template_present=false
+smoke_script_present=false
+payload_smoke_passed=false
+critical_services_publishable=false
+service_send_count=0
 fingerprint=""
 service_marker_count=0
 
@@ -210,9 +215,12 @@ elif [ ! -f "$template_path" ]; then
   state="missing-template"; reason="missing socket UI export helper template for $flavor"
 elif [ ! -f "$TRANSFORMER" ]; then
   state="missing-transformer"; reason="missing socket UI export transformer"
+elif [ ! -f "$SMOKE_SCRIPT" ]; then
+  state="missing-smoke-script"; reason="missing socket UI export helper smoke test"
 else
   transformer_present=true
   template_present=true
+  smoke_script_present=true
   fingerprint="$(sha256sum "$TRANSFORMER" "$template_path" | sha256sum | awk '{print $1}')"
   expected_runtime_flavor="OPENPILOT"
   if [ "$flavor" = "sunnypilot" ]; then
@@ -248,7 +256,7 @@ else
       check_fixed 'active_camera="wideRoad" if is_wide_camera else "road"' "$augmented_road_path" && \
       check_fixed 'video_frame_matrix=self._cached_matrix' "$augmented_road_path" && \
       { check_fixed 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$augmented_road_path" || check_fixed 'camera_offset=getattr(self.model_renderer, "_camera_offset", 0.0)' "$augmented_road_path"; } && \
-      check_fixed 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$HELPER_PATH"; }; then
+      check_fixed 'self._publish_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$HELPER_PATH"; }; then
       onroad_projection_present=false
     fi
   done
@@ -268,7 +276,7 @@ else
   publish_paths_present=true
   service_marker_count=0
   for const_name in "${service_consts[@]}"; do
-    if check_fixed "self._send_json(${const_name}, self._" "$HELPER_PATH"; then
+    if check_fixed "(${const_name}, self._" "$HELPER_PATH"; then
       service_marker_count=$((service_marker_count + 1))
     else
       publish_paths_present=false
@@ -291,14 +299,36 @@ else
     fi
   done
 
-  if $helper_present && $ui_state_hook_present && $runtime_flavor_constant_present &&      $socket_path_present && $socket_env_present && $frame_version_present && $unix_socket_present &&      $framing_present && $compact_json_present && $payload_helpers_present && $publish_paths_present &&      $risk_fields_present && $legacy_bucket_markers_absent && $exporter_install_present &&      $exporter_publish_present && $onroad_camera_relay_present && $onroad_projection_present; then
+  smoke_json="{}"
+  if $helper_present && [ -f "$SMOKE_SCRIPT" ]; then
+    smoke_json="$(python3 "$SMOKE_SCRIPT" "$HELPER_PATH" "$expected_runtime_flavor" 2>/dev/null || true)"
+    smoke_eval="$(SMOKE_JSON="$smoke_json" python3 - <<'PYSMOKE'
+import json
+import os
+try:
+    payload = json.loads(os.environ.get("SMOKE_JSON", "{}"))
+except json.JSONDecodeError:
+    payload = {}
+print("payload_smoke_passed=" + ("true" if payload.get("payloadSmokePassed") else "false"))
+print("critical_services_publishable=" + ("true" if payload.get("criticalServicesPublishable") else "false"))
+try:
+    count = int(payload.get("serviceSendCount", 0))
+except (TypeError, ValueError):
+    count = 0
+print("service_send_count=" + str(count))
+PYSMOKE
+    )"
+    eval "$smoke_eval"
+  fi
+
+  if $helper_present && $ui_state_hook_present && $runtime_flavor_constant_present &&      $socket_path_present && $socket_env_present && $frame_version_present && $unix_socket_present &&      $framing_present && $compact_json_present && $payload_helpers_present && $publish_paths_present &&      $risk_fields_present && $legacy_bucket_markers_absent && $exporter_install_present &&      $exporter_publish_present && $onroad_camera_relay_present && $onroad_projection_present &&      $payload_smoke_passed && $critical_services_publishable; then
     state="patch-verified"
-    reason="source transformer socket UI export markers verified; runtime telemetry not proven"
+    reason="source transformer socket UI export markers and generated helper smoke verified; runtime telemetry not proven"
     patch_verified=true
     repair_needed=false
   else
     state="repair-needed"
-    reason="source transformer socket UI export markers missing from upstream UI tree"
+    reason="source transformer socket UI export markers or generated helper smoke missing from upstream UI tree"
   fi
 fi
 
@@ -334,6 +364,10 @@ json="$(
   ONROAD_PROJECTION_PRESENT="$onroad_projection_present" \
   TRANSFORMER_PRESENT="$transformer_present" \
   TEMPLATE_PRESENT="$template_present" \
+  SMOKE_SCRIPT_PRESENT="$smoke_script_present" \
+  PAYLOAD_SMOKE_PASSED="$payload_smoke_passed" \
+  CRITICAL_SERVICES_PUBLISHABLE="$critical_services_publishable" \
+  SERVICE_SEND_COUNT="$service_send_count" \
   SERVICE_MARKER_COUNT="$service_marker_count" \
   python3 - <<'PYJSON'
 import json
@@ -380,6 +414,10 @@ payload = {
     "onroadProjectionPresent": env_bool("ONROAD_PROJECTION_PRESENT"),
     "transformerPresent": env_bool("TRANSFORMER_PRESENT"),
     "templatePresent": env_bool("TEMPLATE_PRESENT"),
+    "smokeScriptPresent": env_bool("SMOKE_SCRIPT_PRESENT"),
+    "payloadSmokePassed": env_bool("PAYLOAD_SMOKE_PASSED"),
+    "criticalServicesPublishable": env_bool("CRITICAL_SERVICES_PUBLISHABLE"),
+    "serviceSendCount": env_int("SERVICE_SEND_COUNT"),
     "serviceMarkerCount": env_int("SERVICE_MARKER_COUNT"),
 }
 print(json.dumps(payload, separators=(",", ":")))

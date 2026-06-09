@@ -231,28 +231,42 @@ class _CommaViewSocketExporter:
       self._close()
 
   def publish(self, ui_state) -> None:
+    services = (
+      (COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX, self._ui_state_onroad_payload),
+      (COMMAVIEW_SELFDRIVE_STATE_SERVICE_INDEX, self._selfdrive_state_payload),
+      (COMMAVIEW_CAR_STATE_SERVICE_INDEX, self._car_state_payload),
+      (COMMAVIEW_CONTROLS_STATE_SERVICE_INDEX, self._controls_state_payload),
+      (COMMAVIEW_ONROAD_EVENTS_SERVICE_INDEX, self._onroad_events_payload),
+      (COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX, self._driver_monitoring_state_payload),
+      (COMMAVIEW_DRIVER_STATE_V2_SERVICE_INDEX, self._driver_state_v2_payload),
+      (COMMAVIEW_MODEL_V2_SERVICE_INDEX, self._model_v2_payload),
+      (COMMAVIEW_RADAR_STATE_SERVICE_INDEX, self._radar_state_payload),
+      (COMMAVIEW_LIVE_CALIBRATION_SERVICE_INDEX, self._live_calibration_payload),
+      (COMMAVIEW_CAR_OUTPUT_SERVICE_INDEX, self._car_output_payload),
+      (COMMAVIEW_CAR_CONTROL_SERVICE_INDEX, self._car_control_payload),
+      (COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX, self._live_parameters_payload),
+      (COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX, self._longitudinal_plan_payload),
+      (COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload),
+      (COMMAVIEW_DEVICE_STATE_SERVICE_INDEX, self._device_state_payload),
+      (COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX, self._road_camera_state_payload),
+      (COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX, self._panda_states_summary_payload),
+      (COMMAVIEW_WIDE_ROAD_CAMERA_STATE_SERVICE_INDEX, self._wide_road_camera_state_payload),
+    )
+    for service_index, payload_fn in services:
+      self._publish_json(service_index, payload_fn, ui_state)
+    if self._latest_onroad_projection is not None:
+      self._publish_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)
+
+  def _publish_json(self, service_index: int, payload_fn, ui_state) -> None:
     try:
-      self._send_json(COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX, self._ui_state_onroad_payload(ui_state))
-      self._send_json(COMMAVIEW_SELFDRIVE_STATE_SERVICE_INDEX, self._selfdrive_state_payload(ui_state))
-      self._send_json(COMMAVIEW_CAR_STATE_SERVICE_INDEX, self._car_state_payload(ui_state))
-      self._send_json(COMMAVIEW_CONTROLS_STATE_SERVICE_INDEX, self._controls_state_payload(ui_state))
-      self._send_json(COMMAVIEW_ONROAD_EVENTS_SERVICE_INDEX, self._onroad_events_payload(ui_state))
-      self._send_json(COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX, self._driver_monitoring_state_payload(ui_state))
-      self._send_json(COMMAVIEW_DRIVER_STATE_V2_SERVICE_INDEX, self._driver_state_v2_payload(ui_state))
-      self._send_json(COMMAVIEW_MODEL_V2_SERVICE_INDEX, self._model_v2_payload(ui_state))
-      self._send_json(COMMAVIEW_RADAR_STATE_SERVICE_INDEX, self._radar_state_payload(ui_state))
-      self._send_json(COMMAVIEW_LIVE_CALIBRATION_SERVICE_INDEX, self._live_calibration_payload(ui_state))
-      self._send_json(COMMAVIEW_CAR_OUTPUT_SERVICE_INDEX, self._car_output_payload(ui_state))
-      self._send_json(COMMAVIEW_CAR_CONTROL_SERVICE_INDEX, self._car_control_payload(ui_state))
-      self._send_json(COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX, self._live_parameters_payload(ui_state))
-      self._send_json(COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX, self._longitudinal_plan_payload(ui_state))
-      self._send_json(COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload(ui_state))
-      self._send_json(COMMAVIEW_DEVICE_STATE_SERVICE_INDEX, self._device_state_payload(ui_state))
-      self._send_json(COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX, self._road_camera_state_payload(ui_state))
-      self._send_json(COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX, self._panda_states_summary_payload(ui_state))
-      if self._latest_onroad_projection is not None:
-        self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)
-      self._send_json(COMMAVIEW_WIDE_ROAD_CAMERA_STATE_SERVICE_INDEX, self._wide_road_camera_state_payload(ui_state))
+      payload = payload_fn(ui_state)
+    except Exception:
+      return
+    self._publish_payload(service_index, payload)
+
+  def _publish_payload(self, service_index: int, payload: dict) -> None:
+    try:
+      self._send_json(service_index, payload)
     except OSError:
       self._close()
 
@@ -518,16 +532,20 @@ class _CommaViewSocketExporter:
     }
     if ui_state.sm.recv_frame["driverMonitoringState"] >= ui_state.started_frame:
       driver_monitoring = ui_state.sm["driverMonitoringState"]
+      vision_policy = getattr(driver_monitoring, "visionPolicyState", None)
+      pose = getattr(vision_policy, "pose", None)
+      yaw_calib = getattr(pose, "yawCalib", None)
+      pitch_calib = getattr(pose, "pitchCalib", None)
       payload.update({
-        "faceDetected": bool(driver_monitoring.faceDetected),
-        "isDistracted": bool(driver_monitoring.isDistracted),
-        "isRHD": bool(driver_monitoring.isRHD),
-        "poseYawOffset": _safe_float(driver_monitoring.poseYawOffset),
-        "posePitchOffset": _safe_float(driver_monitoring.posePitchOffset),
-        "poseYawValidCount": _safe_int(driver_monitoring.poseYawValidCount),
-        "posePitchValidCount": _safe_int(driver_monitoring.posePitchValidCount),
-        "isLowStd": bool(driver_monitoring.isLowStd),
-        "isActiveMode": bool(driver_monitoring.isActiveMode),
+        "faceDetected": bool(getattr(driver_monitoring, "faceDetected", getattr(vision_policy, "faceDetected", False))),
+        "isDistracted": bool(getattr(driver_monitoring, "isDistracted", getattr(vision_policy, "isDistracted", False))),
+        "isRHD": bool(getattr(driver_monitoring, "isRHD", False)),
+        "poseYawOffset": _safe_float(getattr(driver_monitoring, "poseYawOffset", getattr(yaw_calib, "offset", 0.0))),
+        "posePitchOffset": _safe_float(getattr(driver_monitoring, "posePitchOffset", getattr(pitch_calib, "offset", 0.0))),
+        "poseYawValidCount": _safe_int(getattr(driver_monitoring, "poseYawValidCount", getattr(yaw_calib, "calibratedPercent", 0))),
+        "posePitchValidCount": _safe_int(getattr(driver_monitoring, "posePitchValidCount", getattr(pitch_calib, "calibratedPercent", 0))),
+        "isLowStd": bool(getattr(driver_monitoring, "isLowStd", False)),
+        "isActiveMode": bool(getattr(driver_monitoring, "isActiveMode", False)),
       })
     return payload
 

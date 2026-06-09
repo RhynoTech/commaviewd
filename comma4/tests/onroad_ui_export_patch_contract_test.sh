@@ -5,6 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OPENPILOT_TEMPLATE="$REPO_ROOT/comma4/src/commaview_export.openpilot.py"
 SUNNYPILOT_TEMPLATE="$REPO_ROOT/comma4/src/commaview_export.sunnypilot.py"
 TRANSFORMER="$REPO_ROOT/comma4/scripts/transform_onroad_ui_export.py"
+SMOKE_SCRIPT="$REPO_ROOT/comma4/scripts/smoke_onroad_ui_export_helper.py"
 INSTALLER="$REPO_ROOT/comma4/install.sh"
 APPLY_SCRIPT="$REPO_ROOT/comma4/scripts/apply_onroad_ui_export_patch.sh"
 VERIFY_SCRIPT="$REPO_ROOT/comma4/scripts/verify_onroad_ui_export_patch.sh"
@@ -106,6 +107,7 @@ legacy_markers=(
 )
 
 [[ -f "$TRANSFORMER" ]] || fail "missing transformer $TRANSFORMER"
+[[ -f "$SMOKE_SCRIPT" ]] || fail "missing helper smoke script $SMOKE_SCRIPT"
 [[ -f "$APPLY_SCRIPT" ]] || fail "missing apply script $APPLY_SCRIPT"
 [[ -f "$VERIFY_SCRIPT" ]] || fail "missing verify script $VERIFY_SCRIPT"
 grep -Fq 'python3 "$TRANSFORMER" --op-root "$OP_ROOT" --flavor "$flavor"' "$APPLY_SCRIPT" || fail "apply script does not invoke transformer"
@@ -115,6 +117,10 @@ grep -Fq 'json.dumps(payload, separators=(",", ":"))' "$VERIFY_SCRIPT" || fail "
 grep -Fq '"src/commaview_export.openpilot.py"' "$INSTALLER" || fail "installer missing openpilot helper template"
 grep -Fq '"src/commaview_export.sunnypilot.py"' "$INSTALLER" || fail "installer missing sunnypilot helper template"
 grep -Fq '"scripts/transform_onroad_ui_export.py"' "$INSTALLER" || fail "installer missing transformer script"
+grep -Fq '"scripts/smoke_onroad_ui_export_helper.py"' "$INSTALLER" || fail "installer missing helper smoke script"
+grep -Fq 'smoke_onroad_ui_export_helper.py' "$VERIFY_SCRIPT" || fail "verify script missing generated helper smoke gate"
+grep -Fq '"payloadSmokePassed"' "$VERIFY_SCRIPT" || fail "verify script missing payload smoke status"
+grep -Fq '"criticalServicesPublishable"' "$VERIFY_SCRIPT" || fail "verify script missing critical service smoke status"
 ! grep -Fq 'git -C "$OP_ROOT" apply' "$APPLY_SCRIPT" || fail "apply script still uses static git apply lifecycle"
 
 for template in "$OPENPILOT_TEMPLATE" "$SUNNYPILOT_TEMPLATE"; do
@@ -131,16 +137,18 @@ for template in "$OPENPILOT_TEMPLATE" "$SUNNYPILOT_TEMPLATE"; do
   grep -Fq 'socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' "$template" || fail "$template missing unix socket client"
   grep -Fq 'struct.pack(">I", len(frame)) + frame' "$template" || fail "$template missing framing"
   grep -Fq 'json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")' "$template" || fail "$template missing compact json encoding"
-  grep -Fq 'self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$template" || fail "$template missing immediate onroad projection export"
+  grep -Fq 'self._publish_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$template" || fail "$template missing immediate onroad projection export"
   grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$template" || fail "$template missing torque helper import"
   grep -Fq 'def _torque_bar_value(ui_state) -> float:' "$template" || fail "$template missing torque bar helper"
+  grep -Fq 'def _publish_json(self, service_index: int, payload_fn, ui_state) -> None:' "$template" || fail "$template missing per-service publish wrapper"
+  grep -Fq 'except Exception:' "$template" || fail "$template missing per-service payload isolation"
 
   for marker in "${payload_markers[@]}"; do
     grep -Fq "$marker" "$template" || fail "$template missing payload marker: $marker"
   done
 
   for const_name in "${service_consts[@]}"; do
-    grep -Fq "self._send_json(${const_name}, self._" "$template" || fail "$template missing publish path for $const_name"
+    grep -Fq "(${const_name}, self._" "$template" || fail "$template missing publish path for $const_name"
   done
 
   for marker in "${risk_markers[@]}"; do

@@ -71,6 +71,27 @@ std::string unix_ts_json() {
   return std::string(buf);
 }
 
+template <typename T, typename = void>
+struct has_car_state_brake : std::false_type {};
+template <typename T>
+struct has_car_state_brake<T, std::void_t<decltype(std::declval<T>().getBrake())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_car_state_brake_deprecated : std::false_type {};
+template <typename T>
+struct has_car_state_brake_deprecated<T, std::void_t<decltype(std::declval<T>().getBrakeDEPRECATED())>> : std::true_type {};
+
+template <typename CarStateReader>
+float car_state_brake(CarStateReader cs) {
+  if constexpr (has_car_state_brake<CarStateReader>::value) {
+    return cs.getBrake();
+  } else if constexpr (has_car_state_brake_deprecated<CarStateReader>::value) {
+    return cs.getBrakeDEPRECATED();
+  } else {
+    return 0.0f;
+  }
+}
+
 std::string trim_copy(const std::string& in) {
   size_t s = 0;
   while (s < in.size() && std::isspace(static_cast<unsigned char>(in[s]))) s++;
@@ -287,7 +308,7 @@ std::string build_car_state_json(cereal::CarState::Reader cs, uint64_t log_mono_
   s += "\"vCruiseCluster\":" + json_num(cs.getVCruiseCluster()) + ",";
   s += "\"yawRate\":" + json_num(cs.getYawRate()) + ",";
   s += "\"standstill\":" + json_bool(cs.getStandstill()) + ",";
-  s += "\"brake\":" + json_num(cs.getBrake()) + ",";
+  s += "\"brake\":" + json_num(car_state_brake(cs)) + ",";
   s += "\"regenBraking\":" + json_bool(cs.getRegenBraking()) + ",";
   s += "\"parkingBrake\":" + json_bool(cs.getParkingBrake()) + ",";
   s += "\"brakeHoldActive\":" + json_bool(cs.getBrakeHoldActive()) + ",";
