@@ -38,6 +38,18 @@ state_value() {
   sed -n "s/^${key}=//p" "$STATE_ENV" | tail -n 1 | sed 's/^"//; s/"$//'
 }
 
+upstream_head() {
+  git -C "$OP_ROOT" rev-parse HEAD 2>/dev/null || true
+}
+
+upstream_remote() {
+  git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true
+}
+
+upstream_branch() {
+  git -C "$OP_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true
+}
+
 remote_flavor() {
   local remote="$1"
   remote="${remote%.git}"
@@ -206,6 +218,17 @@ critical_services_publishable=false
 service_send_count=0
 fingerprint=""
 service_marker_count=0
+upstream_head_value=""
+upstream_remote_value=""
+upstream_branch_value=""
+applied_upstream_head="$(state_value ONROAD_UI_EXPORT_UPSTREAM_HEAD || true)"
+upstream_changed_since_apply=false
+
+if git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  upstream_head_value="$(upstream_head)"
+  upstream_remote_value="$(upstream_remote)"
+  upstream_branch_value="$(upstream_branch)"
+fi
 
 if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   state="missing-repo"; reason="upstream repo not found at $OP_ROOT"
@@ -322,10 +345,19 @@ PYSMOKE
   fi
 
   if $helper_present && $ui_state_hook_present && $runtime_flavor_constant_present &&      $socket_path_present && $socket_env_present && $frame_version_present && $unix_socket_present &&      $framing_present && $compact_json_present && $payload_helpers_present && $publish_paths_present &&      $risk_fields_present && $legacy_bucket_markers_absent && $exporter_install_present &&      $exporter_publish_present && $onroad_camera_relay_present && $onroad_projection_present &&      $payload_smoke_passed && $critical_services_publishable; then
-    state="patch-verified"
-    reason="source transformer socket UI export markers and generated helper smoke verified; runtime telemetry not proven"
-    patch_verified=true
-    repair_needed=false
+    if [ -z "$applied_upstream_head" ]; then
+      state="repair-needed"
+      reason="source transformer socket UI export markers verified but patch provenance is missing; rerun repair against the current upstream checkout"
+    elif [ -n "$upstream_head_value" ] && [ "$applied_upstream_head" != "$upstream_head_value" ]; then
+      state="repair-needed"
+      reason="upstream checkout changed since patch was applied; rerun repair to regenerate the matching CommaView UI export patch"
+      upstream_changed_since_apply=true
+    else
+      state="patch-verified"
+      reason="source transformer socket UI export markers and generated helper smoke verified for current upstream checkout; runtime telemetry not proven"
+      patch_verified=true
+      repair_needed=false
+    fi
   else
     state="repair-needed"
     reason="source transformer socket UI export markers or generated helper smoke missing from upstream UI tree"
@@ -369,6 +401,11 @@ json="$(
   CRITICAL_SERVICES_PUBLISHABLE="$critical_services_publishable" \
   SERVICE_SEND_COUNT="$service_send_count" \
   SERVICE_MARKER_COUNT="$service_marker_count" \
+  UPSTREAM_HEAD="$upstream_head_value" \
+  UPSTREAM_REMOTE="$upstream_remote_value" \
+  UPSTREAM_BRANCH="$upstream_branch_value" \
+  APPLIED_UPSTREAM_HEAD="$applied_upstream_head" \
+  UPSTREAM_CHANGED_SINCE_APPLY="$upstream_changed_since_apply" \
   python3 - <<'PYJSON'
 import json
 import os
@@ -419,18 +456,25 @@ payload = {
     "criticalServicesPublishable": env_bool("CRITICAL_SERVICES_PUBLISHABLE"),
     "serviceSendCount": env_int("SERVICE_SEND_COUNT"),
     "serviceMarkerCount": env_int("SERVICE_MARKER_COUNT"),
+    "upstreamHead": os.environ.get("UPSTREAM_HEAD", ""),
+    "upstreamRemote": os.environ.get("UPSTREAM_REMOTE", ""),
+    "upstreamBranch": os.environ.get("UPSTREAM_BRANCH", ""),
+    "appliedUpstreamHead": os.environ.get("APPLIED_UPSTREAM_HEAD", ""),
+    "upstreamChangedSinceApply": env_bool("UPSTREAM_CHANGED_SINCE_APPLY"),
 }
 print(json.dumps(payload, separators=(",", ":")))
 PYJSON
 )"
 printf '%s
 ' "$json" > "$STATE_JSON"
-if [ -n "$fingerprint" ]; then
+if [ -n "$fingerprint" ] && $patch_verified; then
   printf 'ONROAD_UI_EXPORT_FLAVOR=%s
 ONROAD_UI_EXPORT_METHOD=transformer
 ONROAD_UI_EXPORT_TRANSFORMER_SHA=%s
 ONROAD_UI_EXPORT_OP_ROOT=%s
-' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
+ONROAD_UI_EXPORT_UPSTREAM_HEAD=%s
+ONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s
+' "$flavor" "$fingerprint" "$OP_ROOT" "$upstream_head_value" "$upstream_remote_value" > "$STATE_ENV"
 fi
 printf '%s
 ' "$json"

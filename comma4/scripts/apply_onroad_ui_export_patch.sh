@@ -278,6 +278,14 @@ state_value() {
   sed -n "s/^${key}=//p" "$STATE_ENV" | tail -n 1 | sed 's/^"//; s/"$//'
 }
 
+upstream_head() {
+  git -C "$OP_ROOT" rev-parse HEAD 2>/dev/null || true
+}
+
+upstream_remote() {
+  git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true
+}
+
 remote_flavor() {
   local remote="$1"
   remote="${remote%.git}"
@@ -343,6 +351,12 @@ if ! transform_backup_root="$(backup_managed_targets)"; then
   echo "ERROR: failed to back up managed onroad UI export transformer targets before transform" >&2
   exit 1
 fi
+state_env_backup="$transform_backup_root/onroad-ui-export-patch.env.before"
+state_env_existed=0
+if [ -f "$STATE_ENV" ]; then
+  cp "$STATE_ENV" "$state_env_backup"
+  state_env_existed=1
+fi
 if python3 "$TRANSFORMER" --op-root "$OP_ROOT" --flavor "$flavor"; then
   :
 else
@@ -364,6 +378,18 @@ else
   exit "$transform_ec"
 fi
 
+fingerprint="$(sha256sum "$TRANSFORMER" "$template" | sha256sum | awk '{print $1}')"
+current_upstream_head="$(upstream_head)"
+current_upstream_remote="$(upstream_remote)"
+mkdir -p "$(dirname "$STATE_ENV")"
+printf 'ONROAD_UI_EXPORT_FLAVOR=%s
+ONROAD_UI_EXPORT_METHOD=transformer
+ONROAD_UI_EXPORT_TRANSFORMER_SHA=%s
+ONROAD_UI_EXPORT_OP_ROOT=%s
+ONROAD_UI_EXPORT_UPSTREAM_HEAD=%s
+ONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s
+' "$flavor" "$fingerprint" "$OP_ROOT" "$current_upstream_head" "$current_upstream_remote" > "$STATE_ENV"
+
 if [ -x "$VERIFY_SCRIPT" ]; then
   verify_ec=0
   "$VERIFY_SCRIPT" --json || verify_ec=$?
@@ -381,6 +407,15 @@ if [ -x "$VERIFY_SCRIPT" ]; then
   rollback_match_ec=0
   restore_managed_targets_from_backup "$transform_backup_root" || restore_ec=$?
   managed_targets_match_backup "$transform_backup_root" || rollback_match_ec=$?
+  state_restore_ec=0
+  if [ "$state_env_existed" -eq 1 ]; then
+    cp "$state_env_backup" "$STATE_ENV" || state_restore_ec=$?
+  else
+    rm -f "$STATE_ENV" || state_restore_ec=$?
+  fi
+  if [ "$state_restore_ec" -ne 0 ]; then
+    echo "WARN: failed to restore onroad UI export patch state after verification rollback" >&2
+  fi
   if [ "$restore_ec" -eq 0 ] && [ "$rollback_match_ec" -eq 0 ]; then
     echo "ERROR: verification failed; restored managed targets from $transform_backup_root" >&2
   else
@@ -390,11 +425,15 @@ if [ -x "$VERIFY_SCRIPT" ]; then
 fi
 
 fingerprint="$(sha256sum "$TRANSFORMER" "$template" | sha256sum | awk '{print $1}')"
+current_upstream_head="$(upstream_head)"
+current_upstream_remote="$(upstream_remote)"
 mkdir -p "$(dirname "$STATE_ENV")"
 printf 'ONROAD_UI_EXPORT_FLAVOR=%s
 ONROAD_UI_EXPORT_METHOD=transformer
 ONROAD_UI_EXPORT_TRANSFORMER_SHA=%s
 ONROAD_UI_EXPORT_OP_ROOT=%s
-' "$flavor" "$fingerprint" "$OP_ROOT" > "$STATE_ENV"
+ONROAD_UI_EXPORT_UPSTREAM_HEAD=%s
+ONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s
+' "$flavor" "$fingerprint" "$OP_ROOT" "$current_upstream_head" "$current_upstream_remote" > "$STATE_ENV"
 request_openpilot_ui_restart
 restart_openpilot_ui_if_offroad

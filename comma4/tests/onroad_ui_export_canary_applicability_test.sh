@@ -205,6 +205,8 @@ run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-n
 run_ref 'openpilot release-mici' "$OPENPILOT_REPO" 'release-mici' "$CACHE_ROOT/openpilot-release-mici" 'OPENPILOT'
 run_ref 'openpilot release-mici-staging' "$OPENPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/openpilot-release-mici-staging" 'OPENPILOT'
 
+run_ref 'sunnypilot master' "$SUNNYPILOT_REPO" 'master' "$CACHE_ROOT/sunnypilot-master" 'SUNNYPILOT'
+run_ref 'sunnypilot latest May release tag' "$SUNNYPILOT_REPO" 'v2026.001.007' "$CACHE_ROOT/sunnypilot-v2026.001.007" 'SUNNYPILOT'
 run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" 'SUNNYPILOT'
 run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" 'SUNNYPILOT'
 run_ref 'sunnypilot release-mici' "$SUNNYPILOT_REPO" 'release-mici' "$CACHE_ROOT/sunnypilot-release-mici" 'SUNNYPILOT'

@@ -562,8 +562,10 @@ def prepare_lifecycle_install_dir(tmp_path: Path, op_root: Path) -> Path:
     (install_dir / "src").mkdir(parents=True)
     (install_dir / "config").mkdir(parents=True)
     shutil.copy2(TRANSFORMER, install_dir / "scripts" / "transform_onroad_ui_export.py")
+    shutil.copy2(SMOKE_SCRIPT, install_dir / "scripts" / "smoke_onroad_ui_export_helper.py")
     shutil.copy2(APPLY_SCRIPT, install_dir / "scripts" / "apply_onroad_ui_export_patch.sh")
     shutil.copy2(REVERT_SCRIPT, install_dir / "scripts" / "revert_onroad_ui_export_patch.sh")
+    shutil.copy2(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir / "scripts" / "verify_onroad_ui_export_patch.sh")
     shutil.copy2(OPENPILOT_TEMPLATE, install_dir / "src" / "commaview_export.openpilot.py")
     shutil.copy2(SUNNYPILOT_TEMPLATE, install_dir / "src" / "commaview_export.sunnypilot.py")
     (install_dir / "config" / "onroad-ui-export-patch.env").write_text(
@@ -1019,6 +1021,7 @@ def test_apply_script_rolls_back_when_post_transform_verify_fails(tmp_path):
         Path("selfdrive/ui/onroad/augmented_road_view.py"),
     ]
     originals = {rel: (op_root / rel).read_text() for rel in managed_paths}
+    original_state_env = (install_dir / "config" / "onroad-ui-export-patch.env").read_text()
 
     result = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root)
 
@@ -1028,6 +1031,7 @@ def test_apply_script_rolls_back_when_post_transform_verify_fails(tmp_path):
     for rel, original in originals.items():
         assert (op_root / rel).read_text() == original
     assert not (op_root / HELPER_PATH).exists()
+    assert (install_dir / "config" / "onroad-ui-export-patch.env").read_text() == original_state_env
     status = subprocess.check_output(
         [
             "git",
@@ -1174,6 +1178,55 @@ def test_apply_script_accepts_sunnypilot_openpilot_remote(tmp_path):
     assert result.returncode == 0, result.stderr
     assert_ui_state_transformed(op_root / "selfdrive" / "ui" / "ui_state.py")
     assert "ONROAD_UI_EXPORT_FLAVOR=sunnypilot" in (install_dir / "config" / "onroad-ui-export-patch.env").read_text()
+
+
+def test_apply_records_upstream_head_and_verify_reports_matching_checkout(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/commaai/openpilot.git"], cwd=op_root, check=True)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    expected_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=op_root, text=True).strip()
+
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+
+    assert applied.returncode == 0, applied.stderr
+    state_env = (install_dir / "config" / "onroad-ui-export-patch.env").read_text()
+    assert f"ONROAD_UI_EXPORT_UPSTREAM_HEAD={expected_head}" in state_env
+
+    verified = run_lifecycle_script(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
+
+    assert verified.returncode == 0, verified.stdout
+    status = json.loads(verified.stdout)
+    assert status["patchVerified"] is True
+    assert status["upstreamHead"] == expected_head
+    assert status["appliedUpstreamHead"] == expected_head
+    assert status["upstreamChangedSinceApply"] is False
+
+
+def test_verify_requests_repair_when_upstream_head_changed_since_apply(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/commaai/openpilot.git"], cwd=op_root, check=True)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair")
+    assert applied.returncode == 0, applied.stderr
+    applied_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=op_root, text=True).strip()
+    (op_root / "CHANGELOG.md").write_text("upstream changed\n")
+    subprocess.run(["git", "add", "CHANGELOG.md"], cwd=op_root, check=True)
+    subprocess.run(["git", "commit", "-m", "upstream update"], cwd=op_root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    current_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=op_root, text=True).strip()
+
+    result = run_lifecycle_script(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
+
+    assert result.returncode == 1
+    status = json.loads(result.stdout)
+    assert status["patchVerified"] is False
+    assert status["repairNeeded"] is True
+    assert status["state"] == "repair-needed"
+    assert status["upstreamHead"] == current_head
+    assert status["appliedUpstreamHead"] == applied_head
+    assert status["upstreamChangedSinceApply"] is True
+    assert "upstream checkout changed since patch was applied" in status["reason"]
 
 
 def test_apply_script_rejects_unsupported_upstream_fork_even_with_state_flavor(tmp_path):
