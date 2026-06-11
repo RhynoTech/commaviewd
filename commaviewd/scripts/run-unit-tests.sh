@@ -87,11 +87,6 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
   "$ROOT/src/video_transport_policy.cpp" \
   -o "$TMP/test_video_transport_policy"
 
-"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" -DCOMMAVIEW_VIDEO_CHUNK_PROTOCOL_TESTING \
-  "$ROOT/tests/test_video_chunk_protocol.cpp" \
-  "$ROOT/src/video_chunk_protocol.cpp" \
-  -o "$TMP/test_video_chunk_protocol"
-
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
   "$ROOT/tests/test_udp_video_protocol.cpp" \
   "$ROOT/src/udp_video_protocol.cpp" \
@@ -141,7 +136,6 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
 "$TMP/test_telemetry_stats"
 "$TMP/test_telemetry_policy"
 "$TMP/test_video_transport_policy"
-"$TMP/test_video_chunk_protocol"
 "$TMP/test_udp_video_protocol"
 "$TMP/test_udp_video_packetizer"
 "$TMP/test_udp_video_repair_cache"

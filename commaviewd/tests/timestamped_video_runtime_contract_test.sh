@@ -49,7 +49,6 @@ assert_contains_fixed "frame.is_keyframe = queued->is_keyframe;" "$BRIDGE_CPP" "
 assert_contains_fixed "frame.codec_header = queued->codec_header;" "$BRIDGE_CPP" "bridge must pass codec header into UDP packetizer"
 assert_contains_fixed "frame.data = queued->data;" "$BRIDGE_CPP" "bridge must pass frame bytes into UDP packetizer"
 assert_contains_fixed "udp_video_sender.send_frame(frame, runtime_now_ns())" "$BRIDGE_CPP" "runtime bridge must send timestamped UDP video frames"
-assert_not_contains_fixed "payload.push_back(MSG_VIDEO_CHUNK);" "$BRIDGE_CPP" "runtime bridge should not send chunked TCP video payloads"
-assert_not_contains_fixed "encode_video_chunk_payload(chunk)" "$BRIDGE_CPP" "runtime bridge should not encode chunked TCP video payloads"
+assert_not_contains_fixed "send_frame_locked(" "$BRIDGE_CPP" "runtime bridge should not keep the old TCP video send helper"
 
 echo "timestamped_video_runtime_contract_test: PASS"

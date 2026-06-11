@@ -71,14 +71,15 @@ for label, needle in sender_required.items():
         raise SystemExit(f'missing {label}: {needle}')
 
 for forbidden in [
-    'const auto chunks = commaview::video::plan_video_chunks(',
-    'const auto payload = commaview::video::encode_video_chunk_payload(chunk);',
-    'const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);',
-    'note_video_chunk_send_result(video_service, chunk, send_result);',
-    'note_runtime_peer_disconnect(video_service, "video_chunk_send", send_result);',
+    '#include "video_' + 'chunk_protocol.h"',
+    'commaview::video::Video' + 'Chunk',
+    'plan_video_' + 'chunks(',
+    'encode_video_' + 'chunk_payload(',
+    'send_frame_locked(client_fd,',
+    'note_video_' + 'chunk_send_result(',
 ]:
     if forbidden in bridge:
-        raise SystemExit(f'bridge must not use chunked TCP as primary video path: {forbidden}')
+        raise SystemExit(f'bridge must not use retired TCP camera video path: {forbidden}')
 
 if not re.search(
     r'commaview::video::UdpVideoFrameForPacketizing\s+frame\s*;.*?frame\.stream_id\s*=\s*udp_stream_id\s*;.*?frame\.frame_sequence\s*=\s*.*?queued->sequence.*?frame\.timestamp_nanos\s*=\s*queued->timestamp_ns\s*;.*?frame\.width\s*=\s*queued->width\s*;.*?frame\.height\s*=\s*queued->height\s*;.*?frame\.is_keyframe\s*=\s*queued->is_keyframe\s*;.*?frame\.codec_header\s*=\s*queued->codec_header\s*;.*?frame\.data\s*=\s*queued->data\s*;.*?udp_video_sender\.send_frame\(frame, runtime_now_ns\(\)\)',

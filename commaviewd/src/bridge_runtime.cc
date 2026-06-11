@@ -7,7 +7,6 @@
 #include "runtime_video_send_accounting.h"
 #include "ui_export_socket.h"
 #include "udp_video_sender.h"
-#include "video_chunk_protocol.h"
 #include "video_transport_policy.h"
 /**
  * CommaView Unified Bridge (C++)
@@ -487,17 +486,6 @@ static void note_video_queued_frame_age(uint64_t age_ms) {
       age_ms);
 }
 
-static void note_video_chunk_send_result(const char* /*stream*/,
-                                         const commaview::video::VideoChunk& chunk,
-                                         const commaview::net::SendResult& result) {
-  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  commaview::runtime::note_video_chunk_send_result(
-      g_runtime_state.video_send,
-      chunk,
-      result,
-      runtime_now_ms());
-}
-
 static void note_udp_video_send_stats(const commaview::video::UdpVideoSendStats& stats) {
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
   g_runtime_state.video_send.udp_packets_sent += stats.packets_sent;
@@ -518,24 +506,6 @@ static void note_udp_video_repair_stats(const commaview::video::UdpVideoRepairSt
   g_runtime_state.video_send.udp_repair_cache_high_watermark_bytes = std::max<uint64_t>(
       g_runtime_state.video_send.udp_repair_cache_high_watermark_bytes,
       stats.repair_cache_high_watermark_bytes);
-}
-
-static void note_video_frame_abandoned(const char* stream, uint64_t sequence, uint16_t chunk_index) {
-  {
-    std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-    g_runtime_state.video_send.frame_abandon_count += 1;
-  }
-  printf("[%s] abandoned video frame seq=%llu at chunk=%u\n",
-         stream == nullptr ? "unknown" : stream,
-         static_cast<unsigned long long>(sequence),
-         static_cast<unsigned int>(chunk_index));
-  fflush(stdout);
-}
-
-static uint32_t chunk_wire_sequence(uint64_t queue_sequence) {
-  // Chunk protocol carries a 32-bit frame sequence; the long-running queue sequence
-  // intentionally wraps modulo 2^32 on the wire.
-  return static_cast<uint32_t>(queue_sequence);
 }
 
 static commaview::net::SendResult peer_closed_result() {
@@ -590,25 +560,6 @@ static void consume_client_control_frames(int client_fd,
                                           ClientControlState* state,
                                           const char* video_service) {
   commaview::control::consume_client_control_frames(client_fd, state, video_service, MSG_CONTROL);
-}
-
-static commaview::net::SendResult send_frame_locked(int fd,
-                                                    const uint8_t* payload,
-                                                    size_t payload_len,
-                                                    std::mutex* send_mutex) {
-  if (send_mutex != nullptr) {
-    std::lock_guard<std::mutex> send_lock(*send_mutex);
-    return commaview::net::send_frame_bounded(
-        fd,
-        payload,
-        payload_len,
-        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
-  }
-  return commaview::net::send_frame_bounded(
-      fd,
-      payload,
-      payload_len,
-      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
 }
 
 static bool client_socket_alive(int fd) {

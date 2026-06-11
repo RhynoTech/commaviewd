@@ -44,33 +44,6 @@ void note_video_send_result(RuntimeVideoSendStats& stats,
   }
 }
 
-void note_video_chunk_send_result(RuntimeVideoSendStats& stats,
-                                  const commaview::video::VideoChunk& chunk,
-                                  const commaview::net::SendResult& result,
-                                  uint64_t now_ms) {
-  note_video_send_result(stats, result, now_ms);
-
-  if (chunk.is_first) stats.frames_chunked += 1;
-  stats.max_chunks_per_frame = std::max<uint64_t>(
-      stats.max_chunks_per_frame,
-      static_cast<uint64_t>(chunk.chunk_count));
-  stats.max_chunk_send_micros = std::max(
-      stats.max_chunk_send_micros,
-      result.elapsed_micros);
-
-  if (result.status == commaview::net::SendStatus::Ok) {
-    stats.chunks_sent += 1;
-    return;
-  }
-
-  if (result.status == commaview::net::SendStatus::Backpressure && result.bytes_sent == 0) {
-    stats.zero_byte_chunk_backpressure_count += 1;
-  }
-  if (result.bytes_sent > 0) {
-    stats.partial_chunk_reset_count += 1;
-  }
-}
-
 std::string video_send_stats_json(const RuntimeVideoSendStats& stats) {
   std::ostringstream out;
   out << "{";
@@ -79,13 +52,7 @@ std::string video_send_stats_json(const RuntimeVideoSendStats& stats) {
   out << "\"disconnectCount\":" << stats.disconnect_count << ",";
   out << "\"partialResetCount\":" << stats.partial_reset_count << ",";
   out << "\"zeroByteDropCount\":" << stats.zero_byte_drop_count << ",";
-  out << "\"chunksSent\":" << stats.chunks_sent << ",";
-  out << "\"framesChunked\":" << stats.frames_chunked << ",";
   out << "\"frameAbandonCount\":" << stats.frame_abandon_count << ",";
-  out << "\"zeroByteChunkBackpressureCount\":" << stats.zero_byte_chunk_backpressure_count << ",";
-  out << "\"partialChunkResetCount\":" << stats.partial_chunk_reset_count << ",";
-  out << "\"maxChunksPerFrame\":" << stats.max_chunks_per_frame << ",";
-  out << "\"maxChunkSendMicros\":" << stats.max_chunk_send_micros << ",";
   out << "\"queueDropCount\":" << stats.queue_drop_count << ",";
   out << "\"keyframeWaitDropCount\":" << stats.keyframe_wait_drop_count << ",";
   out << "\"queueHighWatermark\":" << stats.queue_high_watermark << ",";

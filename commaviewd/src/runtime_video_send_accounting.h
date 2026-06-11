@@ -1,7 +1,6 @@
 #pragma once
 
 #include "framing.h"
-#include "video_chunk_protocol.h"
 
 #include <cstdint>
 #include <string>
@@ -14,13 +13,7 @@ struct RuntimeVideoSendStats {
   uint64_t disconnect_count = 0;
   uint64_t partial_reset_count = 0;
   uint64_t zero_byte_drop_count = 0;
-  uint64_t chunks_sent = 0;
-  uint64_t frames_chunked = 0;
   uint64_t frame_abandon_count = 0;
-  uint64_t zero_byte_chunk_backpressure_count = 0;
-  uint64_t partial_chunk_reset_count = 0;
-  uint64_t max_chunks_per_frame = 0;
-  uint64_t max_chunk_send_micros = 0;
   uint64_t queue_drop_count = 0;
   uint64_t keyframe_wait_drop_count = 0;
   uint64_t queue_high_watermark = 0;
@@ -45,11 +38,6 @@ struct RuntimeVideoSendStats {
 void note_video_send_result(RuntimeVideoSendStats& stats,
                             const commaview::net::SendResult& result,
                             uint64_t now_ms);
-
-void note_video_chunk_send_result(RuntimeVideoSendStats& stats,
-                                  const commaview::video::VideoChunk& chunk,
-                                  const commaview::net::SendResult& result,
-                                  uint64_t now_ms);
 
 std::string video_send_stats_json(const RuntimeVideoSendStats& stats);
 
