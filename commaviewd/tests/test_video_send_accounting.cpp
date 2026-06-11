@@ -145,6 +145,9 @@ void test_serialized_video_send_json_includes_chunk_and_udp_accounting() {
   assert(json.find("\"udpRepairRequests\":3") != std::string::npos);
   assert(json.find("\"udpRepairPacketsResent\":4") != std::string::npos);
   assert(json.find("\"udpRepairMissCount\":5") != std::string::npos);
+  assert(json.find("\"udpRepairRequested\":3") != std::string::npos);
+  assert(json.find("\"udpRepairRecovered\":4") != std::string::npos);
+  assert(json.find("\"udpRepairExpired\":5") != std::string::npos);
   assert(json.find("\"udpRepairCacheBytes\":600") != std::string::npos);
   assert(json.find("\"udpRepairCacheHighWatermarkBytes\":700") != std::string::npos);
   assert(json.find("\"lastStatus\":\"backpressure\"") != std::string::npos);
