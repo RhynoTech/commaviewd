@@ -27,6 +27,13 @@ struct RuntimeVideoSendStats {
   uint64_t zero_byte_backpressure_recovered_count = 0;
   uint64_t max_queued_frame_age_ms = 0;
   uint64_t max_send_micros = 0;
+  uint64_t udp_packets_sent = 0;
+  uint64_t udp_send_error_count = 0;
+  uint64_t udp_repair_requests = 0;
+  uint64_t udp_repair_packets_resent = 0;
+  uint64_t udp_repair_miss_count = 0;
+  uint64_t udp_repair_cache_bytes = 0;
+  uint64_t udp_repair_cache_high_watermark_bytes = 0;
   std::string last_status = "ok";
   int last_error = 0;
   std::string last_error_name = "none";

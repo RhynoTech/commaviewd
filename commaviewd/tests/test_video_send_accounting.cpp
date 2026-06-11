@@ -112,7 +112,7 @@ void test_ok_counts_bridge_chunk_counters_only() {
   assert(stats.last_status == "ok");
 }
 
-void test_serialized_video_send_json_includes_chunk_accounting() {
+void test_serialized_video_send_json_includes_chunk_and_udp_accounting() {
   commaview::runtime::RuntimeVideoSendStats stats;
   commaview::runtime::note_video_chunk_send_result(
       stats,
@@ -125,6 +125,13 @@ void test_serialized_video_send_json_includes_chunk_accounting() {
       result(commaview::net::SendStatus::Backpressure, 0),
       1006);
   stats.frame_abandon_count = 1;
+  stats.udp_packets_sent = 7;
+  stats.udp_send_error_count = 2;
+  stats.udp_repair_requests = 3;
+  stats.udp_repair_packets_resent = 4;
+  stats.udp_repair_miss_count = 5;
+  stats.udp_repair_cache_bytes = 600;
+  stats.udp_repair_cache_high_watermark_bytes = 700;
 
   const std::string json = commaview::runtime::video_send_stats_json(stats);
   assert(json.find("\"okCount\":1") != std::string::npos);
@@ -133,6 +140,13 @@ void test_serialized_video_send_json_includes_chunk_accounting() {
   assert(json.find("\"frameAbandonCount\":1") != std::string::npos);
   assert(json.find("\"zeroByteChunkBackpressureCount\":1") != std::string::npos);
   assert(json.find("\"partialChunkResetCount\":0") != std::string::npos);
+  assert(json.find("\"udpPacketsSent\":7") != std::string::npos);
+  assert(json.find("\"udpSendErrorCount\":2") != std::string::npos);
+  assert(json.find("\"udpRepairRequests\":3") != std::string::npos);
+  assert(json.find("\"udpRepairPacketsResent\":4") != std::string::npos);
+  assert(json.find("\"udpRepairMissCount\":5") != std::string::npos);
+  assert(json.find("\"udpRepairCacheBytes\":600") != std::string::npos);
+  assert(json.find("\"udpRepairCacheHighWatermarkBytes\":700") != std::string::npos);
   assert(json.find("\"lastStatus\":\"backpressure\"") != std::string::npos);
 }
 
@@ -144,6 +158,6 @@ int main() {
   test_partial_invalid_argument_increments_bridge_partial_chunk_reset();
   test_zero_byte_backpressure_counts_bridge_abandon_path_only();
   test_ok_counts_bridge_chunk_counters_only();
-  test_serialized_video_send_json_includes_chunk_accounting();
+  test_serialized_video_send_json_includes_chunk_and_udp_accounting();
   return 0;
 }

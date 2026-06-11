@@ -92,6 +92,13 @@ std::string video_send_stats_json(const RuntimeVideoSendStats& stats) {
   out << "\"zeroByteBackpressureRecoveredCount\":" << stats.zero_byte_backpressure_recovered_count << ",";
   out << "\"maxQueuedFrameAgeMs\":" << stats.max_queued_frame_age_ms << ",";
   out << "\"maxSendMicros\":" << stats.max_send_micros << ",";
+  out << "\"udpPacketsSent\":" << stats.udp_packets_sent << ",";
+  out << "\"udpSendErrorCount\":" << stats.udp_send_error_count << ",";
+  out << "\"udpRepairRequests\":" << stats.udp_repair_requests << ",";
+  out << "\"udpRepairPacketsResent\":" << stats.udp_repair_packets_resent << ",";
+  out << "\"udpRepairMissCount\":" << stats.udp_repair_miss_count << ",";
+  out << "\"udpRepairCacheBytes\":" << stats.udp_repair_cache_bytes << ",";
+  out << "\"udpRepairCacheHighWatermarkBytes\":" << stats.udp_repair_cache_high_watermark_bytes << ",";
   out << "\"lastStatus\":\"" << commaview::runtime_debug::json_escape(stats.last_status) << "\",";
   out << "\"lastError\":" << stats.last_error << ",";
   out << "\"lastErrorName\":\"" << commaview::runtime_debug::json_escape(stats.last_error_name) << "\",";
