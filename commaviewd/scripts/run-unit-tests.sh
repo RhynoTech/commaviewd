@@ -98,6 +98,19 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
   -o "$TMP/test_udp_video_protocol"
 
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
+  "$ROOT/tests/test_udp_video_packetizer.cpp" \
+  "$ROOT/src/udp_video_packetizer.cpp" \
+  "$ROOT/src/udp_video_protocol.cpp" \
+  -o "$TMP/test_udp_video_packetizer"
+
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
+  "$ROOT/tests/test_udp_video_repair_cache.cpp" \
+  "$ROOT/src/udp_video_repair_cache.cpp" \
+  "$ROOT/src/udp_video_packetizer.cpp" \
+  "$ROOT/src/udp_video_protocol.cpp" \
+  -o "$TMP/test_udp_video_repair_cache"
+
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
   "$ROOT/tests/test_video_send_accounting.cpp" \
   "$ROOT/src/runtime_video_send_accounting.cpp" \
   "$ROOT/src/framing.cpp" \
@@ -122,6 +135,8 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
 "$TMP/test_video_transport_policy"
 "$TMP/test_video_chunk_protocol"
 "$TMP/test_udp_video_protocol"
+"$TMP/test_udp_video_packetizer"
+"$TMP/test_udp_video_repair_cache"
 "$TMP/test_video_send_accounting"
 "$TMP/test_http_server_cloexec"
 "$TMP/test_ui_export_socket"
