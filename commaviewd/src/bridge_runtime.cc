@@ -6,6 +6,7 @@
 #include "runtime_debug_config.h"
 #include "runtime_video_send_accounting.h"
 #include "ui_export_socket.h"
+#include "udp_video_sender.h"
 #include "video_chunk_protocol.h"
 #include "video_transport_policy.h"
 /**
@@ -30,12 +31,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fcntl.h>
 #include <memory>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <signal.h>
 #include <string>
+#include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -72,8 +75,6 @@ static constexpr uint8_t MSG_CONTROL = 0x03;
 static constexpr uint8_t MSG_META_RAW = 0x04;
 static constexpr uint8_t RAW_META_ENVELOPE_V4 = 0x04;
 static constexpr uint8_t RAW_META_ENVELOPE_V5 = 0x05;
-static_assert(commaview::video::MSG_VIDEO_CHUNK == 0x06,
-              "bridge runtime must send chunked video payloads");
 
 static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;
@@ -130,6 +131,12 @@ static std::atomic<int>& active_counter_for_port(int port) {
 
 static cereal::Event::Which expected_video_which_for_port(int port) {
   return commaview::video::expected_video_which_for_port(port, false);
+}
+
+static commaview::video::UdpVideoStreamId udp_stream_id_for_port(int port) {
+  if (port == PORT_WIDE) return commaview::video::UdpVideoStreamId::Wide;
+  if (port == PORT_DRIVER) return commaview::video::UdpVideoStreamId::Driver;
+  return commaview::video::UdpVideoStreamId::Road;
 }
 
 
@@ -251,6 +258,11 @@ static RuntimeState g_runtime_state;
 static uint64_t runtime_now_ms() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+static int64_t runtime_now_ns() {
+  return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 static std::string runtime_json_escape(const std::string& in) {
@@ -486,6 +498,28 @@ static void note_video_chunk_send_result(const char* /*stream*/,
       runtime_now_ms());
 }
 
+static void note_udp_video_send_stats(const commaview::video::UdpVideoSendStats& stats) {
+  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+  g_runtime_state.video_send.udp_packets_sent += stats.packets_sent;
+  g_runtime_state.video_send.udp_send_error_count += stats.send_errors;
+  g_runtime_state.video_send.udp_repair_cache_bytes = stats.repair_cache_bytes;
+  g_runtime_state.video_send.udp_repair_cache_high_watermark_bytes = std::max<uint64_t>(
+      g_runtime_state.video_send.udp_repair_cache_high_watermark_bytes,
+      stats.repair_cache_high_watermark_bytes);
+}
+
+static void note_udp_video_repair_stats(const commaview::video::UdpVideoRepairStats& stats) {
+  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+  g_runtime_state.video_send.udp_repair_requests += stats.requests;
+  g_runtime_state.video_send.udp_repair_packets_resent += stats.packets_resent;
+  g_runtime_state.video_send.udp_repair_miss_count += stats.missing_count;
+  g_runtime_state.video_send.udp_send_error_count += stats.send_errors;
+  g_runtime_state.video_send.udp_repair_cache_bytes = stats.repair_cache_bytes;
+  g_runtime_state.video_send.udp_repair_cache_high_watermark_bytes = std::max<uint64_t>(
+      g_runtime_state.video_send.udp_repair_cache_high_watermark_bytes,
+      stats.repair_cache_high_watermark_bytes);
+}
+
 static void note_video_frame_abandoned(const char* stream, uint64_t sequence, uint16_t chunk_index) {
   {
     std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
@@ -585,6 +619,133 @@ static int create_server(int port) {
   return commaview::net::create_server(port);
 }
 
+static uint16_t read_u16_be(const uint8_t* p) {
+  return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | static_cast<uint16_t>(p[1]));
+}
+
+static uint32_t read_u32_be(const uint8_t* p) {
+  return (static_cast<uint32_t>(p[0]) << 24) |
+         (static_cast<uint32_t>(p[1]) << 16) |
+         (static_cast<uint32_t>(p[2]) << 8) |
+         static_cast<uint32_t>(p[3]);
+}
+
+static int create_udp_video_socket(int port) {
+  const int fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) {
+    perror("udp video socket");
+    return -1;
+  }
+
+  int reuse = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(static_cast<uint16_t>(port));
+  if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    perror("udp video bind");
+    close(fd);
+    return -1;
+  }
+
+  const int flags = fcntl(fd, F_GETFL, 0);
+  if (flags >= 0) {
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
+  return fd;
+}
+
+struct UdpVideoControlDatagram {
+  commaview::video::UdpVideoPacketType type = commaview::video::UdpVideoPacketType::Heartbeat;
+  commaview::video::UdpVideoStreamId stream_id = commaview::video::UdpVideoStreamId::Road;
+  uint16_t session_id = 0;
+  uint32_t frame_sequence = 0;
+  std::vector<uint16_t> packet_indexes;
+};
+
+static bool parse_udp_video_control_datagram(const uint8_t* data,
+                                             size_t size,
+                                             commaview::video::UdpVideoStreamId expected_stream,
+                                             UdpVideoControlDatagram* out) {
+  if (data == nullptr || out == nullptr || size < 10) return false;
+  if (read_u32_be(data) != commaview::video::UDP_VIDEO_MAGIC) return false;
+  if (data[4] != commaview::video::UDP_VIDEO_VERSION) return false;
+
+  const auto type = static_cast<commaview::video::UdpVideoPacketType>(data[5]);
+  if (type != commaview::video::UdpVideoPacketType::Hello &&
+      type != commaview::video::UdpVideoPacketType::Heartbeat &&
+      type != commaview::video::UdpVideoPacketType::Policy &&
+      type != commaview::video::UdpVideoPacketType::RepairRequest) {
+    return false;
+  }
+
+  const auto stream = static_cast<commaview::video::UdpVideoStreamId>(data[6]);
+  if (stream != expected_stream) return false;
+  if (data[7] != 0) return false;
+
+  UdpVideoControlDatagram parsed;
+  parsed.type = type;
+  parsed.stream_id = stream;
+  parsed.session_id = read_u16_be(data + 8);
+
+  if (type == commaview::video::UdpVideoPacketType::RepairRequest) {
+    if (size < 60) return false;
+    parsed.frame_sequence = read_u32_be(data + 28);
+    const uint32_t payload_len = read_u32_be(data + 56);
+    if (payload_len > size - 60 || (payload_len % 2) != 0) return false;
+    for (size_t pos = 60; pos < 60 + payload_len; pos += 2) {
+      parsed.packet_indexes.push_back(read_u16_be(data + pos));
+    }
+  }
+
+  *out = std::move(parsed);
+  return true;
+}
+
+static void drain_udp_video_control_datagrams(int udp_fd,
+                                              commaview::video::UdpVideoStreamId expected_stream,
+                                              commaview::video::UdpVideoSender* sender) {
+  if (udp_fd < 0 || sender == nullptr) return;
+
+  std::array<uint8_t, commaview::video::UDP_VIDEO_MAX_DATAGRAM_BYTES> buffer{};
+  while (true) {
+    sockaddr_storage peer{};
+    socklen_t peer_len = sizeof(peer);
+    const ssize_t n = recvfrom(udp_fd,
+                               buffer.data(),
+                               buffer.size(),
+                               MSG_DONTWAIT,
+                               reinterpret_cast<sockaddr*>(&peer),
+                               &peer_len);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      if (errno != EAGAIN && errno != EWOULDBLOCK) perror("udp video recvfrom");
+      break;
+    }
+    if (n == 0) continue;
+
+    UdpVideoControlDatagram datagram;
+    if (!parse_udp_video_control_datagram(buffer.data(), static_cast<size_t>(n), expected_stream, &datagram)) {
+      continue;
+    }
+
+    if (datagram.type == commaview::video::UdpVideoPacketType::RepairRequest) {
+      commaview::video::UdpVideoRepairRequest request;
+      request.stream_id = datagram.stream_id;
+      request.session_id = datagram.session_id;
+      request.frame_sequence = datagram.frame_sequence;
+      request.packet_indexes = std::move(datagram.packet_indexes);
+      const auto stats = sender->handle_repair_request(request, runtime_now_ns());
+      note_udp_video_repair_stats(stats);
+      continue;
+    }
+
+    sender->note_client_hello(datagram.stream_id, peer, peer_len, datagram.session_id);
+  }
+}
+
 static cereal::EncodeData::Reader read_encode_data(cereal::Event::Reader event, int port) {
   return commaview::video::read_encode_data(event, port, false);
 }
@@ -615,6 +776,22 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   }
 
   note_runtime_connect();
+
+  const auto udp_stream_id = udp_stream_id_for_port(port);
+  int udp_fd = create_udp_video_socket(port);
+  auto udp_send_fn = [udp_fd](const uint8_t* data,
+                              size_t size,
+                              const sockaddr_storage& addr,
+                              socklen_t addr_len) -> ssize_t {
+    if (udp_fd < 0) return -1;
+    return sendto(udp_fd,
+                  data,
+                  size,
+                  MSG_DONTWAIT,
+                  reinterpret_cast<const sockaddr*>(&addr),
+                  addr_len);
+  };
+  commaview::video::UdpVideoSender udp_video_sender(udp_send_fn);
 
   Context* ctx = Context::create();
 
@@ -663,6 +840,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     }
 
     consume_client_control_frames(client_fd, &control_state, video_service);
+    drain_udp_video_control_datagrams(udp_fd, udp_stream_id, &udp_video_sender);
     if (include_telemetry) {
       telemetry_enabled_for_client.store(control_state.telemetry_on_video);
     }
@@ -761,39 +939,27 @@ static void handle_video_client(int client_fd, const char* video_service, int po
             last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
             note_video_queued_frame_age(runtime_now_ms() - queued->created_at_ms);
             const uint32_t queued_header_len = static_cast<uint32_t>(queued->codec_header.size());
-            commaview::video::VideoFrameForChunking frame;
-            frame.sequence = chunk_wire_sequence(queued->sequence);
-            frame.timestamp_ns = queued->timestamp_ns;
+            commaview::video::UdpVideoFrameForPacketizing frame;
+            frame.stream_id = udp_stream_id;
+            frame.frame_sequence = static_cast<uint32_t>(queued->sequence);
+            frame.timestamp_nanos = queued->timestamp_ns;
             frame.width = queued->width;
             frame.height = queued->height;
             frame.is_keyframe = queued->is_keyframe;
             frame.codec_header = queued->codec_header;
             frame.data = queued->data;
 
-            const auto chunks = commaview::video::plan_video_chunks(
-                frame,
-                commaview::video::DEFAULT_VIDEO_CHUNK_BYTES);
-
-            bool frame_sent_successfully = true;
-            for (const auto& chunk : chunks) {
-              const auto payload = commaview::video::encode_video_chunk_payload(chunk);
-              const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);
-              note_video_chunk_send_result(video_service, chunk, send_result);
-              if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
-                video_queue.note_backpressure_without_partial_send();
-                note_video_zero_byte_backpressure_recovered();
-                note_video_frame_abandoned(video_service, queued->sequence, chunk.chunk_index);
-                frame_sent_successfully = false;
-                break;
-              }
-              if (send_result.status != commaview::net::SendStatus::Ok) {
-                note_runtime_peer_disconnect(video_service, "video_chunk_send", send_result);
-                shutdown(client_fd, SHUT_RDWR);
-                goto disconnect;
-              }
+            const auto udp_stats = udp_video_sender.send_frame(frame, runtime_now_ns());
+            note_udp_video_send_stats(udp_stats);
+            if (udp_stats.send_errors > 0 &&
+                (udp_stats.send_errors <= 5 || (udp_stats.send_errors % 200) == 0)) {
+              printf("[%s] udp video send errors=%llu packets=%llu sent=%llu\n",
+                     video_service,
+                     static_cast<unsigned long long>(udp_stats.send_errors),
+                     static_cast<unsigned long long>(udp_stats.packets_packetized),
+                     static_cast<unsigned long long>(udp_stats.packets_sent));
+              fflush(stdout);
             }
-
-            if (!frame_sent_successfully) break;
 
             frame_count++;
             if (frame_count <= 5 || (frame_count % 200) == 0) {
@@ -848,6 +1014,7 @@ disconnect:
   if (telemetry_thread.joinable()) telemetry_thread.join();
   active_counter.fetch_sub(1);
   close(client_fd);
+  if (udp_fd >= 0) close(udp_fd);
 
   delete video_poller;
   if (video_sock != nullptr) delete video_sock;

@@ -49,9 +49,9 @@ assert_contains_fixed 'send_meta_raw_frame(client_fd,' "$BRIDGE_CPP" 'telemetry 
 assert_contains_fixed 'RAW_META_ENVELOPE_V5,' "$BRIDGE_CPP" 'runtime should emit JSON raw v5 envelopes from ui socket telemetry'
 assert_contains_fixed 'std::thread telemetry_thread' "$BRIDGE_CPP" 'telemetry should run in a dedicated thread'
 assert_contains_fixed "std::mutex send_mutex;" "$BRIDGE_CPP" "per-client send mutex missing"
-assert_contains_fixed "send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex)" "$BRIDGE_CPP" "video path must use locked send helper"
-assert_contains_fixed "std::lock_guard<std::mutex> send_lock(*send_mutex);" "$BRIDGE_CPP" "socket writes should be serialized via send mutex"
-assert_contains_fixed "&send_mutex);" "$BRIDGE_CPP" "telemetry loop should receive per-client send mutex"
+assert_contains_fixed "udp_video_sender.send_frame(frame, runtime_now_ns())" "$BRIDGE_CPP" "video path must use UDP sender"
+assert_contains_fixed "std::lock_guard<std::mutex> send_lock(*send_mutex);" "$BRIDGE_CPP" "TCP telemetry/control writes should be serialized via send mutex"
+assert_contains_fixed "&send_mutex," "$BRIDGE_CPP" "telemetry loop should receive per-client send mutex"
 assert_contains_fixed 'telemetry_loop' "$BRIDGE_CPP" 'direct ui socket telemetry loop helper missing'
 assert_contains_fixed 'UI_SOCKET_PREFERRED' "$BRIDGE_CPP" 'direct ui socket preference marker missing'
 assert_not_contains_fixed 'telemetry_poller->poll(0)' "$BRIDGE_CPP" 'legacy telemetry subscriber poller should be removed from bridge runtime'
