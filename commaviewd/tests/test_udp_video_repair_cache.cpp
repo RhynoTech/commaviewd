@@ -21,12 +21,13 @@ using commaview::video::UdpVideoRepairCache;
 using commaview::video::UdpVideoStreamId;
 
 UdpVideoFrameForPacketizing make_frame(UdpVideoStreamId stream,
+                                       uint16_t session_id,
                                        uint32_t frame_sequence,
                                        bool keyframe,
                                        size_t data_size) {
   UdpVideoFrameForPacketizing frame;
   frame.stream_id = stream;
-  frame.session_id = 77;
+  frame.session_id = session_id;
   frame.frame_sequence = frame_sequence;
   frame.timestamp_nanos = 1000000ULL + frame_sequence;
   frame.width = 1928;
@@ -43,7 +44,7 @@ UdpVideoFrameForPacketizing make_frame(UdpVideoStreamId stream,
 }
 
 std::vector<UdpVideoPacket> packetize(UdpVideoFrameForPacketizing frame, size_t target_payload = 50) {
-  uint64_t next_packet_sequence = 1000 + frame.frame_sequence * 10;
+  uint64_t next_packet_sequence = 1000 + frame.session_id * 100 + frame.frame_sequence * 10;
   return commaview::video::packetize_udp_video_frame(frame, &next_packet_sequence, target_payload);
 }
 
@@ -58,11 +59,11 @@ size_t payload_bytes(const std::vector<UdpVideoPacket>& packets) {
 }  // namespace
 
 TEST(UdpVideoRepairCacheTest, StoresPacketizedFrameAndReturnsRequestedRepairPackets) {
-  const auto packets = packetize(make_frame(UdpVideoStreamId::Road, 10, true, 180), 60);
+  const auto packets = packetize(make_frame(UdpVideoStreamId::Road, 77, 10, true, 180), 60);
   UdpVideoRepairCache cache({10000, 10000, 1000000});
 
   cache.store(packets, 100);
-  const auto repaired = cache.lookup(UdpVideoStreamId::Road, 10, {2, 0, 99});
+  const auto repaired = cache.lookup(UdpVideoStreamId::Road, 77, 10, {2, 0, 99});
 
   EXPECT_EQ(repaired.size(), 2U);
   EXPECT_EQ(repaired[0].frame_packet_index, 2U);
@@ -73,11 +74,11 @@ TEST(UdpVideoRepairCacheTest, StoresPacketizedFrameAndReturnsRequestedRepairPack
 }
 
 TEST(UdpVideoRepairCacheTest, LookupFrameReturnsAllPacketsInFrameOrder) {
-  const auto packets = packetize(make_frame(UdpVideoStreamId::Wide, 11, true, 140), 55);
+  const auto packets = packetize(make_frame(UdpVideoStreamId::Wide, 77, 11, true, 140), 55);
   UdpVideoRepairCache cache({10000, 10000, 1000000});
 
   cache.store(packets, 100);
-  const auto repaired = cache.lookup_frame(UdpVideoStreamId::Wide, 11);
+  const auto repaired = cache.lookup_frame(UdpVideoStreamId::Wide, 77, 11);
 
   EXPECT_EQ(repaired.size(), packets.size());
   for (size_t i = 0; i < repaired.size(); ++i) {
@@ -88,14 +89,14 @@ TEST(UdpVideoRepairCacheTest, LookupFrameReturnsAllPacketsInFrameOrder) {
 }
 
 TEST(UdpVideoRepairCacheTest, DuplicateStoreReplacesExistingFrame) {
-  auto first = packetize(make_frame(UdpVideoStreamId::Driver, 12, false, 40), 100);
-  auto replacement = packetize(make_frame(UdpVideoStreamId::Driver, 12, false, 90), 100);
+  auto first = packetize(make_frame(UdpVideoStreamId::Driver, 77, 12, false, 40), 100);
+  auto replacement = packetize(make_frame(UdpVideoStreamId::Driver, 77, 12, false, 90), 100);
   replacement[0].packet_sequence = 9999;
   UdpVideoRepairCache cache({10000, 10000, 1000000});
 
   cache.store(first, 100);
   cache.store(replacement, 200);
-  const auto repaired = cache.lookup_frame(UdpVideoStreamId::Driver, 12);
+  const auto repaired = cache.lookup_frame(UdpVideoStreamId::Driver, 77, 12);
 
   EXPECT_EQ(repaired.size(), replacement.size());
   EXPECT_EQ(repaired[0].packet_sequence, 9999ULL);
@@ -108,62 +109,141 @@ TEST(UdpVideoRepairCacheTest, IgnoresEmptyStores) {
 
   cache.store({}, 100);
 
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 1).empty(), true);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 1).empty(), true);
 }
 
 TEST(UdpVideoRepairCacheTest, TotalByteCapEvictsOldestFrames) {
-  const auto first = packetize(make_frame(UdpVideoStreamId::Road, 20, false, 80), 200);
-  const auto second = packetize(make_frame(UdpVideoStreamId::Wide, 21, false, 80), 200);
+  const auto first = packetize(make_frame(UdpVideoStreamId::Road, 77, 20, false, 80), 200);
+  const auto second = packetize(make_frame(UdpVideoStreamId::Wide, 77, 21, false, 80), 200);
   UdpVideoRepairCache cache({10000, payload_bytes(second), 1000000});
 
   cache.store(first, 100);
   cache.store(second, 200);
 
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 20).empty(), true);
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Wide, 21).empty(), false);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 20).empty(), true);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Wide, 77, 21).empty(), false);
 }
 
 TEST(UdpVideoRepairCacheTest, PerStreamByteCapEvictsOldestFramesInThatStream) {
-  const auto first = packetize(make_frame(UdpVideoStreamId::Road, 30, false, 70), 200);
-  const auto second = packetize(make_frame(UdpVideoStreamId::Road, 31, false, 70), 200);
-  const auto other_stream = packetize(make_frame(UdpVideoStreamId::Driver, 32, false, 70), 200);
+  const auto first = packetize(make_frame(UdpVideoStreamId::Road, 77, 30, false, 70), 200);
+  const auto second = packetize(make_frame(UdpVideoStreamId::Road, 77, 31, false, 70), 200);
+  const auto other_stream = packetize(make_frame(UdpVideoStreamId::Driver, 77, 32, false, 70), 200);
   UdpVideoRepairCache cache({payload_bytes(second), 10000, 1000000});
 
   cache.store(first, 100);
   cache.store(other_stream, 150);
   cache.store(second, 200);
 
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 30).empty(), true);
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 31).empty(), false);
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Driver, 32).empty(), false);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 30).empty(), true);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 31).empty(), false);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Driver, 77, 32).empty(), false);
 }
 
 TEST(UdpVideoRepairCacheTest, TimeCapEvictsExpiredFrames) {
-  const auto old_frame = packetize(make_frame(UdpVideoStreamId::Road, 40, false, 40), 200);
-  const auto fresh_frame = packetize(make_frame(UdpVideoStreamId::Road, 41, false, 40), 200);
+  const auto old_frame = packetize(make_frame(UdpVideoStreamId::Road, 77, 40, false, 40), 200);
+  const auto fresh_frame = packetize(make_frame(UdpVideoStreamId::Road, 77, 41, false, 40), 200);
   UdpVideoRepairCache cache({10000, 10000, 50});
 
   cache.store(old_frame, 100);
   cache.store(fresh_frame, 140);
   cache.evict_expired(151);
 
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 40).empty(), true);
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 41).empty(), false);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 40).empty(), true);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 41).empty(), false);
 }
 
 TEST(UdpVideoRepairCacheTest, RetainsLatestKeyframeWhenOlderFramesCanBeEvicted) {
-  const auto old_keyframe = packetize(make_frame(UdpVideoStreamId::Wide, 50, true, 60), 200);
-  const auto older_non_keyframe = packetize(make_frame(UdpVideoStreamId::Wide, 51, false, 60), 200);
-  const auto latest_keyframe = packetize(make_frame(UdpVideoStreamId::Wide, 52, true, 60), 200);
+  const auto old_keyframe = packetize(make_frame(UdpVideoStreamId::Wide, 77, 50, true, 60), 200);
+  const auto older_non_keyframe = packetize(make_frame(UdpVideoStreamId::Wide, 77, 51, false, 60), 200);
+  const auto latest_keyframe = packetize(make_frame(UdpVideoStreamId::Wide, 77, 52, true, 60), 200);
   UdpVideoRepairCache cache({payload_bytes(latest_keyframe), 10000, 1000000});
 
   cache.store(old_keyframe, 100);
   cache.store(older_non_keyframe, 200);
   cache.store(latest_keyframe, 300);
 
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Wide, 50).empty(), true);
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Wide, 51).empty(), true);
-  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Wide, 52).empty(), false);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Wide, 77, 50).empty(), true);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Wide, 77, 51).empty(), true);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Wide, 77, 52).empty(), false);
+}
+
+TEST(UdpVideoRepairCacheTest, SameStreamAndFrameSequenceAreIsolatedBySession) {
+  auto first_session = packetize(make_frame(UdpVideoStreamId::Road, 77, 60, false, 70), 200);
+  auto second_session = packetize(make_frame(UdpVideoStreamId::Road, 88, 60, false, 90), 200);
+  first_session[0].payload[0] = 0x11;
+  second_session[0].payload[0] = 0x22;
+  UdpVideoRepairCache cache({10000, 10000, 1000000});
+
+  cache.store(first_session, 100);
+  cache.store(second_session, 200);
+
+  const auto first_repaired = cache.lookup_frame(UdpVideoStreamId::Road, 77, 60);
+  const auto second_repaired = cache.lookup_frame(UdpVideoStreamId::Road, 88, 60);
+  EXPECT_EQ(first_repaired.size(), first_session.size());
+  EXPECT_EQ(second_repaired.size(), second_session.size());
+  EXPECT_EQ(first_repaired[0].session_id, 77U);
+  EXPECT_EQ(second_repaired[0].session_id, 88U);
+  EXPECT_EQ(first_repaired[0].payload[0], 0x11);
+  EXPECT_EQ(second_repaired[0].payload[0], 0x22);
+}
+
+TEST(UdpVideoRepairCacheTest, RejectsFrameWithNonContiguousByteOffsets) {
+  auto packets = packetize(make_frame(UdpVideoStreamId::Road, 77, 70, false, 120), 50);
+  packets[1].frame_byte_offset += 1;
+  UdpVideoRepairCache cache({10000, 10000, 1000000});
+
+  cache.store(packets, 100);
+
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 70).empty(), true);
+}
+
+TEST(UdpVideoRepairCacheTest, RejectsFrameWithCodecHeaderLongerThanFrame) {
+  auto packets = packetize(make_frame(UdpVideoStreamId::Wide, 77, 71, false, 40), 100);
+  packets[0].codec_header_length = packets[0].frame_byte_length + 1;
+  UdpVideoRepairCache cache({10000, 10000, 1000000});
+
+  cache.store(packets, 100);
+
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Wide, 77, 71).empty(), true);
+}
+
+TEST(UdpVideoRepairCacheTest, RejectsFrameWhosePayloadBytesDoNotReachFrameLength) {
+  auto packets = packetize(make_frame(UdpVideoStreamId::Driver, 77, 72, false, 100), 200);
+  packets[0].frame_byte_length += 1;
+  UdpVideoRepairCache cache({10000, 10000, 1000000});
+
+  cache.store(packets, 100);
+
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Driver, 77, 72).empty(), true);
+}
+
+TEST(UdpVideoRepairCacheTest, RejectedFrameDoesNotChangeEvictionAccounting) {
+  const auto valid = packetize(make_frame(UdpVideoStreamId::Road, 77, 73, false, 60), 200);
+  auto malformed = packetize(make_frame(UdpVideoStreamId::Road, 77, 74, false, 60), 200);
+  malformed[0].frame_byte_length += 1;
+  UdpVideoRepairCache cache({payload_bytes(valid), payload_bytes(valid), 1000000});
+
+  cache.store(malformed, 100);
+  cache.store(valid, 200);
+
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 74).empty(), true);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 73).empty(), false);
+}
+
+TEST(UdpVideoRepairCacheTest, DuplicateReplacementUpdatesByteAccountingExactly) {
+  const auto first = packetize(make_frame(UdpVideoStreamId::Road, 77, 80, false, 40), 200);
+  const auto replacement = packetize(make_frame(UdpVideoStreamId::Road, 77, 80, false, 90), 200);
+  const auto other = packetize(make_frame(UdpVideoStreamId::Road, 77, 81, false, 30), 200);
+  UdpVideoRepairCache cache({payload_bytes(replacement) + payload_bytes(other),
+                             payload_bytes(replacement) + payload_bytes(other),
+                             1000000});
+
+  cache.store(first, 100);
+  cache.store(replacement, 200);
+  cache.store(other, 300);
+
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 80).empty(), false);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 81).empty(), false);
 }
 
 int main() {
@@ -175,5 +255,11 @@ int main() {
   UdpVideoRepairCacheTest_PerStreamByteCapEvictsOldestFramesInThatStream();
   UdpVideoRepairCacheTest_TimeCapEvictsExpiredFrames();
   UdpVideoRepairCacheTest_RetainsLatestKeyframeWhenOlderFramesCanBeEvicted();
+  UdpVideoRepairCacheTest_SameStreamAndFrameSequenceAreIsolatedBySession();
+  UdpVideoRepairCacheTest_RejectsFrameWithNonContiguousByteOffsets();
+  UdpVideoRepairCacheTest_RejectsFrameWithCodecHeaderLongerThanFrame();
+  UdpVideoRepairCacheTest_RejectsFrameWhosePayloadBytesDoNotReachFrameLength();
+  UdpVideoRepairCacheTest_RejectedFrameDoesNotChangeEvictionAccounting();
+  UdpVideoRepairCacheTest_DuplicateReplacementUpdatesByteAccountingExactly();
   return 0;
 }

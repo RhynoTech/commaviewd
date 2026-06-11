@@ -112,6 +112,35 @@ TEST(UdpVideoPacketizerTest, RejectsEmptyData) {
   });
 }
 
+TEST(UdpVideoPacketizerTest, RejectsNullPacketSequenceCounter) {
+  const auto frame = sample_frame();
+
+  assert_throws_invalid_argument([&]() {
+    (void)commaview::video::packetize_udp_video_frame(frame, nullptr);
+  });
+}
+
+TEST(UdpVideoPacketizerTest, RejectsInvalidStreamId) {
+  auto frame = sample_frame();
+  frame.stream_id = static_cast<UdpVideoStreamId>(0x7f);
+  uint64_t next_packet_sequence = 1;
+
+  assert_throws_invalid_argument([&]() {
+    (void)commaview::video::packetize_udp_video_frame(frame, &next_packet_sequence);
+  });
+}
+
+TEST(UdpVideoPacketizerTest, RejectsPacketCountOverflow) {
+  auto frame = sample_frame();
+  frame.codec_header.clear();
+  frame.data.assign(65536, 0xab);
+  uint64_t next_packet_sequence = 1;
+
+  assert_throws_length_error([&]() {
+    (void)commaview::video::packetize_udp_video_frame(frame, &next_packet_sequence, 1);
+  });
+}
+
 TEST(UdpVideoPacketizerTest, RejectsZeroTargetPayloadSize) {
   const auto frame = sample_frame();
   uint64_t next_packet_sequence = 1;
@@ -177,6 +206,9 @@ TEST(UdpVideoPacketizerTest, AllowsFrameLargerThanManyPackets) {
 int main() {
   UdpVideoPacketizerTest_SplitsFrameIntoMtuSafePacketsAndPreservesBytes();
   UdpVideoPacketizerTest_RejectsEmptyData();
+  UdpVideoPacketizerTest_RejectsNullPacketSequenceCounter();
+  UdpVideoPacketizerTest_RejectsInvalidStreamId();
+  UdpVideoPacketizerTest_RejectsPacketCountOverflow();
   UdpVideoPacketizerTest_RejectsZeroTargetPayloadSize();
   UdpVideoPacketizerTest_RejectsPayloadTargetThatCannotFitDatagram();
   UdpVideoPacketizerTest_PacketSequenceIncrementsFromSuppliedCounter();

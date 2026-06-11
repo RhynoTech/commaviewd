@@ -21,15 +21,18 @@ class UdpVideoRepairCache {
 
   void store(const std::vector<UdpVideoPacket>& packets, int64_t now_ns);
   std::vector<UdpVideoPacket> lookup(UdpVideoStreamId stream,
+                                     uint16_t session_id,
                                      uint32_t frame_sequence,
                                      const std::vector<uint16_t>& packet_indexes) const;
   std::vector<UdpVideoPacket> lookup_frame(UdpVideoStreamId stream,
+                                           uint16_t session_id,
                                            uint32_t frame_sequence) const;
   void evict_expired(int64_t now_ns);
 
  private:
   struct FrameKey {
     UdpVideoStreamId stream = UdpVideoStreamId::Road;
+    uint16_t session_id = 0;
     uint32_t frame_sequence = 0;
 
     bool operator<(const FrameKey& other) const;

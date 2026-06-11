@@ -24,6 +24,9 @@ bool UdpVideoRepairCache::FrameKey::operator<(const FrameKey& other) const {
   if (stream_sort_value(stream) != stream_sort_value(other.stream)) {
     return stream_sort_value(stream) < stream_sort_value(other.stream);
   }
+  if (session_id != other.session_id) {
+    return session_id < other.session_id;
+  }
   return frame_sequence < other.frame_sequence;
 }
 
@@ -35,7 +38,9 @@ void UdpVideoRepairCache::store(const std::vector<UdpVideoPacket>& packets, int6
     return;
   }
 
-  const FrameKey key{cached.packets.front().stream_id, cached.packets.front().frame_sequence};
+  const FrameKey key{cached.packets.front().stream_id,
+                     cached.packets.front().session_id,
+                     cached.packets.front().frame_sequence};
   const auto existing = frames_.find(key);
   if (existing != frames_.end()) {
     remove_frame(existing);
@@ -51,9 +56,10 @@ void UdpVideoRepairCache::store(const std::vector<UdpVideoPacket>& packets, int6
 
 std::vector<UdpVideoPacket> UdpVideoRepairCache::lookup(
     UdpVideoStreamId stream,
+    uint16_t session_id,
     uint32_t frame_sequence,
     const std::vector<uint16_t>& packet_indexes) const {
-  const auto it = frames_.find(FrameKey{stream, frame_sequence});
+  const auto it = frames_.find(FrameKey{stream, session_id, frame_sequence});
   if (it == frames_.end()) {
     return {};
   }
@@ -75,8 +81,9 @@ std::vector<UdpVideoPacket> UdpVideoRepairCache::lookup(
 }
 
 std::vector<UdpVideoPacket> UdpVideoRepairCache::lookup_frame(UdpVideoStreamId stream,
+                                                              uint16_t session_id,
                                                               uint32_t frame_sequence) const {
-  const auto it = frames_.find(FrameKey{stream, frame_sequence});
+  const auto it = frames_.find(FrameKey{stream, session_id, frame_sequence});
   if (it == frames_.end()) {
     return {};
   }
@@ -122,7 +129,13 @@ bool UdpVideoRepairCache::build_cached_frame(const std::vector<UdpVideoPacket>& 
   const uint32_t frame_byte_length = packets.front().frame_byte_length;
   const uint32_t codec_header_length = packets.front().codec_header_length;
   const uint16_t session_id = packets.front().session_id;
+  const uint64_t timestamp_nanos = packets.front().timestamp_nanos;
+  const uint32_t width = packets.front().width;
+  const uint32_t height = packets.front().height;
   if (packet_count == 0 || packets.size() != packet_count) {
+    return false;
+  }
+  if (codec_header_length > frame_byte_length) {
     return false;
   }
 
@@ -136,16 +149,30 @@ bool UdpVideoRepairCache::build_cached_frame(const std::vector<UdpVideoPacket>& 
     return a.frame_packet_index < b.frame_packet_index;
   });
 
+  uint64_t expected_offset = 0;
   for (const auto& packet : cached.packets) {
     if (packet.stream_id != stream || packet.frame_sequence != frame_sequence ||
         packet.frame_packet_count != packet_count || packet.frame_byte_length != frame_byte_length ||
         packet.codec_header_length != codec_header_length || packet.session_id != session_id ||
+        packet.timestamp_nanos != timestamp_nanos || packet.width != width || packet.height != height ||
         packet.frame_packet_index >= packet_count || seen[packet.frame_packet_index]) {
+      return false;
+    }
+    if (packet.frame_byte_offset != expected_offset) {
+      return false;
+    }
+    if (packet.payload.size() > frame_byte_length ||
+        expected_offset > static_cast<uint64_t>(frame_byte_length) - packet.payload.size()) {
       return false;
     }
     seen[packet.frame_packet_index] = true;
     cached.payload_bytes += packet.payload.size();
+    expected_offset += packet.payload.size();
     cached.keyframe_or_csd = cached.keyframe_or_csd || packet_has_keyframe_or_csd(packet);
+  }
+
+  if (expected_offset != frame_byte_length) {
+    return false;
   }
 
   for (bool has_packet : seen) {

@@ -9,6 +9,11 @@ namespace {
 
 constexpr size_t kUdpVideoHeaderBytes = 60;
 
+bool is_valid_stream_id(UdpVideoStreamId stream_id) {
+  return stream_id == UdpVideoStreamId::Road || stream_id == UdpVideoStreamId::Wide ||
+         stream_id == UdpVideoStreamId::Driver;
+}
+
 uint16_t base_flags_for_frame(const UdpVideoFrameForPacketizing& frame) {
   uint16_t flags = 0;
   if (frame.is_keyframe) {
@@ -33,6 +38,9 @@ void validate_packetizer_inputs(const UdpVideoFrameForPacketizing& frame,
                                 size_t target_payload_bytes) {
   if (next_packet_sequence == nullptr) {
     throw std::invalid_argument("UDP video packetizer packet sequence pointer is null");
+  }
+  if (!is_valid_stream_id(frame.stream_id)) {
+    throw std::invalid_argument("UDP video packetizer stream id is invalid");
   }
   if (frame.data.empty()) {
     throw std::invalid_argument("UDP video packetizer frame data is empty");
