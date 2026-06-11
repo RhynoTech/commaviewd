@@ -34,6 +34,11 @@ constexpr uint16_t UDP_VIDEO_FLAG_CSD_PRESENT = 1u << 1;
 constexpr uint16_t UDP_VIDEO_FLAG_FRAME_START = 1u << 2;
 constexpr uint16_t UDP_VIDEO_FLAG_FRAME_END = 1u << 3;
 constexpr uint16_t UDP_VIDEO_FLAG_REPAIR_RESEND = 1u << 4;
+constexpr uint16_t UDP_VIDEO_KNOWN_FLAGS = UDP_VIDEO_FLAG_KEYFRAME |
+                                           UDP_VIDEO_FLAG_CSD_PRESENT |
+                                           UDP_VIDEO_FLAG_FRAME_START |
+                                           UDP_VIDEO_FLAG_FRAME_END |
+                                           UDP_VIDEO_FLAG_REPAIR_RESEND;
 
 template <typename T>
 class DecodeResult {

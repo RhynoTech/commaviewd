@@ -65,15 +65,36 @@ bool is_valid_stream_id(uint8_t stream_id) {
          stream_id == static_cast<uint8_t>(UdpVideoStreamId::Driver);
 }
 
-}  // namespace
+bool flags_are_known(uint16_t flags) {
+  return (flags & ~UDP_VIDEO_KNOWN_FLAGS) == 0;
+}
 
-std::vector<uint8_t> encode_udp_video_packet(const UdpVideoPacket& packet) {
+void validate_udp_video_packet_for_encode(const UdpVideoPacket& packet) {
+  if (!is_valid_stream_id(static_cast<uint8_t>(packet.stream_id))) {
+    throw std::invalid_argument("UDP video packet has invalid stream id");
+  }
+  if (!flags_are_known(packet.flags)) {
+    throw std::invalid_argument("UDP video packet has unknown flags");
+  }
+  if (packet.frame_packet_count == 0 || packet.frame_packet_index >= packet.frame_packet_count) {
+    throw std::invalid_argument("UDP video packet frame packet index is out of range");
+  }
   if (packet.payload.size() > std::numeric_limits<uint32_t>::max()) {
     throw std::length_error("UDP video payload is too large to encode");
   }
-  if (UDP_VIDEO_HEADER_BYTES + packet.payload.size() > UDP_VIDEO_MAX_DATAGRAM_BYTES) {
-    throw std::length_error("UDP video datagram exceeds max payload size");
+  if (packet.payload.size() > packet.frame_byte_length ||
+      packet.frame_byte_offset > packet.frame_byte_length - packet.payload.size()) {
+    throw std::invalid_argument("UDP video packet frame byte range is out of bounds");
   }
+  if (UDP_VIDEO_HEADER_BYTES + packet.payload.size() > UDP_VIDEO_MAX_DATAGRAM_BYTES) {
+    throw std::length_error("UDP video datagram exceeds max datagram size");
+  }
+}
+
+}  // namespace
+
+std::vector<uint8_t> encode_udp_video_packet(const UdpVideoPacket& packet) {
+  validate_udp_video_packet_for_encode(packet);
 
   std::vector<uint8_t> out;
   out.reserve(UDP_VIDEO_HEADER_BYTES + packet.payload.size());
@@ -131,12 +152,18 @@ DecodeResult<UdpVideoPacket> decode_udp_video_packet(const uint8_t* data, size_t
     return DecodeResult<UdpVideoPacket>::failure("UDP video datagram has invalid stream id");
   }
 
-  (void)read_u8(data, &pos);  // reserved
+  const uint8_t reserved = read_u8(data, &pos);
+  if (reserved != 0) {
+    return DecodeResult<UdpVideoPacket>::failure("UDP video datagram has nonzero reserved byte");
+  }
 
   UdpVideoPacket packet;
   packet.stream_id = static_cast<UdpVideoStreamId>(stream_id);
   packet.session_id = read_u16_be(data, &pos);
   packet.flags = read_u16_be(data, &pos);
+  if (!flags_are_known(packet.flags)) {
+    return DecodeResult<UdpVideoPacket>::failure("UDP video datagram has unknown flags");
+  }
   packet.packet_sequence = read_u64_be(data, &pos);
   packet.timestamp_nanos = read_u64_be(data, &pos);
   packet.frame_sequence = read_u32_be(data, &pos);
