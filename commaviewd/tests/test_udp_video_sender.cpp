@@ -100,6 +100,14 @@ UdpVideoSender make_sender(std::vector<SentDatagram>* sends,
       60);
 }
 
+size_t payload_bytes(const std::vector<UdpVideoPacket>& packets) {
+  size_t bytes = 0;
+  for (const auto& packet : packets) {
+    bytes += packet.payload.size();
+  }
+  return bytes;
+}
+
 }  // namespace
 
 TEST(UdpVideoSenderTest, HelloRegistersEndpointAndFrameSendPacketizesToUdpEndpoint) {
@@ -187,6 +195,28 @@ TEST(UdpVideoSenderTest, MissingRepairRequestIncrementsMissCounter) {
   EXPECT_EQ(sends.empty(), true);
 }
 
+TEST(UdpVideoSenderTest, MixedHitMissRepairRequestCountsOnlyUnresolvedUniquePackets) {
+  std::vector<SentDatagram> sends;
+  auto sender = make_sender(&sends);
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77);
+  sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 10, 180), 100);
+  const size_t original_send_count = sends.size();
+
+  UdpVideoRepairRequest request;
+  request.stream_id = UdpVideoStreamId::Road;
+  request.session_id = 77;
+  request.frame_sequence = 10;
+  request.packet_indexes = {0, 0, 999};
+  const auto stats = sender.handle_repair_request(request, 200);
+
+  EXPECT_EQ(stats.requests, 1U);
+  EXPECT_EQ(stats.packets_resent, 1U);
+  EXPECT_EQ(stats.missing_count, 1U);
+  EXPECT_EQ(sends.size(), original_send_count + 1);
+  const auto packets = decoded_packets(sends);
+  EXPECT_EQ(packets[original_send_count].frame_packet_index, 0U);
+}
+
 TEST(UdpVideoSenderTest, FrameSendWithoutClientIsDroppedWithoutFillingRepairCache) {
   std::vector<SentDatagram> sends;
   auto sender = make_sender(&sends);
@@ -240,13 +270,129 @@ TEST(UdpVideoSenderTest, HelloForNewSessionReplacesEndpointForStream) {
   EXPECT_EQ(packets[0].session_id, 99U);
 }
 
+TEST(UdpVideoSenderTest, InvalidEndpointLengthsDoNotReplaceCurrentEndpoint) {
+  std::vector<SentDatagram> sends;
+  auto sender = make_sender(&sends);
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77);
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(42000), 0, 99);
+  sender.note_client_hello(UdpVideoStreamId::Road,
+                           endpoint(43000),
+                           static_cast<socklen_t>(sizeof(sockaddr_storage) + 1),
+                           100);
+
+  const auto stats = sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 13, 60), 100);
+
+  EXPECT_EQ(stats.packets_sent, sends.size());
+  ASSERT_TRUE(!sends.empty());
+  EXPECT_EQ(endpoint_port(sends[0].addr), 41000U);
+  EXPECT_EQ(sends[0].addr_len, static_cast<socklen_t>(sizeof(sockaddr_in)));
+  const auto packets = decoded_packets(sends);
+  EXPECT_EQ(packets[0].session_id, 77U);
+}
+
+TEST(UdpVideoSenderTest, InvalidEndpointLengthBeforeValidHelloIsNotUsedForSends) {
+  std::vector<SentDatagram> sends;
+  auto sender = make_sender(&sends);
+  sender.note_client_hello(UdpVideoStreamId::Wide, endpoint(41001), 0, 88);
+
+  const auto stats = sender.send_frame(make_frame(UdpVideoStreamId::Wide, 88, 14, 60), 100);
+
+  EXPECT_EQ(stats.dropped_no_client, 1U);
+  EXPECT_EQ(stats.packets_sent, 0U);
+  EXPECT_EQ(sends.empty(), true);
+}
+
+TEST(UdpVideoSenderTest, PartialSizedUdpReturnCountsAsSendErrorNotSentPacket) {
+  std::vector<SentDatagram> sends;
+  auto sender = make_sender(&sends, 0, 5);
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77);
+
+  const auto stats = sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 15, 60), 100);
+
+  EXPECT_EQ(stats.packets_sent, 0U);
+  EXPECT_EQ(stats.send_errors, stats.packets_packetized);
+  EXPECT_EQ(sends.empty(), true);
+}
+
+TEST(UdpVideoSenderTest, NegativeUdpReturnCountsAsSendErrorNotSentPacket) {
+  std::vector<SentDatagram> sends;
+  auto sender = make_sender(&sends, 0, -1);
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77);
+
+  const auto stats = sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 16, 60), 100);
+
+  EXPECT_EQ(stats.packets_sent, 0U);
+  EXPECT_EQ(stats.send_errors, stats.packets_packetized);
+  EXPECT_EQ(sends.empty(), true);
+}
+
+TEST(UdpVideoSenderTest, SameFrameAndSessionAcrossDifferentStreamsStayIsolated) {
+  std::vector<SentDatagram> sends;
+  auto sender = make_sender(&sends);
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77);
+  sender.note_client_hello(UdpVideoStreamId::Wide, endpoint(42000), sizeof(sockaddr_in), 77);
+  sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 17, 70), 100);
+  sender.send_frame(make_frame(UdpVideoStreamId::Wide, 77, 17, 90), 200);
+  const size_t original_send_count = sends.size();
+
+  UdpVideoRepairRequest request;
+  request.stream_id = UdpVideoStreamId::Wide;
+  request.session_id = 77;
+  request.frame_sequence = 17;
+  request.packet_indexes = {0};
+  const auto stats = sender.handle_repair_request(request, 300);
+
+  EXPECT_EQ(stats.packets_resent, 1U);
+  EXPECT_EQ(stats.missing_count, 0U);
+  EXPECT_EQ(sends.size(), original_send_count + 1);
+  EXPECT_EQ(endpoint_port(sends[original_send_count].addr), 42000U);
+  const auto packets = decoded_packets(sends);
+  EXPECT_EQ(packets[original_send_count].stream_id, UdpVideoStreamId::Wide);
+}
+
+TEST(UdpVideoSenderTest, SendStatsExposeRepairCacheBytesAndHighWatermark) {
+  std::vector<SentDatagram> sends;
+  auto sender = UdpVideoSender(
+      [&sends](const uint8_t* data,
+               size_t size,
+               const sockaddr_storage& addr,
+               socklen_t addr_len) -> ssize_t {
+        SentDatagram sent;
+        sent.bytes.assign(data, data + size);
+        sent.addr = addr;
+        sent.addr_len = addr_len;
+        sends.push_back(std::move(sent));
+        return static_cast<ssize_t>(size);
+      },
+      {10000, 10000, 50},
+      200);
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77);
+
+  const auto first_stats = sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 18, 80), 100);
+  const auto first_packets = decoded_packets(sends);
+  const size_t first_payload_bytes = payload_bytes(first_packets);
+  EXPECT_EQ(first_stats.repair_cache_bytes, first_payload_bytes);
+  EXPECT_EQ(first_stats.repair_cache_high_watermark_bytes, first_payload_bytes);
+
+  const auto second_stats = sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 19, 40), 200);
+  EXPECT_EQ(second_stats.repair_cache_bytes < second_stats.repair_cache_high_watermark_bytes, true);
+  EXPECT_EQ(second_stats.repair_cache_high_watermark_bytes >= first_payload_bytes, true);
+}
+
 int main() {
   UdpVideoSenderTest_HelloRegistersEndpointAndFrameSendPacketizesToUdpEndpoint();
   UdpVideoSenderTest_SentPacketsEnterRepairCacheAndRepairRequestResendsWithFlag();
   UdpVideoSenderTest_SendFailuresIncrementUdpCountersWithoutPeerReset();
   UdpVideoSenderTest_MissingRepairRequestIncrementsMissCounter();
+  UdpVideoSenderTest_MixedHitMissRepairRequestCountsOnlyUnresolvedUniquePackets();
   UdpVideoSenderTest_FrameSendWithoutClientIsDroppedWithoutFillingRepairCache();
   UdpVideoSenderTest_RepairRequestsAreSessionScoped();
   UdpVideoSenderTest_HelloForNewSessionReplacesEndpointForStream();
+  UdpVideoSenderTest_InvalidEndpointLengthsDoNotReplaceCurrentEndpoint();
+  UdpVideoSenderTest_InvalidEndpointLengthBeforeValidHelloIsNotUsedForSends();
+  UdpVideoSenderTest_PartialSizedUdpReturnCountsAsSendErrorNotSentPacket();
+  UdpVideoSenderTest_NegativeUdpReturnCountsAsSendErrorNotSentPacket();
+  UdpVideoSenderTest_SameFrameAndSessionAcrossDifferentStreamsStayIsolated();
+  UdpVideoSenderTest_SendStatsExposeRepairCacheBytesAndHighWatermark();
   return 0;
 }

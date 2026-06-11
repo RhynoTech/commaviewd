@@ -27,6 +27,8 @@ struct UdpVideoSendStats {
   uint64_t packets_packetized = 0;
   uint64_t packets_sent = 0;
   uint64_t send_errors = 0;
+  uint64_t repair_cache_bytes = 0;
+  uint64_t repair_cache_high_watermark_bytes = 0;
   bool peer_reset_required = false;
 };
 
@@ -35,6 +37,8 @@ struct UdpVideoRepairStats {
   uint64_t packets_resent = 0;
   uint64_t missing_count = 0;
   uint64_t send_errors = 0;
+  uint64_t repair_cache_bytes = 0;
+  uint64_t repair_cache_high_watermark_bytes = 0;
   bool peer_reset_required = false;
 };
 
@@ -67,6 +71,7 @@ class UdpVideoSender {
   bool send_packet(const UdpVideoPacket& packet, const Endpoint& endpoint);
   Endpoint* endpoint_for_stream(UdpVideoStreamId stream);
   const Endpoint* endpoint_for_stream(UdpVideoStreamId stream) const;
+  bool is_valid_endpoint(const sockaddr_storage& addr, socklen_t addr_len) const;
 
   SendFn send_fn_;
   UdpVideoRepairCache repair_cache_;

@@ -246,6 +246,34 @@ TEST(UdpVideoRepairCacheTest, DuplicateReplacementUpdatesByteAccountingExactly) 
   EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 81).empty(), false);
 }
 
+TEST(UdpVideoRepairCacheTest, ExposesCurrentBytesAndHighWaterBytes) {
+  const auto first = packetize(make_frame(UdpVideoStreamId::Road, 77, 90, false, 80), 200);
+  const auto second = packetize(make_frame(UdpVideoStreamId::Road, 77, 91, false, 40), 200);
+  UdpVideoRepairCache cache({10000, 10000, 1000000});
+
+  cache.store(first, 100);
+  EXPECT_EQ(cache.total_payload_bytes(), payload_bytes(first));
+  EXPECT_EQ(cache.high_water_payload_bytes(), payload_bytes(first));
+
+  cache.store(second, 200);
+  EXPECT_EQ(cache.total_payload_bytes(), payload_bytes(first) + payload_bytes(second));
+  EXPECT_EQ(cache.high_water_payload_bytes(), payload_bytes(first) + payload_bytes(second));
+}
+
+TEST(UdpVideoRepairCacheTest, HighWaterBytesDoNotShrinkAfterEviction) {
+  const auto first = packetize(make_frame(UdpVideoStreamId::Road, 77, 92, false, 80), 200);
+  const auto second = packetize(make_frame(UdpVideoStreamId::Road, 77, 93, false, 40), 200);
+  UdpVideoRepairCache cache({10000, payload_bytes(first) + payload_bytes(second), 50});
+
+  cache.store(first, 100);
+  cache.store(second, 120);
+  const size_t high_water = cache.high_water_payload_bytes();
+  cache.evict_expired(200);
+
+  EXPECT_EQ(cache.total_payload_bytes(), 0U);
+  EXPECT_EQ(cache.high_water_payload_bytes(), high_water);
+}
+
 int main() {
   UdpVideoRepairCacheTest_StoresPacketizedFrameAndReturnsRequestedRepairPackets();
   UdpVideoRepairCacheTest_LookupFrameReturnsAllPacketsInFrameOrder();
@@ -261,5 +289,7 @@ int main() {
   UdpVideoRepairCacheTest_RejectsFrameWhosePayloadBytesDoNotReachFrameLength();
   UdpVideoRepairCacheTest_RejectedFrameDoesNotChangeEvictionAccounting();
   UdpVideoRepairCacheTest_DuplicateReplacementUpdatesByteAccountingExactly();
+  UdpVideoRepairCacheTest_ExposesCurrentBytesAndHighWaterBytes();
+  UdpVideoRepairCacheTest_HighWaterBytesDoNotShrinkAfterEviction();
   return 0;
 }

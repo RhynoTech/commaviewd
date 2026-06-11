@@ -1,8 +1,23 @@
 #include "udp_video_sender.h"
 
+#include <netinet/in.h>
+#include <set>
 #include <utility>
 
 namespace commaview::video {
+namespace {
+
+void fill_cache_stats(const UdpVideoRepairCache& cache, UdpVideoSendStats* stats) {
+  stats->repair_cache_bytes = cache.total_payload_bytes();
+  stats->repair_cache_high_watermark_bytes = cache.high_water_payload_bytes();
+}
+
+void fill_cache_stats(const UdpVideoRepairCache& cache, UdpVideoRepairStats* stats) {
+  stats->repair_cache_bytes = cache.total_payload_bytes();
+  stats->repair_cache_high_watermark_bytes = cache.high_water_payload_bytes();
+}
+
+}  // namespace
 
 UdpVideoRepairCache::Limits UdpVideoSender::default_repair_cache_limits() {
   return UdpVideoRepairCache::Limits{
@@ -23,6 +38,10 @@ void UdpVideoSender::note_client_hello(UdpVideoStreamId stream,
                                        sockaddr_storage addr,
                                        socklen_t addr_len,
                                        uint16_t session_id) {
+  if (!is_valid_endpoint(addr, addr_len)) {
+    return;
+  }
+
   Endpoint endpoint;
   endpoint.addr = addr;
   endpoint.addr_len = addr_len;
@@ -38,6 +57,7 @@ UdpVideoSendStats UdpVideoSender::send_frame(const UdpVideoFrameForPacketizing& 
   const Endpoint* endpoint = endpoint_for_stream(frame.stream_id);
   if (endpoint == nullptr) {
     stats.dropped_no_client = 1;
+    fill_cache_stats(repair_cache_, &stats);
     return stats;
   }
 
@@ -56,6 +76,7 @@ UdpVideoSendStats UdpVideoSender::send_frame(const UdpVideoFrameForPacketizing& 
     }
   }
 
+  fill_cache_stats(repair_cache_, &stats);
   return stats;
 }
 
@@ -67,22 +88,37 @@ UdpVideoRepairStats UdpVideoSender::handle_repair_request(const UdpVideoRepairRe
 
   const Endpoint* endpoint = endpoint_for_stream(request.stream_id);
   if (endpoint == nullptr || endpoint->session_id != request.session_id) {
-    stats.missing_count = 1;
+    stats.missing_count = request.packet_indexes.empty() ? 1 : std::set<uint16_t>(
+        request.packet_indexes.begin(), request.packet_indexes.end()).size();
+    fill_cache_stats(repair_cache_, &stats);
     return stats;
   }
 
   std::vector<UdpVideoPacket> packets;
+  size_t requested_count = 1;
   if (request.packet_indexes.empty()) {
     packets = repair_cache_.lookup_frame(request.stream_id, request.session_id, request.frame_sequence);
   } else {
+    std::vector<uint16_t> unique_indexes;
+    std::set<uint16_t> seen_indexes;
+    for (const uint16_t packet_index : request.packet_indexes) {
+      if (seen_indexes.insert(packet_index).second) {
+        unique_indexes.push_back(packet_index);
+      }
+    }
+    requested_count = unique_indexes.size();
     packets = repair_cache_.lookup(request.stream_id,
                                    request.session_id,
                                    request.frame_sequence,
-                                   request.packet_indexes);
+                                   unique_indexes);
+  }
+
+  if (packets.size() < requested_count) {
+    stats.missing_count = requested_count - packets.size();
   }
 
   if (packets.empty()) {
-    stats.missing_count = 1;
+    fill_cache_stats(repair_cache_, &stats);
     return stats;
   }
 
@@ -94,6 +130,7 @@ UdpVideoRepairStats UdpVideoSender::handle_repair_request(const UdpVideoRepairRe
     }
   }
 
+  fill_cache_stats(repair_cache_, &stats);
   return stats;
 }
 
@@ -120,6 +157,21 @@ const UdpVideoSender::Endpoint* UdpVideoSender::endpoint_for_stream(UdpVideoStre
     return nullptr;
   }
   return &it->second;
+}
+
+bool UdpVideoSender::is_valid_endpoint(const sockaddr_storage& addr, socklen_t addr_len) const {
+  if (addr_len == 0 || addr_len > sizeof(sockaddr_storage) || addr_len < sizeof(sa_family_t)) {
+    return false;
+  }
+
+  switch (addr.ss_family) {
+    case AF_INET:
+      return addr_len == sizeof(sockaddr_in);
+    case AF_INET6:
+      return addr_len == sizeof(sockaddr_in6);
+    default:
+      return false;
+  }
 }
 
 }  // namespace commaview::video

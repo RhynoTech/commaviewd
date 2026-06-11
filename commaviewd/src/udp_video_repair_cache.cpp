@@ -49,6 +49,7 @@ void UdpVideoRepairCache::store(const std::vector<UdpVideoPacket>& packets, int6
   ++next_insertion_order_;
   add_stream_bytes(key.stream, cached.payload_bytes);
   total_payload_bytes_ += cached.payload_bytes;
+  high_water_payload_bytes_ = std::max(high_water_payload_bytes_, total_payload_bytes_);
   frames_.emplace(key, std::move(cached));
   evict_expired(now_ns);
   enforce_caps();
@@ -113,6 +114,14 @@ void UdpVideoRepairCache::evict_expired(int64_t now_ns) {
       remove_frame(it);
     }
   }
+}
+
+size_t UdpVideoRepairCache::total_payload_bytes() const {
+  return total_payload_bytes_;
+}
+
+size_t UdpVideoRepairCache::high_water_payload_bytes() const {
+  return high_water_payload_bytes_;
 }
 
 bool UdpVideoRepairCache::build_cached_frame(const std::vector<UdpVideoPacket>& packets,

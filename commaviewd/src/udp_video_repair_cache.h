@@ -28,6 +28,8 @@ class UdpVideoRepairCache {
                                            uint16_t session_id,
                                            uint32_t frame_sequence) const;
   void evict_expired(int64_t now_ns);
+  size_t total_payload_bytes() const;
+  size_t high_water_payload_bytes() const;
 
  private:
   struct FrameKey {
@@ -67,6 +69,7 @@ class UdpVideoRepairCache {
   FrameMap frames_;
   std::map<UdpVideoStreamId, size_t> stream_payload_bytes_;
   size_t total_payload_bytes_ = 0;
+  size_t high_water_payload_bytes_ = 0;
   uint64_t next_insertion_order_ = 1;
 };
 
