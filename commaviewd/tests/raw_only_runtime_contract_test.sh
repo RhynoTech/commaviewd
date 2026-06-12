@@ -32,6 +32,39 @@ assert_contains_fixed '"pandaStatesSummary"' "$BRIDGE_CPP" 'missing pandaStatesS
 assert_contains_fixed '"onroadProjection"' "$BRIDGE_CPP" 'missing onroadProjection subscription'
 assert_contains_fixed '"wideRoadCameraState"' "$BRIDGE_CPP" 'missing wideRoadCameraState subscription'
 assert_contains_fixed 'std::array<const char*, 20> kTelemetryServices' "$BRIDGE_CPP" 'telemetry service table must include service indexes 18 onroadProjection and 19 wideRoadCameraState'
+
+# The raw telemetry envelope identifies services by index, so the exact order of
+# kTelemetryServices is a wire contract with the app's TelemetryClient
+# (CommaView: TelemetryClient.TELEMETRY_SERVICE_TYPES). The app pins the same
+# ordered list in TelemetryServiceTableContractTest; change both together.
+expected_telemetry_services='uiStateOnroad
+selfdriveState
+carState
+controlsState
+onroadEvents
+driverMonitoringState
+driverStateV2
+modelV2
+radarState
+liveCalibration
+carOutput
+carControl
+liveParameters
+longitudinalPlan
+carParams
+deviceState
+roadCameraState
+pandaStatesSummary
+onroadProjection
+wideRoadCameraState'
+actual_telemetry_services="$(sed -n '/kTelemetryServices = {/,/};/p' "$BRIDGE_CPP" | grep -o '"[^"]*"' | tr -d '"')"
+if [ "$actual_telemetry_services" != "$expected_telemetry_services" ]; then
+  fail "kTelemetryServices order drifted from the pinned telemetry service index contract:
+expected:
+$expected_telemetry_services
+actual:
+$actual_telemetry_services"
+fi
 assert_not_contains_fixed '"commaViewHudLite"' "$BRIDGE_CPP" 'HUD-lite service should be gone'
 assert_not_contains_fixed 'telemetry_index_for_which' "$BRIDGE_CPP" 'legacy event->service index mapping should be removed'
 assert_not_contains_fixed 'car_state_idx' "$BRIDGE_CPP" 'legacy carState sample special-case should be removed'
