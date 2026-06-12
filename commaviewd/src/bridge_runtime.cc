@@ -144,10 +144,6 @@ static commaview::video::UdpVideoStreamId udp_stream_id_for_port(int port) {
 }
 
 
-
-
-
-
 static size_t queue_size_for_service(const char* service_name) {
   auto it = services.find(std::string(service_name));
   if (it == services.end()) return 0;
@@ -1096,11 +1092,17 @@ static void telemetry_loop(int client_fd,
       next_telem_poll += std::chrono::milliseconds(g_telemetry_emit_ms);
     } while (next_telem_poll <= now);
 
+    LoadedRuntimeDebugConfig effective_config;
+    {
+      std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+      effective_config = g_runtime_state.effective_config;
+    }
+
     std::array<bool, static_cast<size_t>(NUM_TELEM)> ui_fresh = {};
     if (g_ui_export_socket != nullptr) {
       for (int i = 0; i < NUM_TELEM; ++i) {
         const char* service_name = kTelemetryServices[static_cast<size_t>(i)];
-        const ServicePolicy policy = policy_for_service(g_runtime_state.effective_config, service_name);
+        const ServicePolicy policy = policy_for_service(effective_config, service_name);
         if (!telemetry_policy_fetches_latest(policy)) {
           continue;
         }
@@ -1260,7 +1262,6 @@ int commaview_bridge_main(int argc, char* argv[]) {
   signal(SIGINT, sig_handler);
   signal(SIGTERM, sig_handler);
   signal(SIGPIPE, SIG_IGN);
-
 
 
   (void)argc;

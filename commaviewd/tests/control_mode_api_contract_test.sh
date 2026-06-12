@@ -41,7 +41,8 @@ grep -Fq "X-CommaView-Token" "$SERVER_CPP" || { echo "FAIL: missing auth token h
 ! grep -Fq '"tailscale":' "$CONTROL_CPP" || { echo "FAIL: /commaview/status should not expose tailscale state anymore"; exit 1; }
 
 ! grep -Fq "COMMAVIEWD_TELEMETRY_MODE" "$CONTROL_CPP" || { echo "FAIL: control mode should not depend on COMMAVIEWD_TELEMETRY_MODE"; exit 1; }
-grep -Fq "docs/ai/telemetry-raw-only-readme.md" README.md || { echo "FAIL: missing short raw-only doc link in README"; exit 1; }
-grep -Fq "docs/ai/telemetry-raw-only-deep-dive.md" README.md || { echo "FAIL: missing deep raw-only doc link in README"; exit 1; }
+REPO_README="$ROOT/../README.md"
+grep -Fq "docs/ai/telemetry-raw-only-readme.md" "$REPO_README" || { echo "FAIL: missing short raw-only doc link in README"; exit 1; }
+grep -Fq "docs/ai/telemetry-raw-only-deep-dive.md" "$REPO_README" || { echo "FAIL: missing deep raw-only doc link in README"; exit 1; }
 
 echo "PASS: control mode API contract routes present"

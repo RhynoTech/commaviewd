@@ -201,51 +201,23 @@ void UdpVideoRepairCache::remove_frame(FrameMap::iterator it) {
 }
 
 void UdpVideoRepairCache::enforce_caps() {
-  for (;;) {
-    bool evicted = false;
-    for (const UdpVideoStreamId stream : {UdpVideoStreamId::Road,
-                                          UdpVideoStreamId::Wide,
-                                          UdpVideoStreamId::Driver}) {
-      const size_t before = frames_.size();
-      enforce_stream_cap(stream);
-      evicted = evicted || frames_.size() != before;
-    }
+  for (const UdpVideoStreamId stream : {UdpVideoStreamId::Road,
+                                        UdpVideoStreamId::Wide,
+                                        UdpVideoStreamId::Driver}) {
+    enforce_stream_cap(stream);
+  }
 
-    if (limits_.max_bytes_total > 0) {
-      while (total_payload_bytes_ > limits_.max_bytes_total && !frames_.empty()) {
-        auto candidate = choose_eviction_candidate_global();
-        if (candidate == frames_.end()) {
-          break;
-        }
-        remove_frame(candidate);
-        evicted = true;
-      }
-    } else {
-      while (!frames_.empty()) {
-        remove_frame(frames_.begin());
-        evicted = true;
-      }
-    }
-
-    if (!evicted) {
+  while (total_payload_bytes_ > limits_.max_bytes_total && !frames_.empty()) {
+    auto candidate = choose_eviction_candidate_global();
+    if (candidate == frames_.end()) {
       break;
     }
+    remove_frame(candidate);
   }
 }
 
 void UdpVideoRepairCache::enforce_stream_cap(UdpVideoStreamId stream) {
-  if (limits_.max_bytes_per_stream > 0) {
-    while (stream_bytes(stream) > limits_.max_bytes_per_stream) {
-      auto candidate = choose_eviction_candidate_for_stream(stream);
-      if (candidate == frames_.end()) {
-        break;
-      }
-      remove_frame(candidate);
-    }
-    return;
-  }
-
-  for (;;) {
+  while (stream_bytes(stream) > limits_.max_bytes_per_stream) {
     auto candidate = choose_eviction_candidate_for_stream(stream);
     if (candidate == frames_.end()) {
       break;

@@ -34,7 +34,6 @@ struct UdpVideoSendStats {
   uint64_t send_errors = 0;
   uint64_t repair_cache_bytes = 0;
   uint64_t repair_cache_high_watermark_bytes = 0;
-  bool peer_reset_required = false;
 };
 
 struct UdpVideoRepairStats {
@@ -44,7 +43,6 @@ struct UdpVideoRepairStats {
   uint64_t send_errors = 0;
   uint64_t repair_cache_bytes = 0;
   uint64_t repair_cache_high_watermark_bytes = 0;
-  bool peer_reset_required = false;
 };
 
 class UdpVideoSender {

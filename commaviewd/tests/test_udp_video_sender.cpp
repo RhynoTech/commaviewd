@@ -166,7 +166,7 @@ TEST(UdpVideoSenderTest, SentPacketsEnterRepairCacheAndRepairRequestResendsWithF
             UDP_VIDEO_FLAG_REPAIR_RESEND);
 }
 
-TEST(UdpVideoSenderTest, SendFailuresIncrementUdpCountersWithoutPeerReset) {
+TEST(UdpVideoSenderTest, SendFailuresIncrementUdpSendErrorCounters) {
   std::vector<SentDatagram> sends;
   auto sender = make_sender(&sends, 1);
   sender.note_client_hello(UdpVideoStreamId::Wide, endpoint(41001), sizeof(sockaddr_in), 88);
@@ -176,7 +176,6 @@ TEST(UdpVideoSenderTest, SendFailuresIncrementUdpCountersWithoutPeerReset) {
   EXPECT_EQ(stats.packets_packetized > 1, true);
   EXPECT_EQ(stats.packets_sent, 1U);
   EXPECT_EQ(stats.send_errors, stats.packets_packetized - 1);
-  EXPECT_EQ(stats.peer_reset_required, false);
 }
 
 TEST(UdpVideoSenderTest, MissingRepairRequestIncrementsMissCounter) {
@@ -457,7 +456,7 @@ TEST(UdpVideoSenderTest, RepairRequestsStillServedWhileVideoSuppressed) {
 int main() {
   UdpVideoSenderTest_HelloRegistersEndpointAndFrameSendPacketizesToUdpEndpoint();
   UdpVideoSenderTest_SentPacketsEnterRepairCacheAndRepairRequestResendsWithFlag();
-  UdpVideoSenderTest_SendFailuresIncrementUdpCountersWithoutPeerReset();
+  UdpVideoSenderTest_SendFailuresIncrementUdpSendErrorCounters();
   UdpVideoSenderTest_MissingRepairRequestIncrementsMissCounter();
   UdpVideoSenderTest_MixedHitMissRepairRequestCountsOnlyUnresolvedUniquePackets();
   UdpVideoSenderTest_FrameSendWithoutClientIsDroppedWithoutFillingRepairCache();

@@ -11,6 +11,8 @@ namespace commaview::video {
 
 class UdpVideoRepairCache {
  public:
+  // Byte caps of 0 disable caching (frames are evicted immediately).
+  // max_age_ns < 0 disables age-based eviction; 0 expires everything.
   struct Limits {
     size_t max_bytes_per_stream = 0;
     size_t max_bytes_total = 0;
