@@ -807,6 +807,9 @@ static void udp_video_stream_loop(int port, const char* video_service) {
         append_runtime_run_event("udp_client_idle", video_service);
         printf("[%s] UDP client idle, pausing video\n", video_service);
         fflush(stdout);
+        // Drop queued frames so a returning client never receives stale video.
+        while (video_queue.pop_next()) {
+        }
       }
       if (video_sock != nullptr) {
         delete video_poller;
