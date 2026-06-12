@@ -75,6 +75,17 @@ class UdpVideoSender {
   bool has_active_client(UdpVideoStreamId stream, int64_t now_ns) const;
   bool client_suppresses_video(UdpVideoStreamId stream) const;
 
+  // Returns true and the active client's session id when a client is within
+  // the liveness window for the stream.
+  bool active_client_session(UdpVideoStreamId stream, int64_t now_ns, uint16_t* session_id) const;
+
+  // Sends pre-encoded datagrams to the stream's active client. Stops at the
+  // first send failure (latest-wins data is dropped, never retried) and
+  // returns the number of datagrams handed to the socket.
+  size_t send_raw_datagrams(UdpVideoStreamId stream,
+                            const std::vector<std::vector<uint8_t>>& datagrams,
+                            int64_t now_ns);
+
   UdpVideoSendStats send_frame(const UdpVideoFrameForPacketizing& frame, int64_t now_ns);
   UdpVideoRepairStats handle_repair_request(const UdpVideoRepairRequest& request, int64_t now_ns);
 

@@ -21,12 +21,16 @@ enum class UdpVideoPacketType : uint8_t {
   Policy = 4,
   RepairRequest = 5,
   RepairStatus = 6,
+  TelemetrySnapshot = 7,
 };
 
 enum class UdpVideoStreamId : uint8_t {
   Road = 1,
   Wide = 2,
   Driver = 3,
+  // Lossy latest-wins overlay telemetry snapshots (no video frames flow on
+  // this stream; it reuses the CVUP control handshake and liveness rules).
+  Telemetry = 4,
 };
 
 constexpr uint16_t UDP_VIDEO_FLAG_KEYFRAME = 1u << 0;

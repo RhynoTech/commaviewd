@@ -85,4 +85,28 @@ inline bool telemetry_send_failure_is_droppable(const commaview::net::SendResult
   return result.status == commaview::net::SendStatus::Backpressure && result.bytes_sent == 0;
 }
 
+// TCP keepalive rate for services that the client is receiving via the lossy
+// UDP snapshot path instead.
+inline constexpr int kUdpSnapshotTcpKeepaliveHz = 2;
+
+// Alert-bearing services must stay full-rate on the reliable TCP path even
+// when the client receives overlay telemetry via UDP snapshots: a lost alert
+// is unacceptable, and alerts ride selfdriveState/controlsState/onroadEvents.
+inline bool service_keeps_full_tcp_rate_for_udp_snapshot(const char* service_name) {
+  if (service_name == nullptr) return true;
+  return std::strcmp(service_name, "selfdriveState") == 0 ||
+         std::strcmp(service_name, "controlsState") == 0 ||
+         std::strcmp(service_name, "onroadEvents") == 0;
+}
+
+// When the client opted into UDP snapshot transport, demote Pass-mode services
+// that ride the snapshot path to a low TCP keepalive rate. Off/Sample policies
+// and alert-bearing services are returned unchanged.
+inline ServicePolicy demote_policy_for_udp_snapshot(const ServicePolicy& policy,
+                                                    const char* service_name) {
+  if (policy.mode != ServiceMode::Pass) return policy;
+  if (service_keeps_full_tcp_rate_for_udp_snapshot(service_name)) return policy;
+  return {ServiceMode::Sample, kUdpSnapshotTcpKeepaliveHz};
+}
+
 }  // namespace commaview::telemetry

@@ -117,10 +117,13 @@ bool parse_set_policy_control(const std::string& json,
   int transport_version = 1;
   std::string client_role = "legacy";
   bool telemetry_on_video = true;
+  std::string telemetry_transport = "full";
   extract_json_int_field(json, "transportVersion", &transport_version);
   extract_json_string_field(json, "clientRole", &client_role);
   telemetry_on_video = transport_version < 2;
   extract_json_bool_field(json, "telemetryOnVideo", &telemetry_on_video);
+  extract_json_string_field(json, "telemetryTransport", &telemetry_transport);
+  if (telemetry_transport != "udp_snapshot") telemetry_transport = "full";
 
   if (session_id != nullptr) *session_id = sid;
   if (suppress_video != nullptr) *suppress_video = suppress;
@@ -128,6 +131,7 @@ bool parse_set_policy_control(const std::string& json,
     state->transport_version = transport_version;
     state->client_role = client_role;
     state->telemetry_on_video = telemetry_on_video;
+    state->telemetry_transport = telemetry_transport;
   }
   return true;
 }

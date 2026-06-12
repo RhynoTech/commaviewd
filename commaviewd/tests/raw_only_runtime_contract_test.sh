@@ -83,6 +83,10 @@ assert_contains_fixed 'RAW_META_ENVELOPE_V5,' "$BRIDGE_CPP" 'runtime should emit
 assert_contains_fixed 'std::thread telemetry_thread' "$BRIDGE_CPP" 'telemetry should run in a dedicated thread'
 assert_contains_fixed "std::mutex send_mutex;" "$BRIDGE_CPP" "per-client send mutex missing"
 assert_contains_fixed "udp_video_sender.send_frame(frame, runtime_now_ns())" "$BRIDGE_CPP" "video path must use UDP sender"
+assert_contains_fixed 'udp_telemetry_snapshot_loop' "$BRIDGE_CPP" 'lossy UDP telemetry snapshot pump missing'
+assert_contains_fixed 'udp_telemetry_snapshot_loop, telemetry_udp_fd, PORT_TELEMETRY' "$BRIDGE_CPP" 'telemetry snapshot pump must run on a pre-bound telemetry port socket'
+assert_contains_fixed 'create_udp_video_socket(PORT_TELEMETRY)' "$BRIDGE_CPP" 'UDP telemetry snapshot socket must be bound fail-closed at startup'
+assert_contains_fixed 'demote_policy_for_udp_snapshot' "$BRIDGE_CPP" 'TCP telemetry must demote snapshot-covered services for udp_snapshot clients'
 assert_contains_fixed "std::lock_guard<std::mutex> send_lock(*send_mutex);" "$BRIDGE_CPP" "TCP telemetry/control writes should be serialized via send mutex"
 assert_contains_fixed "&send_mutex," "$BRIDGE_CPP" "telemetry loop should receive per-client send mutex"
 assert_contains_fixed 'telemetry_loop' "$BRIDGE_CPP" 'direct ui socket telemetry loop helper missing'

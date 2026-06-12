@@ -66,6 +66,30 @@ bool UdpVideoSender::client_suppresses_video(UdpVideoStreamId stream) const {
   return endpoint != nullptr && endpoint->suppress_video;
 }
 
+bool UdpVideoSender::active_client_session(UdpVideoStreamId stream,
+                                           int64_t now_ns,
+                                           uint16_t* session_id) const {
+  const Endpoint* endpoint = endpoint_for_stream(stream);
+  if (endpoint == nullptr || endpoint_expired(*endpoint, now_ns)) return false;
+  if (session_id != nullptr) *session_id = endpoint->session_id;
+  return true;
+}
+
+size_t UdpVideoSender::send_raw_datagrams(UdpVideoStreamId stream,
+                                          const std::vector<std::vector<uint8_t>>& datagrams,
+                                          int64_t now_ns) {
+  Endpoint* endpoint = active_endpoint_for_stream(stream, now_ns);
+  if (endpoint == nullptr) return 0;
+  size_t sent = 0;
+  for (const std::vector<uint8_t>& datagram : datagrams) {
+    const ssize_t result =
+        send_fn_(datagram.data(), datagram.size(), endpoint->addr, endpoint->addr_len);
+    if (result < 0 || static_cast<size_t>(result) != datagram.size()) break;
+    sent++;
+  }
+  return sent;
+}
+
 UdpVideoSendStats UdpVideoSender::send_frame(const UdpVideoFrameForPacketizing& frame,
                                              int64_t now_ns) {
   UdpVideoSendStats stats;

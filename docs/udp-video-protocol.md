@@ -14,10 +14,12 @@ All multi-byte fields are big-endian.
 | 8200 | road | UDP video + legacy TCP control/telemetry companion |
 | 8201 | wide | UDP video + legacy TCP control/telemetry companion |
 | 8202 | driver | UDP video |
-| 8203 | telemetry | TCP telemetry stream |
+| 8203 | telemetry | TCP telemetry stream + UDP telemetry snapshots |
 
 Video flows over UDP only. The runtime binds one UDP socket per stream at
-startup; no TCP connection is required to start or keep a video stream.
+startup; no TCP connection is required to start or keep a video stream. Port
+8203 carries two independent channels: the reliable TCP telemetry stream and a
+lossy latest-wins UDP snapshot channel (same port number, separate protocol).
 
 ## Common header (all datagrams)
 
@@ -26,12 +28,12 @@ startup; no TCP connection is required to start or keep a video stream.
 | 0 | 4 | magic `0x43565550` ("CVUP") |
 | 4 | 1 | version (`1`) |
 | 5 | 1 | packet type |
-| 6 | 1 | stream id (`1` road, `2` wide, `3` driver) |
+| 6 | 1 | stream id (`1` road, `2` wide, `3` driver, `4` telemetry) |
 | 7 | 1 | reserved (`0`) |
 | 8 | 2 | session id |
 
 Packet types: `1` Video, `2` Hello, `3` Heartbeat, `4` Policy,
-`5` RepairRequest, `6` RepairStatus (reserved).
+`5` RepairRequest, `6` RepairStatus (reserved), `7` TelemetrySnapshot.
 
 ## Client lifecycle (app → runtime)
 
@@ -86,8 +88,67 @@ The runtime serves repairs from a short-lived cache (per-stream/total byte
 caps, ~2 s max age) and marks resent packets with the repair-resend flag.
 Repair requests are session-scoped and served even while video is suppressed.
 
+## Telemetry snapshots (runtime → app, UDP :8203)
+
+Lossy latest-wins overlay/HUD telemetry. The app activates the channel with
+the same Hello/Heartbeat lifecycle on stream id `4`; the suppress flag in
+Heartbeat/Policy is ignored on this stream. While a client is live the runtime
+builds at most one snapshot per telemetry emit tick (50 ms, ≤ 20 Hz, aligned
+with the video cadence) from the newest fresh ui-export payloads:
+
+- **Fast tier (every tick):** uiStateOnroad, selfdriveState, carState,
+  controlsState, driverMonitoringState, driverStateV2, modelV2, radarState,
+  liveCalibration, carControl, longitudinalPlan, onroadProjection.
+- **Slow tier (≤ 10 Hz):** carOutput, liveParameters, carParams, deviceState,
+  roadCameraState, pandaStatesSummary, wideRoadCameraState.
+- **Never in snapshots:** onroadEvents (event data; reliable TCP only).
+
+A service is included only when its ui-export frame advanced since the last
+included snapshot; unchanged state is not resent. Snapshots are fire-and-
+forget: there is no repair, no retransmit, and a send failure drops the whole
+snapshot (the next one is at most 50 ms away). The app must discard an
+incomplete snapshot as soon as a newer sequence arrives and ignore sequences
+at or below the last completed one.
+
+**TelemetrySnapshot datagram** (packet type `7`, stream id `4`):
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0–9 | 10 | common header (packet type `7`, stream id `4`) |
+| 10 | 8 | snapshot sequence (monotonic) |
+| 18 | 8 | snapshot mono time (nanoseconds) |
+| 26 | 2 | fragment index |
+| 28 | 2 | fragment count |
+| 30 | 4 | blob byte offset |
+| 34 | 4 | blob byte length (total) |
+| 38 | 2 | payload length |
+| 40 | n | payload (contiguous blob slice) |
+
+**Snapshot blob** (after reassembly):
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 1 | blob version (`1`) |
+| 1 | 1 | entry count |
+| 2 | n | entries |
+
+Each entry: `service index` (1), `flags` (1, reserved `0`), `age ms` (4, wall
+age of the payload at build time), `payload length` (4), then the unmodified
+ui-export JSON payload for that service (same bytes the TCP raw envelope
+carries).
+
+**TCP interaction:** a client receiving snapshots should send the TCP
+`set_policy` control op with `"telemetryTransport": "udp_snapshot"`. The
+runtime then demotes Pass-mode snapshot-covered services on that TCP
+connection to a 2 Hz keepalive; selfdriveState, controlsState, and
+onroadEvents always stay full-rate on TCP because they carry alerts. Sending
+`"telemetryTransport": "full"` (or omitting the field) restores full-rate TCP.
+
 ## Versioning
 
 Version mismatches are rejected outright; there is no negotiation. Any change
 to the layouts above requires bumping the version byte and updating both repos
 together (`release.properties` in CommaView pins the compatible runtime tag).
+Adding the TelemetrySnapshot packet type and telemetry stream id was additive
+at version `1`: older receivers never subscribe to the snapshot channel and
+reject unknown packet types on the video streams.

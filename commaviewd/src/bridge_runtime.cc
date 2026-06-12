@@ -6,6 +6,7 @@
 #include "runtime_debug_config.h"
 #include "runtime_video_send_accounting.h"
 #include "ui_export_socket.h"
+#include "udp_telemetry_snapshot.h"
 #include "udp_video_sender.h"
 #include "video_transport_policy.h"
 /**
@@ -158,7 +159,8 @@ static void telemetry_loop(int client_fd,
                            const char* stream_name,
                            std::atomic<bool>* disconnect_requested,
                            std::mutex* send_mutex,
-                           std::atomic<bool>* telemetry_enabled);
+                           std::atomic<bool>* telemetry_enabled,
+                           std::atomic<bool>* udp_snapshot_transport);
 
 static commaview::net::SendResult send_meta_bytes_bounded(int fd,
                                                            const uint8_t* bytes,
@@ -981,6 +983,133 @@ static void udp_video_stream_loop(int udp_fd, int port, const char* video_servic
   delete ctx;
 }
 
+// Lossy latest-wins overlay telemetry pump on UDP :8203 (the TCP telemetry
+// port number, UDP protocol). A client announces itself with Hello/Heartbeat
+// datagrams on the Telemetry stream; while it stays within the liveness
+// window the pump bundles the newest fresh ui-export payloads into one
+// snapshot per emit tick and fires it as TelemetrySnapshot datagrams. Behind
+// clients lose snapshots, never lateness: there is no repair and no
+// retransmit. onroadEvents and full-rate alert services stay on TCP.
+static void udp_telemetry_snapshot_loop(int udp_fd, int port) {
+  const char* stream_name = "telemetry-snapshot";
+  const auto snapshot_stream = commaview::video::UdpVideoStreamId::Telemetry;
+  if (udp_fd < 0) {
+    fprintf(stderr, "[%s] missing pre-bound UDP telemetry socket on :%d\n", stream_name, port);
+    return;
+  }
+  printf("[%s] UDP telemetry snapshots on :%d\n", stream_name, port);
+  fflush(stdout);
+
+  // Single non-blocking attempt: when the socket is backed up the snapshot is
+  // stale by definition, so it is dropped instead of paced.
+  auto udp_send_fn = [udp_fd](const uint8_t* data,
+                              size_t size,
+                              const sockaddr_storage& addr,
+                              socklen_t addr_len) -> ssize_t {
+    return sendto(udp_fd,
+                  data,
+                  size,
+                  MSG_DONTWAIT,
+                  reinterpret_cast<const sockaddr*>(&addr),
+                  addr_len);
+  };
+  commaview::video::UdpVideoSender snapshot_client_tracker(udp_send_fn);
+  commaview::telemetry_snapshot::TelemetrySnapshotBuilder builder;
+
+  bool client_was_active = false;
+  uint16_t last_session_id = 0;
+  uint64_t snapshot_sequence = 0;
+  uint64_t snapshots_sent = 0;
+  uint64_t snapshots_dropped = 0;
+  auto next_tick = std::chrono::steady_clock::now();
+
+  while (g_running) {
+    drain_udp_video_control_datagrams(udp_fd, snapshot_stream, &snapshot_client_tracker);
+
+    uint16_t session_id = 0;
+    const bool client_active =
+        snapshot_client_tracker.active_client_session(snapshot_stream, runtime_now_ns(), &session_id);
+    if (!client_active) {
+      if (client_was_active) {
+        client_was_active = false;
+        append_runtime_run_event("udp_telemetry_client_idle", stream_name);
+        printf("[%s] UDP client idle, pausing snapshots\n", stream_name);
+        fflush(stdout);
+      }
+      wait_for_udp_video_datagram(udp_fd, UDP_VIDEO_IDLE_POLL_MS);
+      next_tick = std::chrono::steady_clock::now();
+      continue;
+    }
+
+    if (!client_was_active || session_id != last_session_id) {
+      client_was_active = true;
+      last_session_id = session_id;
+      // A (re)joining client must receive full state, not just deltas since
+      // the previous client's last snapshot.
+      builder.reset();
+      append_runtime_run_event("udp_telemetry_client_active", stream_name);
+      printf("[%s] UDP client active (session=%u), streaming snapshots\n", stream_name, session_id);
+      fflush(stdout);
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    if (now < next_tick) {
+      std::this_thread::sleep_for(next_tick - now);
+      now = std::chrono::steady_clock::now();
+    }
+    do {
+      next_tick += std::chrono::milliseconds(g_telemetry_emit_ms);
+    } while (next_tick <= now);
+
+    if (g_ui_export_socket == nullptr) continue;
+
+    std::array<commaview::ui_export::LatestFrame, static_cast<size_t>(NUM_TELEM)> frames;
+    std::vector<commaview::telemetry_snapshot::SnapshotInput> inputs;
+    inputs.reserve(static_cast<size_t>(NUM_TELEM));
+    for (int i = 0; i < NUM_TELEM; ++i) {
+      if (commaview::telemetry_snapshot::snapshot_tier_for_service(static_cast<uint8_t>(i)) ==
+          commaview::telemetry_snapshot::SnapshotTier::Excluded) {
+        continue;
+      }
+      if (!g_ui_export_socket->latest_frame(static_cast<uint8_t>(i),
+                                            commaview::ui_export::kFreshFrameWindowMs,
+                                            &frames[static_cast<size_t>(i)])) {
+        continue;
+      }
+      commaview::telemetry_snapshot::SnapshotInput input;
+      input.service_index = static_cast<uint8_t>(i);
+      input.updated_at_ms = frames[static_cast<size_t>(i)].updated_at_ms;
+      input.payload = &frames[static_cast<size_t>(i)].payload;
+      inputs.push_back(input);
+    }
+
+    const std::vector<uint8_t> blob = builder.build(inputs, runtime_now_ms());
+    if (blob.empty()) continue;
+
+    snapshot_sequence++;
+    const auto datagrams = commaview::telemetry_snapshot::packetize_telemetry_snapshot(
+        blob, session_id, snapshot_sequence, static_cast<uint64_t>(runtime_now_ns()));
+    const size_t sent =
+        snapshot_client_tracker.send_raw_datagrams(snapshot_stream, datagrams, runtime_now_ns());
+    if (sent == datagrams.size()) {
+      snapshots_sent++;
+    } else {
+      snapshots_dropped++;
+    }
+    if (snapshots_sent <= 3 || ((snapshots_sent + snapshots_dropped) % 1200) == 0) {
+      printf("[%s] snapshots sent=%llu dropped=%llu blob=%zu frags=%zu\n",
+             stream_name,
+             static_cast<unsigned long long>(snapshots_sent),
+             static_cast<unsigned long long>(snapshots_dropped),
+             blob.size(),
+             datagrams.size());
+      fflush(stdout);
+    }
+  }
+
+  close(udp_fd);
+}
+
 // Legacy TCP companion channel on the video ports. Video itself is UDP-only;
 // this channel remains for control frames and telemetry-on-video clients.
 static void handle_video_client(int client_fd, const char* video_service, int port) {
@@ -1014,6 +1143,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
 
   std::atomic<bool> telemetry_disconnect_requested{false};
   std::atomic<bool> telemetry_enabled_for_client{include_telemetry};
+  std::atomic<bool> udp_snapshot_transport{false};
   std::thread telemetry_thread;
   std::mutex send_mutex;
   if (include_telemetry) {
@@ -1022,7 +1152,8 @@ static void handle_video_client(int client_fd, const char* video_service, int po
                                    video_service,
                                    &telemetry_disconnect_requested,
                                    &send_mutex,
-                                   &telemetry_enabled_for_client);
+                                   &telemetry_enabled_for_client,
+                                   &udp_snapshot_transport);
   }
 
   ClientControlState control_state;
@@ -1036,6 +1167,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     consume_client_control_frames(client_fd, &control_state, video_service);
     if (include_telemetry) {
       telemetry_enabled_for_client.store(control_state.telemetry_on_video);
+      udp_snapshot_transport.store(control_state.telemetry_transport == "udp_snapshot");
       if (telemetry_disconnect_requested.load()) break;
     }
 
@@ -1056,7 +1188,8 @@ static void telemetry_loop(int client_fd,
                            const char* stream_name,
                            std::atomic<bool>* disconnect_requested,
                            std::mutex* send_mutex,
-                           std::atomic<bool>* telemetry_enabled) {
+                           std::atomic<bool>* telemetry_enabled,
+                           std::atomic<bool>* udp_snapshot_transport) {
   if (disconnect_requested == nullptr) return;
   uint64_t telem_raw_count = 0;
   auto next_telem_poll = std::chrono::steady_clock::now();
@@ -1097,11 +1230,20 @@ static void telemetry_loop(int client_fd,
       effective_config = g_runtime_state.effective_config;
     }
 
+    // While the client receives overlay telemetry via UDP snapshots, demote
+    // snapshot-covered services to a low TCP keepalive rate; alert-bearing
+    // services always stay full-rate on the reliable path.
+    const bool demote_for_udp_snapshot =
+        udp_snapshot_transport != nullptr && udp_snapshot_transport->load();
+
     std::array<bool, static_cast<size_t>(NUM_TELEM)> ui_fresh = {};
     if (g_ui_export_socket != nullptr) {
       for (int i = 0; i < NUM_TELEM; ++i) {
         const char* service_name = kTelemetryServices[static_cast<size_t>(i)];
-        const ServicePolicy policy = policy_for_service(effective_config, service_name);
+        ServicePolicy policy = policy_for_service(effective_config, service_name);
+        if (demote_for_udp_snapshot) {
+          policy = commaview::telemetry::demote_policy_for_udp_snapshot(policy, service_name);
+        }
         if (!telemetry_policy_fetches_latest(policy)) {
           continue;
         }
@@ -1206,13 +1348,15 @@ static void handle_telemetry_client(int client_fd) {
 
   std::atomic<bool> disconnect_requested{false};
   std::atomic<bool> telemetry_enabled_for_client{true};
+  std::atomic<bool> udp_snapshot_transport{false};
   std::mutex send_mutex;
   std::thread telemetry_thread(telemetry_loop,
                                client_fd,
                                stream_name,
                                &disconnect_requested,
                                &send_mutex,
-                               &telemetry_enabled_for_client);
+                               &telemetry_enabled_for_client,
+                               &udp_snapshot_transport);
   ClientControlState control_state;
 
   while (g_running && !disconnect_requested.load()) {
@@ -1222,6 +1366,7 @@ static void handle_telemetry_client(int client_fd) {
     }
     consume_client_control_frames(client_fd, &control_state, stream_name);
     telemetry_enabled_for_client.store(true);
+    udp_snapshot_transport.store(control_state.telemetry_transport == "udp_snapshot");
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
 
@@ -1321,6 +1466,15 @@ int commaview_bridge_main(int argc, char* argv[]) {
   }
   udp_fds.push_back(driver_udp_fd);
 
+  const int telemetry_udp_fd = create_udp_video_socket(PORT_TELEMETRY);
+  if (telemetry_udp_fd < 0) {
+    fprintf(stderr, "failed on UDP telemetry port %d\n", PORT_TELEMETRY);
+    close_startup_fds();
+    if (g_ui_export_socket != nullptr) g_ui_export_socket->stop();
+    return 1;
+  }
+  udp_fds.push_back(telemetry_udp_fd);
+
   for (auto& s : streams) {
     int fd = create_server(s.first);
     if (fd < 0) {
@@ -1337,6 +1491,9 @@ int commaview_bridge_main(int argc, char* argv[]) {
   threads.emplace_back(udp_video_stream_loop, road_udp_fd, PORT_ROAD, video_services[0]);
   threads.emplace_back(udp_video_stream_loop, wide_udp_fd, PORT_WIDE, video_services[1]);
   threads.emplace_back(udp_video_stream_loop, driver_udp_fd, PORT_DRIVER, video_services[2]);
+  // Lossy latest-wins overlay telemetry snapshots (UDP port number matches the
+  // reliable TCP telemetry port).
+  threads.emplace_back(udp_telemetry_snapshot_loop, telemetry_udp_fd, PORT_TELEMETRY);
   udp_fds.clear();
 
   for (size_t i = 0; i < streams.size(); ++i) {

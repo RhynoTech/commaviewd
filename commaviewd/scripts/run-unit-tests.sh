@@ -114,6 +114,11 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
   -o "$TMP/test_udp_video_sender"
 
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
+  "$ROOT/tests/test_udp_telemetry_snapshot.cpp" \
+  "$ROOT/src/udp_telemetry_snapshot.cpp" \
+  -o "$TMP/test_udp_telemetry_snapshot"
+
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
   "$ROOT/tests/test_video_send_accounting.cpp" \
   "$ROOT/src/runtime_video_send_accounting.cpp" \
   "$ROOT/src/framing.cpp" \
@@ -140,6 +145,7 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
 "$TMP/test_udp_video_packetizer"
 "$TMP/test_udp_video_repair_cache"
 "$TMP/test_udp_video_sender"
+"$TMP/test_udp_telemetry_snapshot"
 "$TMP/test_video_send_accounting"
 "$TMP/test_http_server_cloexec"
 "$TMP/test_ui_export_socket"
