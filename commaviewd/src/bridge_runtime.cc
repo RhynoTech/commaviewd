@@ -758,11 +758,10 @@ static constexpr int UDP_VIDEO_ACTIVE_POLL_MS = 20;
 // independent of TCP clients: a client announces itself with Hello/Heartbeat
 // datagrams, video flows while the client stays within the liveness window,
 // and the encoder subscription is dropped while no client is active.
-static void udp_video_stream_loop(int port, const char* video_service) {
+static void udp_video_stream_loop(int udp_fd, int port, const char* video_service) {
   const auto udp_stream_id = udp_stream_id_for_port(port);
-  const int udp_fd = create_udp_video_socket(port);
   if (udp_fd < 0) {
-    fprintf(stderr, "[%s] failed to open UDP video socket on :%d\n", video_service, port);
+    fprintf(stderr, "[%s] missing pre-bound UDP video socket on :%d\n", video_service, port);
     return;
   }
   printf("[%s] UDP video on :%d\n", video_service, port);
@@ -1286,20 +1285,62 @@ int commaview_bridge_main(int argc, char* argv[]) {
 
   std::vector<std::thread> threads;
   std::vector<int> server_fds;
+  std::vector<int> udp_fds;
 
-  // UDP video pumps run independently of any TCP client.
-  threads.emplace_back(udp_video_stream_loop, PORT_ROAD, video_services[0]);
-  threads.emplace_back(udp_video_stream_loop, PORT_WIDE, video_services[1]);
-  threads.emplace_back(udp_video_stream_loop, PORT_DRIVER, video_services[2]);
+  auto close_startup_fds = [&]() {
+    for (int fd : udp_fds) close(fd);
+    for (int fd : server_fds) close(fd);
+    udp_fds.clear();
+    server_fds.clear();
+  };
+
+  const int road_udp_fd = create_udp_video_socket(PORT_ROAD);
+  if (road_udp_fd < 0) {
+    fprintf(stderr, "failed on UDP video port %d\n", PORT_ROAD);
+    close_startup_fds();
+    if (g_ui_export_socket != nullptr) g_ui_export_socket->stop();
+    return 1;
+  }
+  udp_fds.push_back(road_udp_fd);
+
+  const int wide_udp_fd = create_udp_video_socket(PORT_WIDE);
+  if (wide_udp_fd < 0) {
+    fprintf(stderr, "failed on UDP video port %d\n", PORT_WIDE);
+    close_startup_fds();
+    if (g_ui_export_socket != nullptr) g_ui_export_socket->stop();
+    return 1;
+  }
+  udp_fds.push_back(wide_udp_fd);
+
+  const int driver_udp_fd = create_udp_video_socket(PORT_DRIVER);
+  if (driver_udp_fd < 0) {
+    fprintf(stderr, "failed on UDP video port %d\n", PORT_DRIVER);
+    close_startup_fds();
+    if (g_ui_export_socket != nullptr) g_ui_export_socket->stop();
+    return 1;
+  }
+  udp_fds.push_back(driver_udp_fd);
 
   for (auto& s : streams) {
     int fd = create_server(s.first);
     if (fd < 0) {
       fprintf(stderr, "failed on port %d\n", s.first);
+      close_startup_fds();
+      if (g_ui_export_socket != nullptr) g_ui_export_socket->stop();
       return 1;
     }
     server_fds.push_back(fd);
-    threads.emplace_back(accept_loop, fd, s.second, s.first);
+  }
+
+  // UDP video pumps run independently of any TCP client, using sockets that
+  // were bound before the runtime reports ready.
+  threads.emplace_back(udp_video_stream_loop, road_udp_fd, PORT_ROAD, video_services[0]);
+  threads.emplace_back(udp_video_stream_loop, wide_udp_fd, PORT_WIDE, video_services[1]);
+  threads.emplace_back(udp_video_stream_loop, driver_udp_fd, PORT_DRIVER, video_services[2]);
+  udp_fds.clear();
+
+  for (size_t i = 0; i < streams.size(); ++i) {
+    threads.emplace_back(accept_loop, server_fds[i], streams[i].second, streams[i].first);
   }
 
   append_runtime_run_event("ready");
