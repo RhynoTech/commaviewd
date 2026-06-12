@@ -552,6 +552,10 @@ def init_git_repo(op_root: Path) -> None:
     subprocess.run(["git", "init"], cwd=op_root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     subprocess.run(["git", "config", "user.email", "commaview-test@example.invalid"], cwd=op_root, check=True)
     subprocess.run(["git", "config", "user.name", "CommaView Test"], cwd=op_root, check=True)
+    # Keep the fixture hermetic on hosts whose global git config enforces
+    # commit/tag signing.
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=op_root, check=True)
+    subprocess.run(["git", "config", "tag.gpgsign", "false"], cwd=op_root, check=True)
     subprocess.run(["git", "add", "."], cwd=op_root, check=True)
     subprocess.run(["git", "commit", "-m", "baseline"], cwd=op_root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 

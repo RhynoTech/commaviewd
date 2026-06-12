@@ -51,7 +51,9 @@ sudo apt-get -o Dir::Cache::archives="$APT_CACHE_DIR" install -y --no-install-re
   "${capnp_pkg}:arm64" \
   libzmq5:arm64
 
-sudo chown -R "$USER":"$USER" "$APT_CACHE_DIR" || true
+# $USER may be unset in containerized environments; derive it instead of
+# tripping set -u.
+sudo chown -R "$(id -un)":"$(id -gn)" "$APT_CACHE_DIR" || true
 
 ARM_CAPNP_SO="$(ls -1 /usr/lib/aarch64-linux-gnu/libcapnp-*.so | head -n1 || true)"
 ARM_KJ_SO="$(ls -1 /usr/lib/aarch64-linux-gnu/libkj-*.so | head -n1 || true)"
