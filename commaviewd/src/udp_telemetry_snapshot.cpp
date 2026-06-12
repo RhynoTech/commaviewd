@@ -83,16 +83,20 @@ std::vector<uint8_t> TelemetrySnapshotBuilder::build(const std::vector<SnapshotI
     due.push_back(&input);
   }
 
-  if (due.empty()) return {};
+  if (due.empty()) {
+    staged_.clear();
+    return {};
+  }
 
   std::vector<uint8_t> blob;
   blob.reserve(64);
   append_u8(blob, kSnapshotBlobVersion);
   append_u8(blob, static_cast<uint8_t>(due.size()));
+  staged_.clear();
+  staged_.reserve(due.size());
+  staged_wall_ms_ = now_ms;
   for (const SnapshotInput* input : due) {
-    ServiceState& state = states_[input->service_index];
-    state.last_included_updated_ms = input->updated_at_ms;
-    state.last_included_wall_ms = now_ms;
+    staged_.push_back({input->service_index, input->updated_at_ms});
 
     const uint64_t age = now_ms > input->updated_at_ms ? now_ms - input->updated_at_ms : 0;
     append_u8(blob, input->service_index);
@@ -104,10 +108,20 @@ std::vector<uint8_t> TelemetrySnapshotBuilder::build(const std::vector<SnapshotI
   return blob;
 }
 
+void TelemetrySnapshotBuilder::commit_last_build() {
+  for (const StagedInclusion& staged : staged_) {
+    ServiceState& state = states_[staged.service_index];
+    state.last_included_updated_ms = staged.updated_at_ms;
+    state.last_included_wall_ms = staged_wall_ms_;
+  }
+  staged_.clear();
+}
+
 void TelemetrySnapshotBuilder::reset() {
   for (ServiceState& state : states_) {
     state = ServiceState{};
   }
+  staged_.clear();
 }
 
 std::vector<std::vector<uint8_t>> packetize_telemetry_snapshot(const std::vector<uint8_t>& blob,

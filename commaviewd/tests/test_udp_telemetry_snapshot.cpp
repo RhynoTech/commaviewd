@@ -98,6 +98,7 @@ static void test_builder_skips_unchanged_and_excluded_services() {
   const auto first = builder.build(inputs, 1000);
   assert(!first.empty());
   assert(first[1] == 1);  // only modelV2
+  builder.commit_last_build();
 
   // Unchanged updated_at_ms: nothing due, no snapshot.
   const auto second = builder.build(inputs, 1050);
@@ -116,6 +117,7 @@ static void test_builder_rate_limits_slow_tier() {
 
   const auto first = builder.build({input_for(15, 1000, &device)}, 1000);
   assert(!first.empty());
+  builder.commit_last_build();
 
   // Fresh update 50 ms later is held back by the 10 Hz slow tier.
   const auto second = builder.build({input_for(15, 1050, &device)}, 1050);
@@ -126,10 +128,31 @@ static void test_builder_rate_limits_slow_tier() {
   assert(!third.empty());
 }
 
+static void test_uncommitted_build_is_retried_after_a_dropped_send() {
+  TelemetrySnapshotBuilder builder;
+  const auto model = payload_of("{\"m\":1}");
+  const auto device = payload_of("{\"d\":1}");
+
+  // First snapshot is built but never committed (send failed/dropped).
+  const auto dropped = builder.build({input_for(7, 1000, &model), input_for(15, 1000, &device)}, 1000);
+  assert(!dropped.empty());
+  assert(dropped[1] == 2);
+
+  // The same unchanged state stays due on the next tick.
+  const auto retried = builder.build({input_for(7, 1000, &model), input_for(15, 1000, &device)}, 1050);
+  assert(!retried.empty());
+  assert(retried[1] == 2);
+  builder.commit_last_build();
+
+  // Once committed, unchanged state is suppressed again.
+  assert(builder.build({input_for(7, 1000, &model), input_for(15, 1000, &device)}, 1200).empty());
+}
+
 static void test_builder_reset_resends_state() {
   TelemetrySnapshotBuilder builder;
   const auto model = payload_of("{\"m\":1}");
   assert(!builder.build({input_for(7, 1000, &model)}, 1000).empty());
+  builder.commit_last_build();
   assert(builder.build({input_for(7, 1000, &model)}, 1050).empty());
 
   builder.reset();
@@ -217,6 +240,7 @@ int main() {
   test_builder_serializes_due_entries();
   test_builder_skips_unchanged_and_excluded_services();
   test_builder_rate_limits_slow_tier();
+  test_uncommitted_build_is_retried_after_a_dropped_send();
   test_builder_reset_resends_state();
   test_packetizer_single_fragment_round_trip();
   test_packetizer_splits_and_reassembles_large_blobs();

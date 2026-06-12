@@ -1092,6 +1092,10 @@ static void udp_telemetry_snapshot_loop(int udp_fd, int port) {
     const size_t sent =
         snapshot_client_tracker.send_raw_datagrams(snapshot_stream, datagrams, runtime_now_ns());
     if (sent == datagrams.size()) {
+      // Only fully delivered snapshots count as included: a dropped snapshot
+      // must not suppress its entries from the next tick, or the client could
+      // permanently miss slow-tier or initial full-state values.
+      builder.commit_last_build();
       snapshots_sent++;
     } else {
       snapshots_dropped++;

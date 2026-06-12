@@ -39,11 +39,19 @@ struct SnapshotInput {
 
 // Tracks per-service inclusion state so unchanged frames are not resent and
 // slow-tier services are rate limited. One builder per snapshot client stream.
+//
+// build() only stages the inclusion bookkeeping; callers must invoke
+// commit_last_build() after every fragment of the snapshot reached the
+// socket. A dropped snapshot is therefore retried on the next tick instead of
+// silently suppressing state the client never received.
 class TelemetrySnapshotBuilder {
  public:
   // Returns the serialized snapshot blob, or an empty vector when no service
   // is due this tick. Inputs must carry fresh ui-export frames only.
   std::vector<uint8_t> build(const std::vector<SnapshotInput>& inputs, uint64_t now_ms);
+
+  // Marks the entries staged by the most recent build() as delivered.
+  void commit_last_build();
 
   void reset();
 
@@ -52,7 +60,13 @@ class TelemetrySnapshotBuilder {
     uint64_t last_included_updated_ms = 0;
     uint64_t last_included_wall_ms = 0;
   };
+  struct StagedInclusion {
+    uint8_t service_index = 0;
+    uint64_t updated_at_ms = 0;
+  };
   ServiceState states_[20] = {};
+  std::vector<StagedInclusion> staged_;
+  uint64_t staged_wall_ms_ = 0;
 };
 
 // Splits a snapshot blob into CVUP TelemetrySnapshot datagrams.
