@@ -29,24 +29,41 @@ UdpVideoRepairCache::Limits UdpVideoSender::default_repair_cache_limits() {
 
 UdpVideoSender::UdpVideoSender(SendFn send_fn,
                                UdpVideoRepairCache::Limits repair_cache_limits,
-                               size_t target_payload_bytes)
+                               size_t target_payload_bytes,
+                               int64_t client_timeout_ns)
     : send_fn_(std::move(send_fn)),
       repair_cache_(repair_cache_limits),
-      target_payload_bytes_(target_payload_bytes) {}
+      target_payload_bytes_(target_payload_bytes),
+      client_timeout_ns_(client_timeout_ns) {}
 
 void UdpVideoSender::note_client_hello(UdpVideoStreamId stream,
                                        sockaddr_storage addr,
                                        socklen_t addr_len,
-                                       uint16_t session_id) {
-  if (!is_valid_endpoint(addr, addr_len)) {
-    return;
-  }
+                                       uint16_t session_id,
+                                       int64_t now_ns) {
+  checkin_endpoint(stream, addr, addr_len, session_id, now_ns);
+}
 
-  Endpoint endpoint;
-  endpoint.addr = addr;
-  endpoint.addr_len = addr_len;
-  endpoint.session_id = session_id;
-  endpoints_[stream] = endpoint;
+void UdpVideoSender::note_client_policy(UdpVideoStreamId stream,
+                                        sockaddr_storage addr,
+                                        socklen_t addr_len,
+                                        uint16_t session_id,
+                                        bool suppress_video,
+                                        int64_t now_ns) {
+  Endpoint* endpoint = checkin_endpoint(stream, addr, addr_len, session_id, now_ns);
+  if (endpoint != nullptr) {
+    endpoint->suppress_video = suppress_video;
+  }
+}
+
+bool UdpVideoSender::has_active_client(UdpVideoStreamId stream, int64_t now_ns) const {
+  const Endpoint* endpoint = endpoint_for_stream(stream);
+  return endpoint != nullptr && !endpoint_expired(*endpoint, now_ns);
+}
+
+bool UdpVideoSender::client_suppresses_video(UdpVideoStreamId stream) const {
+  const Endpoint* endpoint = endpoint_for_stream(stream);
+  return endpoint != nullptr && endpoint->suppress_video;
 }
 
 UdpVideoSendStats UdpVideoSender::send_frame(const UdpVideoFrameForPacketizing& frame,
@@ -54,9 +71,14 @@ UdpVideoSendStats UdpVideoSender::send_frame(const UdpVideoFrameForPacketizing& 
   UdpVideoSendStats stats;
   stats.frames_attempted = 1;
 
-  const Endpoint* endpoint = endpoint_for_stream(frame.stream_id);
+  const Endpoint* endpoint = active_endpoint_for_stream(frame.stream_id, now_ns);
   if (endpoint == nullptr) {
     stats.dropped_no_client = 1;
+    fill_cache_stats(repair_cache_, &stats);
+    return stats;
+  }
+  if (endpoint->suppress_video) {
+    stats.dropped_suppressed = 1;
     fill_cache_stats(repair_cache_, &stats);
     return stats;
   }
@@ -86,7 +108,7 @@ UdpVideoRepairStats UdpVideoSender::handle_repair_request(const UdpVideoRepairRe
   stats.requests = 1;
   repair_cache_.evict_expired(now_ns);
 
-  const Endpoint* endpoint = endpoint_for_stream(request.stream_id);
+  const Endpoint* endpoint = active_endpoint_for_stream(request.stream_id, now_ns);
   if (endpoint == nullptr || endpoint->session_id != request.session_id) {
     stats.missing_count = request.packet_indexes.empty() ? 1 : std::set<uint16_t>(
         request.packet_indexes.begin(), request.packet_indexes.end()).size();
@@ -143,9 +165,39 @@ bool UdpVideoSender::send_packet(const UdpVideoPacket& packet, const Endpoint& e
   return sent == static_cast<ssize_t>(bytes.size());
 }
 
-UdpVideoSender::Endpoint* UdpVideoSender::endpoint_for_stream(UdpVideoStreamId stream) {
+UdpVideoSender::Endpoint* UdpVideoSender::checkin_endpoint(UdpVideoStreamId stream,
+                                                           const sockaddr_storage& addr,
+                                                           socklen_t addr_len,
+                                                           uint16_t session_id,
+                                                           int64_t now_ns) {
+  if (!is_valid_endpoint(addr, addr_len)) {
+    return nullptr;
+  }
+
+  auto it = endpoints_.find(stream);
+  if (it != endpoints_.end() && it->second.session_id == session_id) {
+    it->second.addr = addr;
+    it->second.addr_len = addr_len;
+    it->second.last_seen_ns = now_ns;
+    return &it->second;
+  }
+
+  Endpoint endpoint;
+  endpoint.addr = addr;
+  endpoint.addr_len = addr_len;
+  endpoint.session_id = session_id;
+  endpoint.last_seen_ns = now_ns;
+  return &(endpoints_[stream] = endpoint);
+}
+
+UdpVideoSender::Endpoint* UdpVideoSender::active_endpoint_for_stream(UdpVideoStreamId stream,
+                                                                     int64_t now_ns) {
   auto it = endpoints_.find(stream);
   if (it == endpoints_.end()) {
+    return nullptr;
+  }
+  if (endpoint_expired(it->second, now_ns)) {
+    endpoints_.erase(it);
     return nullptr;
   }
   return &it->second;
@@ -157,6 +209,13 @@ const UdpVideoSender::Endpoint* UdpVideoSender::endpoint_for_stream(UdpVideoStre
     return nullptr;
   }
   return &it->second;
+}
+
+bool UdpVideoSender::endpoint_expired(const Endpoint& endpoint, int64_t now_ns) const {
+  if (client_timeout_ns_ <= 0) {
+    return false;
+  }
+  return now_ns >= endpoint.last_seen_ns && now_ns - endpoint.last_seen_ns > client_timeout_ns_;
 }
 
 bool UdpVideoSender::is_valid_endpoint(const sockaddr_storage& addr, socklen_t addr_len) const {

@@ -11,15 +11,20 @@
 /**
  * CommaView Unified Bridge (C++)
  *
- * Streams HEVC video and raw telemetry on legacy road+wide ports, plus a telemetry-only stream.
+ * Streams HEVC video over UDP and raw telemetry over TCP.
  *
- * Ports:
- *   8200 road, 8201 wide, 8202 driver, 8203 telemetry
+ * Ports (one per stream):
+ *   8200 road, 8201 wide, 8202 driver  — UDP video (CVUP datagrams) + TCP legacy
+ *                                        control/telemetry companion channel
+ *   8203 telemetry                     — TCP telemetry stream
  *
- * Framing:
+ * UDP video lifecycle (see docs/udp-video-protocol.md):
+ *   The app sends Hello/Heartbeat/Policy datagrams to the stream port; the
+ *   runtime starts sending packetized frames while a client checked in within
+ *   the liveness window, and serves RepairRequest resends from a short cache.
+ *
+ * TCP framing (telemetry + control):
  *   [4-byte big-endian length][payload]
- *   payload[0] = 0x06 (video chunk): chunked timestamp/geometry/header-length envelope + bytes
- *   payload[0] = 0x02 (meta):  [type][json bytes]
  *   payload[0] = 0x03 (control inbound): [type][json bytes]
  *   payload[0] = 0x04 (meta-raw): [type][version][service_idx][raw_len_be32][raw_event]
  */
@@ -474,11 +479,6 @@ static void note_video_queue_deltas(uint64_t queue_drop_delta,
       static_cast<uint64_t>(queue_high_watermark));
 }
 
-static void note_video_zero_byte_backpressure_recovered() {
-  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-  g_runtime_state.video_send.zero_byte_backpressure_recovered_count += 1;
-}
-
 static void note_video_queued_frame_age(uint64_t age_ms) {
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
   g_runtime_state.video_send.max_queued_frame_age_ms = std::max(
@@ -490,6 +490,8 @@ static void note_udp_video_send_stats(const commaview::video::UdpVideoSendStats&
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
   g_runtime_state.video_send.udp_packets_sent += stats.packets_sent;
   g_runtime_state.video_send.udp_send_error_count += stats.send_errors;
+  g_runtime_state.video_send.udp_no_client_drop_count += stats.dropped_no_client;
+  g_runtime_state.video_send.udp_suppressed_drop_count += stats.dropped_suppressed;
   g_runtime_state.video_send.udp_repair_cache_bytes = stats.repair_cache_bytes;
   g_runtime_state.video_send.udp_repair_cache_high_watermark_bytes = std::max<uint64_t>(
       g_runtime_state.video_send.udp_repair_cache_high_watermark_bytes,
@@ -546,14 +548,6 @@ static void note_runtime_peer_disconnect(const char* stream,
   flush_runtime_state();
 }
 
-static void set_session_policy(const std::string& session_id, bool suppress_video) {
-  commaview::control::set_session_policy(session_id, suppress_video);
-}
-
-static bool get_session_policy(const std::string& session_id, bool* suppress_video) {
-  return commaview::control::get_session_policy(session_id, suppress_video);
-}
-
 using ClientControlState = commaview::control::ClientControlState;
 
 static void consume_client_control_frames(int client_fd,
@@ -590,6 +584,12 @@ static int create_udp_video_socket(int port) {
 
   int reuse = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+  // Keyframes burst dozens of datagrams at once; a large send buffer keeps
+  // those bursts in the kernel instead of dropping them at the socket.
+  int sndbuf = 4 * 1024 * 1024;
+  setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+  int rcvbuf = 1024 * 1024;
+  setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -608,11 +608,41 @@ static int create_udp_video_socket(int port) {
   return fd;
 }
 
+static constexpr int UDP_VIDEO_SEND_RETRY_MS = 5;
+
+// Non-blocking send with a short bounded wait when the socket buffer is full,
+// so transient bursts degrade to brief pacing instead of dropped packets.
+static ssize_t send_udp_video_datagram(int udp_fd,
+                                       const uint8_t* data,
+                                       size_t size,
+                                       const sockaddr_storage& addr,
+                                       socklen_t addr_len) {
+  if (udp_fd < 0) return -1;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    const ssize_t sent = sendto(udp_fd,
+                                data,
+                                size,
+                                MSG_DONTWAIT,
+                                reinterpret_cast<const sockaddr*>(&addr),
+                                addr_len);
+    if (sent >= 0) return sent;
+    if (errno == EINTR) continue;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+    pollfd pfd{};
+    pfd.fd = udp_fd;
+    pfd.events = POLLOUT;
+    if (poll(&pfd, 1, UDP_VIDEO_SEND_RETRY_MS) <= 0) return -1;
+  }
+  return -1;
+}
+
 struct UdpVideoControlDatagram {
   commaview::video::UdpVideoPacketType type = commaview::video::UdpVideoPacketType::Heartbeat;
   commaview::video::UdpVideoStreamId stream_id = commaview::video::UdpVideoStreamId::Road;
   uint16_t session_id = 0;
   uint32_t frame_sequence = 0;
+  bool has_suppress_video = false;
+  bool suppress_video = false;
   std::vector<uint16_t> packet_indexes;
 };
 
@@ -640,6 +670,13 @@ static bool parse_udp_video_control_datagram(const uint8_t* data,
   parsed.type = type;
   parsed.stream_id = stream;
   parsed.session_id = read_u16_be(data + 8);
+
+  if ((type == commaview::video::UdpVideoPacketType::Heartbeat ||
+       type == commaview::video::UdpVideoPacketType::Policy) &&
+      size >= 11) {
+    parsed.has_suppress_video = true;
+    parsed.suppress_video = data[10] != 0;
+  }
 
   if (type == commaview::video::UdpVideoPacketType::RepairRequest) {
     if (size < 60) return false;
@@ -693,7 +730,17 @@ static void drain_udp_video_control_datagrams(int udp_fd,
       continue;
     }
 
-    sender->note_client_hello(datagram.stream_id, peer, peer_len, datagram.session_id);
+    if (datagram.has_suppress_video) {
+      sender->note_client_policy(datagram.stream_id,
+                                 peer,
+                                 peer_len,
+                                 datagram.session_id,
+                                 datagram.suppress_video,
+                                 runtime_now_ns());
+      continue;
+    }
+
+    sender->note_client_hello(datagram.stream_id, peer, peer_len, datagram.session_id, runtime_now_ns());
   }
 }
 
@@ -701,75 +748,42 @@ static cereal::EncodeData::Reader read_encode_data(cereal::Event::Reader event, 
   return commaview::video::read_encode_data(event, port, false);
 }
 
-static void handle_video_client(int client_fd, const char* video_service, int port) {
-  char addr_str[64] = {};
-  struct sockaddr_in peer = {};
-  socklen_t peer_len = sizeof(peer);
-  if (getpeername(client_fd, reinterpret_cast<struct sockaddr*>(&peer), &peer_len) == 0) {
-    inet_ntop(AF_INET, &peer.sin_addr, addr_str, sizeof(addr_str));
-  }
+static bool wait_for_udp_video_datagram(int udp_fd, int timeout_ms) {
+  pollfd pfd{};
+  pfd.fd = udp_fd;
+  pfd.events = POLLIN;
+  return poll(&pfd, 1, timeout_ms) > 0;
+}
 
-  append_runtime_run_event("client_connected", video_service, addr_str);
-  printf("[%s] client connected: %s (fd=%d)\n", video_service, addr_str, client_fd);
-  fflush(stdout);
+static constexpr int UDP_VIDEO_IDLE_POLL_MS = 200;
+static constexpr int UDP_VIDEO_ACTIVE_POLL_MS = 20;
 
-  int opt = 1;
-  setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-  int sndbuf = 524288;
-  setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-
-  auto& active_counter = active_counter_for_port(port);
-  int previous = active_counter.fetch_add(1);
-  if (previous > 0) {
-    active_counter.fetch_sub(1);
-    close(client_fd);
+// Per-stream UDP video pump. Runs for the lifetime of the runtime and is fully
+// independent of TCP clients: a client announces itself with Hello/Heartbeat
+// datagrams, video flows while the client stays within the liveness window,
+// and the encoder subscription is dropped while no client is active.
+static void udp_video_stream_loop(int port, const char* video_service) {
+  const auto udp_stream_id = udp_stream_id_for_port(port);
+  const int udp_fd = create_udp_video_socket(port);
+  if (udp_fd < 0) {
+    fprintf(stderr, "[%s] failed to open UDP video socket on :%d\n", video_service, port);
     return;
   }
+  printf("[%s] UDP video on :%d\n", video_service, port);
+  fflush(stdout);
 
-  note_runtime_connect();
-
-  const auto udp_stream_id = udp_stream_id_for_port(port);
-  int udp_fd = create_udp_video_socket(port);
   auto udp_send_fn = [udp_fd](const uint8_t* data,
                               size_t size,
                               const sockaddr_storage& addr,
                               socklen_t addr_len) -> ssize_t {
-    if (udp_fd < 0) return -1;
-    return sendto(udp_fd,
-                  data,
-                  size,
-                  MSG_DONTWAIT,
-                  reinterpret_cast<const sockaddr*>(&addr),
-                  addr_len);
+    return send_udp_video_datagram(udp_fd, data, size, addr, addr_len);
   };
   commaview::video::UdpVideoSender udp_video_sender(udp_send_fn);
 
   Context* ctx = Context::create();
-
-  const bool enable_video = true;
   SubSocket* video_sock = nullptr;
-  if (enable_video) {
-    const size_t video_segment_size = queue_size_for_service(video_service);
-    video_sock = SubSocket::create(ctx, video_service, "127.0.0.1", true, true, video_segment_size);
-  }
-
-  const bool include_telemetry = (port == PORT_ROAD || port == PORT_WIDE);
-
-  Poller* video_poller = Poller::create();
-  if (video_sock != nullptr) video_poller->registerSocket(video_sock);
-
-  std::atomic<bool> telemetry_disconnect_requested{false};
-  std::atomic<bool> telemetry_enabled_for_client{include_telemetry};
-  std::thread telemetry_thread;
-  std::mutex send_mutex;
-  if (include_telemetry) {
-    telemetry_thread = std::thread(telemetry_loop,
-                                   client_fd,
-                                   video_service,
-                                   &telemetry_disconnect_requested,
-                                   &send_mutex,
-                                   &telemetry_enabled_for_client);
-  }
+  Poller* video_poller = nullptr;
+  bool client_was_active = false;
 
   uint64_t frame_count = 0;
   uint64_t parsed_frame_count = 0;
@@ -781,25 +795,44 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   uint64_t last_keyframe_wait_drop_count = 0;
   auto t0 = std::chrono::steady_clock::now();
   AlignedBuffer aligned_buf;
-  ClientControlState control_state;
 
   while (g_running) {
     const auto loop_started = std::chrono::steady_clock::now();
-    if (!client_socket_alive(client_fd)) {
-      note_runtime_peer_disconnect(video_service, "client_socket_alive", peer_closed_result());
-      break;
-    }
-
-    consume_client_control_frames(client_fd, &control_state, video_service);
     drain_udp_video_control_datagrams(udp_fd, udp_stream_id, &udp_video_sender);
-    if (include_telemetry) {
-      telemetry_enabled_for_client.store(control_state.telemetry_on_video);
+
+    const bool client_active = udp_video_sender.has_active_client(udp_stream_id, runtime_now_ns());
+    if (!client_active) {
+      if (client_was_active) {
+        client_was_active = false;
+        append_runtime_run_event("udp_client_idle", video_service);
+        printf("[%s] UDP client idle, pausing video\n", video_service);
+        fflush(stdout);
+      }
+      if (video_sock != nullptr) {
+        delete video_poller;
+        video_poller = nullptr;
+        delete video_sock;
+        video_sock = nullptr;
+      }
+      wait_for_udp_video_datagram(udp_fd, UDP_VIDEO_IDLE_POLL_MS);
+      continue;
     }
 
-    if (include_telemetry && telemetry_disconnect_requested.load()) break;
+    if (!client_was_active) {
+      client_was_active = true;
+      append_runtime_run_event("udp_client_active", video_service);
+      printf("[%s] UDP client active, streaming video\n", video_service);
+      fflush(stdout);
+      note_runtime_connect();
+    }
+    if (video_sock == nullptr) {
+      const size_t video_segment_size = queue_size_for_service(video_service);
+      video_sock = SubSocket::create(ctx, video_service, "127.0.0.1", true, true, video_segment_size);
+      video_poller = Poller::create();
+      if (video_sock != nullptr) video_poller->registerSocket(video_sock);
+    }
 
-    int video_poll_ms = 20;
-    auto ready = video_poller->poll(video_poll_ms);
+    auto ready = video_poller->poll(UDP_VIDEO_ACTIVE_POLL_MS);
 
     for (auto* sock : ready) {
       std::unique_ptr<Message> raw_msg(sock->receive(true));
@@ -841,19 +874,12 @@ static void handle_video_client(int client_fd, const char* video_service, int po
           const uint32_t video_height = ed.getHeight();
           if (data_len == 0) continue;
 
-          bool suppress_video = false;
-          bool session_policy = false;
-          if (!suppress_video && get_session_policy(control_state.bound_session_id, &session_policy)) {
-            suppress_video = session_policy;
-          }
-
-          if (suppress_video) {
+          if (udp_video_sender.client_suppresses_video(udp_stream_id)) {
             suppressed_video_count++;
             if (suppressed_video_count <= 3 || (suppressed_video_count % 500) == 0) {
-              printf("[%s] suppress-video drop=%llu session=%s header=%u data=%zu\n",
+              printf("[%s] suppress-video drop=%llu header=%u data=%zu\n",
                      video_service,
                      static_cast<unsigned long long>(suppressed_video_count),
-                     control_state.bound_session_id.empty() ? "<legacy>" : control_state.bound_session_id.c_str(),
                      header_len,
                      data_len);
               fflush(stdout);
@@ -949,13 +975,75 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     const auto video_loop_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - loop_started);
     note_runtime_loop_sample(false, static_cast<uint64_t>(video_loop_elapsed.count()));
-
-    if (include_telemetry && telemetry_disconnect_requested.load()) {
-      break;
-    }
   }
 
-disconnect:
+  close(udp_fd);
+  delete video_poller;
+  if (video_sock != nullptr) delete video_sock;
+  delete ctx;
+}
+
+// Legacy TCP companion channel on the video ports. Video itself is UDP-only;
+// this channel remains for control frames and telemetry-on-video clients.
+static void handle_video_client(int client_fd, const char* video_service, int port) {
+  char addr_str[64] = {};
+  struct sockaddr_in peer = {};
+  socklen_t peer_len = sizeof(peer);
+  if (getpeername(client_fd, reinterpret_cast<struct sockaddr*>(&peer), &peer_len) == 0) {
+    inet_ntop(AF_INET, &peer.sin_addr, addr_str, sizeof(addr_str));
+  }
+
+  append_runtime_run_event("client_connected", video_service, addr_str);
+  printf("[%s] client connected: %s (fd=%d)\n", video_service, addr_str, client_fd);
+  fflush(stdout);
+
+  int opt = 1;
+  setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+  int sndbuf = 524288;
+  setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+
+  auto& active_counter = active_counter_for_port(port);
+  int previous = active_counter.fetch_add(1);
+  if (previous > 0) {
+    active_counter.fetch_sub(1);
+    close(client_fd);
+    return;
+  }
+
+  note_runtime_connect();
+
+  const bool include_telemetry = (port == PORT_ROAD || port == PORT_WIDE);
+
+  std::atomic<bool> telemetry_disconnect_requested{false};
+  std::atomic<bool> telemetry_enabled_for_client{include_telemetry};
+  std::thread telemetry_thread;
+  std::mutex send_mutex;
+  if (include_telemetry) {
+    telemetry_thread = std::thread(telemetry_loop,
+                                   client_fd,
+                                   video_service,
+                                   &telemetry_disconnect_requested,
+                                   &send_mutex,
+                                   &telemetry_enabled_for_client);
+  }
+
+  ClientControlState control_state;
+
+  while (g_running) {
+    if (!client_socket_alive(client_fd)) {
+      note_runtime_peer_disconnect(video_service, "client_socket_alive", peer_closed_result());
+      break;
+    }
+
+    consume_client_control_frames(client_fd, &control_state, video_service);
+    if (include_telemetry) {
+      telemetry_enabled_for_client.store(control_state.telemetry_on_video);
+      if (telemetry_disconnect_requested.load()) break;
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
   append_runtime_run_event("client_disconnected", video_service, addr_str);
   printf("[%s] client disconnected: %s\n", video_service, addr_str);
   fflush(stdout);
@@ -965,11 +1053,6 @@ disconnect:
   if (telemetry_thread.joinable()) telemetry_thread.join();
   active_counter.fetch_sub(1);
   close(client_fd);
-  if (udp_fd >= 0) close(udp_fd);
-
-  delete video_poller;
-  if (video_sock != nullptr) delete video_sock;
-  delete ctx;
 }
 static void telemetry_loop(int client_fd,
                            const char* stream_name,
@@ -1199,6 +1282,11 @@ int commaview_bridge_main(int argc, char* argv[]) {
 
   std::vector<std::thread> threads;
   std::vector<int> server_fds;
+
+  // UDP video pumps run independently of any TCP client.
+  threads.emplace_back(udp_video_stream_loop, PORT_ROAD, video_services[0]);
+  threads.emplace_back(udp_video_stream_loop, PORT_WIDE, video_services[1]);
+  threads.emplace_back(udp_video_stream_loop, PORT_DRIVER, video_services[2]);
 
   for (auto& s : streams) {
     int fd = create_server(s.first);

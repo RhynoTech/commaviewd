@@ -7,7 +7,7 @@
 ## At a glance
 
 - Runtime binary with explicit modes:
-  - `commaviewd bridge` — video + telemetry streaming runtime.
+  - `commaviewd bridge` — video + telemetry streaming runtime. Video streams over UDP (ports 8200/8201/8202, one per camera); telemetry streams over TCP (port 8203). See [docs/udp-video-protocol.md](docs/udp-video-protocol.md) for the wire contract shared with the Android app.
   - `commaviewd control` — local HTTP control API for pairing, status, runtime debug, and patch repair.
 - comma4 lifecycle scripts under `comma4/`.
 - Build/release/verification scripts under `commaviewd/scripts/`, `tools/release/`, and `scripts/`.

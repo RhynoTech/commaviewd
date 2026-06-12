@@ -61,6 +61,8 @@ std::string video_send_stats_json(const RuntimeVideoSendStats& stats) {
   out << "\"maxSendMicros\":" << stats.max_send_micros << ",";
   out << "\"udpPacketsSent\":" << stats.udp_packets_sent << ",";
   out << "\"udpSendErrorCount\":" << stats.udp_send_error_count << ",";
+  out << "\"udpNoClientDropCount\":" << stats.udp_no_client_drop_count << ",";
+  out << "\"udpSuppressedDropCount\":" << stats.udp_suppressed_drop_count << ",";
   out << "\"udpRepairRequests\":" << stats.udp_repair_requests << ",";
   out << "\"udpRepairPacketsResent\":" << stats.udp_repair_packets_resent << ",";
   out << "\"udpRepairMissCount\":" << stats.udp_repair_miss_count << ",";

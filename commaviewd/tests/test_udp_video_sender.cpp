@@ -79,7 +79,8 @@ std::vector<UdpVideoPacket> decoded_packets(const std::vector<SentDatagram>& sen
 
 UdpVideoSender make_sender(std::vector<SentDatagram>* sends,
                            int fail_after_successes = -1,
-                           ssize_t failure = -1) {
+                           ssize_t failure = -1,
+                           int64_t client_timeout_ns = commaview::video::UDP_VIDEO_CLIENT_TIMEOUT_NS) {
   return UdpVideoSender(
       [sends, fail_after_successes, failure](const uint8_t* data,
                                              size_t size,
@@ -97,7 +98,8 @@ UdpVideoSender make_sender(std::vector<SentDatagram>* sends,
         return static_cast<ssize_t>(size);
       },
       {10000, 10000, 1000000},
-      60);
+      60,
+      client_timeout_ns);
 }
 
 size_t payload_bytes(const std::vector<UdpVideoPacket>& packets) {
@@ -379,6 +381,79 @@ TEST(UdpVideoSenderTest, SendStatsExposeRepairCacheBytesAndHighWatermark) {
   EXPECT_EQ(second_stats.repair_cache_high_watermark_bytes >= first_payload_bytes, true);
 }
 
+TEST(UdpVideoSenderTest, ClientExpiresAfterTimeoutAndCheckinRevivesIt) {
+  std::vector<SentDatagram> sends;
+  auto sender = make_sender(&sends, -1, -1, 1000);
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77, 0);
+
+  ASSERT_TRUE(sender.has_active_client(UdpVideoStreamId::Road, 500));
+  const auto fresh_stats = sender.send_frame(make_frame(), 500);
+  EXPECT_EQ(fresh_stats.dropped_no_client, 0U);
+  ASSERT_TRUE(fresh_stats.packets_sent > 0);
+
+  ASSERT_TRUE(!sender.has_active_client(UdpVideoStreamId::Road, 2000));
+  const size_t sends_before_expiry = sends.size();
+  const auto expired_stats = sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 11, 60), 2000);
+  EXPECT_EQ(expired_stats.dropped_no_client, 1U);
+  EXPECT_EQ(sends.size(), sends_before_expiry);
+
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77, 2100);
+  const auto revived_stats = sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 12, 60), 2200);
+  EXPECT_EQ(revived_stats.dropped_no_client, 0U);
+  ASSERT_TRUE(revived_stats.packets_sent > 0);
+}
+
+TEST(UdpVideoSenderTest, PolicySuppressVideoDropsFramesUntilCleared) {
+  std::vector<SentDatagram> sends;
+  auto sender = make_sender(&sends);
+  sender.note_client_policy(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77, true, 100);
+
+  ASSERT_TRUE(sender.has_active_client(UdpVideoStreamId::Road, 200));
+  ASSERT_TRUE(sender.client_suppresses_video(UdpVideoStreamId::Road));
+  const auto suppressed_stats = sender.send_frame(make_frame(), 200);
+  EXPECT_EQ(suppressed_stats.dropped_suppressed, 1U);
+  EXPECT_EQ(suppressed_stats.packets_packetized, 0U);
+  EXPECT_EQ(sends.empty(), true);
+
+  sender.note_client_policy(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77, false, 300);
+  ASSERT_TRUE(!sender.client_suppresses_video(UdpVideoStreamId::Road));
+  const auto resumed_stats = sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 11, 60), 400);
+  EXPECT_EQ(resumed_stats.dropped_suppressed, 0U);
+  ASSERT_TRUE(resumed_stats.packets_sent > 0);
+}
+
+TEST(UdpVideoSenderTest, HelloForNewSessionResetsSuppressFlag) {
+  std::vector<SentDatagram> sends;
+  auto sender = make_sender(&sends);
+  sender.note_client_policy(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77, true, 100);
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(42000), sizeof(sockaddr_in), 99, 200);
+
+  ASSERT_TRUE(!sender.client_suppresses_video(UdpVideoStreamId::Road));
+  const auto stats = sender.send_frame(make_frame(UdpVideoStreamId::Road, 99, 11, 60), 300);
+  EXPECT_EQ(stats.dropped_suppressed, 0U);
+  ASSERT_TRUE(stats.packets_sent > 0);
+}
+
+TEST(UdpVideoSenderTest, RepairRequestsStillServedWhileVideoSuppressed) {
+  std::vector<SentDatagram> sends;
+  auto sender = make_sender(&sends);
+  sender.note_client_hello(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77, 100);
+  sender.send_frame(make_frame(UdpVideoStreamId::Road, 77, 10, 100), 100);
+  const size_t original_send_count = sends.size();
+  sender.note_client_policy(UdpVideoStreamId::Road, endpoint(41000), sizeof(sockaddr_in), 77, true, 150);
+
+  UdpVideoRepairRequest request;
+  request.stream_id = UdpVideoStreamId::Road;
+  request.session_id = 77;
+  request.frame_sequence = 10;
+  request.packet_indexes = {0};
+  const auto stats = sender.handle_repair_request(request, 200);
+
+  EXPECT_EQ(stats.packets_resent, 1U);
+  EXPECT_EQ(stats.missing_count, 0U);
+  EXPECT_EQ(sends.size(), original_send_count + 1);
+}
+
 int main() {
   UdpVideoSenderTest_HelloRegistersEndpointAndFrameSendPacketizesToUdpEndpoint();
   UdpVideoSenderTest_SentPacketsEnterRepairCacheAndRepairRequestResendsWithFlag();
@@ -394,5 +469,9 @@ int main() {
   UdpVideoSenderTest_NegativeUdpReturnCountsAsSendErrorNotSentPacket();
   UdpVideoSenderTest_SameFrameAndSessionAcrossDifferentStreamsStayIsolated();
   UdpVideoSenderTest_SendStatsExposeRepairCacheBytesAndHighWatermark();
+  UdpVideoSenderTest_ClientExpiresAfterTimeoutAndCheckinRevivesIt();
+  UdpVideoSenderTest_PolicySuppressVideoDropsFramesUntilCleared();
+  UdpVideoSenderTest_HelloForNewSessionResetsSuppressFlag();
+  UdpVideoSenderTest_RepairRequestsStillServedWhileVideoSuppressed();
   return 0;
 }

@@ -22,6 +22,8 @@ struct RuntimeVideoSendStats {
   uint64_t max_send_micros = 0;
   uint64_t udp_packets_sent = 0;
   uint64_t udp_send_error_count = 0;
+  uint64_t udp_no_client_drop_count = 0;
+  uint64_t udp_suppressed_drop_count = 0;
   uint64_t udp_repair_requests = 0;
   uint64_t udp_repair_packets_resent = 0;
   uint64_t udp_repair_miss_count = 0;

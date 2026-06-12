@@ -35,6 +35,14 @@ bridge_required = {
     'UDP sender instance': 'commaview::video::UdpVideoSender udp_video_sender',
     'UDP datagram drain': 'drain_udp_video_control_datagrams',
     'HELLO handling': 'note_client_hello',
+    'policy/suppress handling': 'note_client_policy',
+    'client liveness gate': 'has_active_client',
+    'suppress flag honored before packetizing': 'client_suppresses_video',
+    'bounded UDP datagram send': 'send_udp_video_datagram',
+    'standalone UDP video pump': 'static void udp_video_stream_loop(int port, const char* video_service)',
+    'road UDP pump started at startup': 'threads.emplace_back(udp_video_stream_loop, PORT_ROAD, video_services[0]);',
+    'wide UDP pump started at startup': 'threads.emplace_back(udp_video_stream_loop, PORT_WIDE, video_services[1]);',
+    'driver UDP pump started at startup': 'threads.emplace_back(udp_video_stream_loop, PORT_DRIVER, video_services[2]);',
     'repair request handling': 'handle_repair_request',
     'UDP frame construction': 'commaview::video::UdpVideoFrameForPacketizing frame',
     'source timestamp reaches UDP frame': 'frame.timestamp_nanos = queued->timestamp_ns;',
@@ -94,6 +102,28 @@ if not re.search(
     re.S,
 ):
     raise SystemExit('bridge must open the UDP socket before constructing the UDP sender')
+
+
+def extract_function_body(src, signature):
+    start = src.find(signature)
+    if start < 0:
+        raise SystemExit(f'expected function: {signature}')
+    brace = src.find('{', start)
+    depth = 0
+    for pos in range(brace, len(src)):
+        ch = src[pos]
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return src[brace + 1:pos]
+    raise SystemExit(f'unterminated function: {signature}')
+
+
+udp_pump = extract_function_body(bridge, 'static void udp_video_stream_loop(int port, const char* video_service)')
+if 'client_fd' in udp_pump or 'client_socket_alive' in udp_pump:
+    raise SystemExit('UDP video pump must not depend on a TCP client connection')
 
 print('PASS: UDP video transport bridge contract holds')
 PY
