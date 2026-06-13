@@ -24,6 +24,7 @@ UdpVideoRepairCache::Limits UdpVideoSender::default_repair_cache_limits() {
       8U * 1024U * 1024U,
       24U * 1024U * 1024U,
       2LL * 1000LL * 1000LL * 1000LL,
+      120,
   };
 }
 

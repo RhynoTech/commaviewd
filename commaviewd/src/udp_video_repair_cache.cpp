@@ -224,6 +224,17 @@ void UdpVideoRepairCache::enforce_stream_cap(UdpVideoStreamId stream) {
     }
     remove_frame(candidate);
   }
+
+  if (limits_.max_frames_per_stream == 0) {
+    return;
+  }
+  while (stream_frame_count(stream) > limits_.max_frames_per_stream) {
+    auto candidate = choose_eviction_candidate_for_stream(stream);
+    if (candidate == frames_.end()) {
+      break;
+    }
+    remove_frame(candidate);
+  }
 }
 
 UdpVideoRepairCache::FrameMap::iterator UdpVideoRepairCache::choose_eviction_candidate_for_stream(
@@ -287,6 +298,16 @@ UdpVideoRepairCache::FrameMap::const_iterator UdpVideoRepairCache::find_latest_k
 size_t UdpVideoRepairCache::stream_bytes(UdpVideoStreamId stream) const {
   const auto it = stream_payload_bytes_.find(stream);
   return it == stream_payload_bytes_.end() ? 0 : it->second;
+}
+
+size_t UdpVideoRepairCache::stream_frame_count(UdpVideoStreamId stream) const {
+  size_t count = 0;
+  for (const auto& entry : frames_) {
+    if (entry.first.stream == stream) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 void UdpVideoRepairCache::add_stream_bytes(UdpVideoStreamId stream, size_t bytes) {

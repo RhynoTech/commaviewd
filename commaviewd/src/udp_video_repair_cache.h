@@ -13,10 +13,12 @@ class UdpVideoRepairCache {
  public:
   // Byte caps of 0 disable caching (frames are evicted immediately).
   // max_age_ns < 0 disables age-based eviction; 0 expires everything.
+  // max_frames_per_stream of 0 disables frame-count eviction.
   struct Limits {
     size_t max_bytes_per_stream = 0;
     size_t max_bytes_total = 0;
     int64_t max_age_ns = 0;
+    size_t max_frames_per_stream = 0;
   };
 
   explicit UdpVideoRepairCache(Limits limits);
@@ -64,6 +66,7 @@ class UdpVideoRepairCache {
   FrameMap::iterator choose_eviction_candidate_global();
   FrameMap::const_iterator find_latest_keyframe(UdpVideoStreamId stream) const;
   size_t stream_bytes(UdpVideoStreamId stream) const;
+  size_t stream_frame_count(UdpVideoStreamId stream) const;
   void add_stream_bytes(UdpVideoStreamId stream, size_t bytes);
   void subtract_stream_bytes(UdpVideoStreamId stream, size_t bytes);
 

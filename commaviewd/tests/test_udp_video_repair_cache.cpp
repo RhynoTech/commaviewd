@@ -152,6 +152,26 @@ TEST(UdpVideoRepairCacheTest, TimeCapEvictsExpiredFrames) {
   EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 41).empty(), false);
 }
 
+TEST(UdpVideoRepairCacheTest, PerStreamFrameCapEvictsOldestFramesInThatStream) {
+  const auto first = packetize(make_frame(UdpVideoStreamId::Road, 77, 45, false, 40), 200);
+  const auto second = packetize(make_frame(UdpVideoStreamId::Road, 77, 46, false, 40), 200);
+  const auto third = packetize(make_frame(UdpVideoStreamId::Road, 77, 47, false, 40), 200);
+  const auto other_stream = packetize(make_frame(UdpVideoStreamId::Driver, 77, 48, false, 40), 200);
+  UdpVideoRepairCache::Limits limits{10000, 10000, 1000000};
+  limits.max_frames_per_stream = 2;
+  UdpVideoRepairCache cache(limits);
+
+  cache.store(first, 100);
+  cache.store(other_stream, 150);
+  cache.store(second, 200);
+  cache.store(third, 300);
+
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 45).empty(), true);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 46).empty(), false);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Road, 77, 47).empty(), false);
+  EXPECT_EQ(cache.lookup_frame(UdpVideoStreamId::Driver, 77, 48).empty(), false);
+}
+
 TEST(UdpVideoRepairCacheTest, RetainsLatestKeyframeWhenOlderFramesCanBeEvicted) {
   const auto old_keyframe = packetize(make_frame(UdpVideoStreamId::Wide, 77, 50, true, 60), 200);
   const auto older_non_keyframe = packetize(make_frame(UdpVideoStreamId::Wide, 77, 51, false, 60), 200);
@@ -282,6 +302,7 @@ int main() {
   UdpVideoRepairCacheTest_TotalByteCapEvictsOldestFrames();
   UdpVideoRepairCacheTest_PerStreamByteCapEvictsOldestFramesInThatStream();
   UdpVideoRepairCacheTest_TimeCapEvictsExpiredFrames();
+  UdpVideoRepairCacheTest_PerStreamFrameCapEvictsOldestFramesInThatStream();
   UdpVideoRepairCacheTest_RetainsLatestKeyframeWhenOlderFramesCanBeEvicted();
   UdpVideoRepairCacheTest_SameStreamAndFrameSequenceAreIsolatedBySession();
   UdpVideoRepairCacheTest_RejectsFrameWithNonContiguousByteOffsets();
