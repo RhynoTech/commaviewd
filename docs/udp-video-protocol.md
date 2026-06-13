@@ -86,9 +86,9 @@ frame sequence at offset 28, payload length at offset 56, and the payload is a
 list of big-endian `uint16` packet indexes (empty list = resend whole frame).
 
 The runtime serves repairs from a short-lived cache (per-stream/total byte
-caps, per-stream frame-count cap, ~2 s max age) and marks resent packets with
-the repair-resend flag. Repair requests are session-scoped and served even
-while video is suppressed.
+caps, default 120 frames/stream frame-count cap, ~2 s max age) and marks
+resent packets with the repair-resend flag. Repair requests are session-scoped
+and served even while video is suppressed.
 
 ## Telemetry snapshots (runtime → app, UDP :8203)
 
