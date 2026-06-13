@@ -116,22 +116,14 @@ bool parse_set_policy_control(const std::string& json,
 
   int transport_version = 1;
   std::string client_role = "legacy";
-  bool telemetry_on_video = true;
-  std::string telemetry_transport = "full";
   extract_json_int_field(json, "transportVersion", &transport_version);
   extract_json_string_field(json, "clientRole", &client_role);
-  telemetry_on_video = transport_version < 2;
-  extract_json_bool_field(json, "telemetryOnVideo", &telemetry_on_video);
-  extract_json_string_field(json, "telemetryTransport", &telemetry_transport);
-  if (telemetry_transport != "udp_snapshot") telemetry_transport = "full";
 
   if (session_id != nullptr) *session_id = sid;
   if (suppress_video != nullptr) *suppress_video = suppress;
   if (state != nullptr) {
     state->transport_version = transport_version;
     state->client_role = client_role;
-    state->telemetry_on_video = telemetry_on_video;
-    state->telemetry_transport = telemetry_transport;
   }
   return true;
 }
@@ -207,13 +199,12 @@ void consume_client_control_frames(int client_fd,
         }
         state->control_update_count++;
         if (state->control_update_count <= 3 || (state->control_update_count % 100) == 0) {
-          printf("[%s] control update session=%s suppress=%s transportVersion=%d clientRole=%s telemetryOnVideo=%s\n",
+          printf("[%s] control update session=%s suppress=%s transportVersion=%d clientRole=%s\n",
                  video_service,
                  session_id.c_str(),
                  suppress_video ? "true" : "false",
                  state->transport_version,
-                 state->client_role.c_str(),
-                 state->telemetry_on_video ? "true" : "false");
+                 state->client_role.c_str());
           fflush(stdout);
         }
       } else {

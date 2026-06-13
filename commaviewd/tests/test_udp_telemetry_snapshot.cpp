@@ -54,7 +54,7 @@ static void test_tier_table_covers_all_services() {
   for (uint8_t index : {10, 12, 14, 15, 16, 17, 19}) {
     assert(snapshot_tier_for_service(index) == SnapshotTier::Slow);
   }
-  // onroadEvents is event data: reliable TCP only.
+  // onroadEvents is excluded from the compact snapshot tier table.
   assert(snapshot_tier_for_service(4) == SnapshotTier::Excluded);
   assert(snapshot_tier_for_service(20) == SnapshotTier::Excluded);
 }
@@ -212,29 +212,6 @@ static void test_packetizer_rejects_empty_blob() {
   assert(packetize_telemetry_snapshot({}, 1, 1, 1).empty());
 }
 
-static void test_tcp_demotion_keeps_alert_services_full_rate() {
-  using commaview::telemetry::ServiceMode;
-  using commaview::telemetry::ServicePolicy;
-  const ServicePolicy pass{ServiceMode::Pass, 0};
-
-  for (const char* service : {"selfdriveState", "controlsState", "onroadEvents"}) {
-    const auto kept = commaview::telemetry::demote_policy_for_udp_snapshot(pass, service);
-    assert(kept.mode == ServiceMode::Pass);
-  }
-
-  const auto demoted = commaview::telemetry::demote_policy_for_udp_snapshot(pass, "modelV2");
-  assert(demoted.mode == ServiceMode::Sample);
-  assert(demoted.sample_hz == commaview::telemetry::kUdpSnapshotTcpKeepaliveHz);
-
-  // Off and Sample configurations are respected unchanged.
-  const ServicePolicy off{ServiceMode::Off, 0};
-  assert(commaview::telemetry::demote_policy_for_udp_snapshot(off, "modelV2").mode == ServiceMode::Off);
-  const ServicePolicy sampled{ServiceMode::Sample, 5};
-  const auto sampled_kept = commaview::telemetry::demote_policy_for_udp_snapshot(sampled, "modelV2");
-  assert(sampled_kept.mode == ServiceMode::Sample);
-  assert(sampled_kept.sample_hz == 5);
-}
-
 int main() {
   test_tier_table_covers_all_services();
   test_builder_serializes_due_entries();
@@ -245,7 +222,6 @@ int main() {
   test_packetizer_single_fragment_round_trip();
   test_packetizer_splits_and_reassembles_large_blobs();
   test_packetizer_rejects_empty_blob();
-  test_tcp_demotion_keeps_alert_services_full_rate();
   printf("PASS: udp telemetry snapshot tests passed\n");
   return 0;
 }

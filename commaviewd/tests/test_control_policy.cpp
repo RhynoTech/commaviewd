@@ -38,7 +38,6 @@ int main() {
   commaview::control::ClientControlState legacy{};
   assert(legacy.transport_version == 1);
   assert(std::string(legacy.client_role) == "legacy");
-  assert(legacy.telemetry_on_video);
 
   const std::string sid = "session-test-123";
   const std::string json = "{\"op\":\"set_policy\",\"sessionId\":\"" + sid + "\",\"suppressVideo\":true}";
@@ -55,7 +54,6 @@ int main() {
                        &video_state);
   assert(video_state.transport_version == 2);
   assert(std::string(video_state.client_role) == "video");
-  assert(!video_state.telemetry_on_video);
 
   bool video_suppress = true;
   assert(commaview::control::get_session_policy("session-1", &video_suppress));
@@ -66,7 +64,6 @@ int main() {
                        &telemetry_state);
   assert(telemetry_state.transport_version == 2);
   assert(std::string(telemetry_state.client_role) == "telemetry");
-  assert(!telemetry_state.telemetry_on_video);
 
   bool after_telemetry_suppress = true;
   assert(commaview::control::get_session_policy("session-1", &after_telemetry_suppress));

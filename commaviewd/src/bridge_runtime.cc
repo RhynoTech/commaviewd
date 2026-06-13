@@ -70,16 +70,9 @@ using commaview::runtime_debug::render_config_json;
 using commaview::runtime_debug::runtime_debug_effective_path;
 using commaview::runtime_debug::runtime_debug_stats_path;
 using commaview::runtime_debug::service_mode_to_string;
-using commaview::telemetry::default_service_policy_for_name;
-using commaview::telemetry::service_policy_subscribes;
-using commaview::telemetry::telemetry_policy_allows_emit;
-using commaview::telemetry::telemetry_policy_fetches_latest;
 
 
 static constexpr uint8_t MSG_CONTROL = 0x03;
-static constexpr uint8_t MSG_META_RAW = 0x04;
-static constexpr uint8_t RAW_META_ENVELOPE_V4 = 0x04;
-static constexpr uint8_t RAW_META_ENVELOPE_V5 = 0x05;
 
 static constexpr int PORT_ROAD = 8200;
 static constexpr int PORT_WIDE = 8201;
@@ -151,58 +144,6 @@ static size_t queue_size_for_service(const char* service_name) {
   return it->second.queue_size;
 }
 
-static void put_be32(uint8_t* buf, uint32_t val) {
-  commaview::net::put_be32(buf, val);
-}
-
-static void telemetry_loop(int client_fd,
-                           const char* stream_name,
-                           std::atomic<bool>* disconnect_requested,
-                           std::mutex* send_mutex,
-                           std::atomic<bool>* telemetry_enabled,
-                           std::atomic<bool>* udp_snapshot_transport);
-
-static commaview::net::SendResult send_meta_bytes_bounded(int fd,
-                                                           const uint8_t* bytes,
-                                                           size_t bytes_len,
-                                                           uint8_t msg_type,
-                                                           std::mutex* send_mutex) {
-  commaview::net::SendResult empty_ok{};
-  if (bytes == nullptr || bytes_len == 0) return empty_ok;
-  std::vector<uint8_t> framed_payload(1 + bytes_len);
-  framed_payload[0] = msg_type;
-  memcpy(&framed_payload[1], bytes, bytes_len);
-  if (send_mutex != nullptr) {
-    std::lock_guard<std::mutex> send_lock(*send_mutex);
-    return commaview::net::send_frame_bounded(
-        fd,
-        framed_payload.data(),
-        framed_payload.size(),
-        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
-  }
-  return commaview::net::send_frame_bounded(
-      fd,
-      framed_payload.data(),
-      framed_payload.size(),
-      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
-}
-
-static commaview::net::SendResult send_meta_raw_frame(int fd,
-                                                       uint8_t envelope_version,
-                                                       uint8_t service_index,
-                                                       const uint8_t* raw_data,
-                                                       size_t raw_size,
-                                                       std::mutex* send_mutex) {
-  commaview::net::SendResult empty_ok{};
-  if (raw_data == nullptr || raw_size == 0) return empty_ok;
-  const uint32_t raw_len = static_cast<uint32_t>(raw_size);
-  std::vector<uint8_t> payload(1 + 1 + 4 + raw_len);
-  payload[0] = envelope_version;
-  payload[1] = service_index;
-  put_be32(&payload[2], raw_len);
-  memcpy(&payload[6], raw_data, raw_len);
-  return send_meta_bytes_bounded(fd, payload.data(), payload.size(), MSG_META_RAW, send_mutex);
-}
 
 struct RuntimeServiceStats {
   uint64_t active_subscribers = 0;
@@ -1143,23 +1084,6 @@ static void handle_video_client(int client_fd, const char* video_service, int po
 
   note_runtime_connect();
 
-  const bool include_telemetry = (port == PORT_ROAD || port == PORT_WIDE);
-
-  std::atomic<bool> telemetry_disconnect_requested{false};
-  std::atomic<bool> telemetry_enabled_for_client{include_telemetry};
-  std::atomic<bool> udp_snapshot_transport{false};
-  std::thread telemetry_thread;
-  std::mutex send_mutex;
-  if (include_telemetry) {
-    telemetry_thread = std::thread(telemetry_loop,
-                                   client_fd,
-                                   video_service,
-                                   &telemetry_disconnect_requested,
-                                   &send_mutex,
-                                   &telemetry_enabled_for_client,
-                                   &udp_snapshot_transport);
-  }
-
   ClientControlState control_state;
 
   while (g_running) {
@@ -1169,11 +1093,6 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     }
 
     consume_client_control_frames(client_fd, &control_state, video_service);
-    if (include_telemetry) {
-      telemetry_enabled_for_client.store(control_state.telemetry_on_video);
-      udp_snapshot_transport.store(control_state.telemetry_transport == "udp_snapshot");
-      if (telemetry_disconnect_requested.load()) break;
-    }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
@@ -1182,208 +1101,10 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   printf("[%s] client disconnected: %s\n", video_service, addr_str);
   fflush(stdout);
 
-  telemetry_disconnect_requested.store(true);
   shutdown(client_fd, SHUT_RDWR);
-  if (telemetry_thread.joinable()) telemetry_thread.join();
   active_counter.fetch_sub(1);
   close(client_fd);
 }
-static void telemetry_loop(int client_fd,
-                           const char* stream_name,
-                           std::atomic<bool>* disconnect_requested,
-                           std::mutex* send_mutex,
-                           std::atomic<bool>* telemetry_enabled,
-                           std::atomic<bool>* udp_snapshot_transport) {
-  if (disconnect_requested == nullptr) return;
-  uint64_t telem_raw_count = 0;
-  auto next_telem_poll = std::chrono::steady_clock::now();
-  auto next_stats_flush = next_telem_poll + std::chrono::milliseconds(1000);
-  std::array<uint64_t, static_cast<size_t>(NUM_TELEM)> last_ui_emit_ms = {};
-  std::array<uint64_t, static_cast<size_t>(NUM_TELEM)> last_ui_emit_wall_ms = {};
-
-  while (g_running && !disconnect_requested->load()) {
-    if (!client_socket_alive(client_fd)) {
-      note_runtime_peer_disconnect(stream_name, "telemetry_socket_alive", peer_closed_result());
-      disconnect_requested->store(true);
-      break;
-    }
-
-    if (telemetry_enabled != nullptr && !telemetry_enabled->load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(g_telemetry_emit_ms));
-      continue;
-    }
-
-    const auto telemetry_started = std::chrono::steady_clock::now();
-    auto now = std::chrono::steady_clock::now();
-    if (now < next_telem_poll) {
-      const auto sleep_for_ms =
-          std::chrono::duration_cast<std::chrono::milliseconds>(next_telem_poll - now).count();
-      if (sleep_for_ms > 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(sleep_for_ms));
-      }
-      now = std::chrono::steady_clock::now();
-    }
-
-    do {
-      next_telem_poll += std::chrono::milliseconds(g_telemetry_emit_ms);
-    } while (next_telem_poll <= now);
-
-    LoadedRuntimeDebugConfig effective_config;
-    {
-      std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
-      effective_config = g_runtime_state.effective_config;
-    }
-
-    // While the client receives overlay telemetry via UDP snapshots, demote
-    // snapshot-covered services to a low TCP keepalive rate; alert-bearing
-    // services always stay full-rate on the reliable path.
-    const bool demote_for_udp_snapshot =
-        udp_snapshot_transport != nullptr && udp_snapshot_transport->load();
-
-    std::array<bool, static_cast<size_t>(NUM_TELEM)> ui_fresh = {};
-    if (g_ui_export_socket != nullptr) {
-      for (int i = 0; i < NUM_TELEM; ++i) {
-        const char* service_name = kTelemetryServices[static_cast<size_t>(i)];
-        ServicePolicy policy = policy_for_service(effective_config, service_name);
-        if (demote_for_udp_snapshot) {
-          policy = commaview::telemetry::demote_policy_for_udp_snapshot(policy, service_name);
-        }
-        if (!telemetry_policy_fetches_latest(policy)) {
-          continue;
-        }
-
-        commaview::ui_export::LatestFrame frame;
-        if (!g_ui_export_socket->latest_frame(static_cast<uint8_t>(i),
-                                              commaview::ui_export::kFreshFrameWindowMs,
-                                              &frame)) {
-          continue;
-        }
-        ui_fresh[static_cast<size_t>(i)] = true;
-        const uint64_t now_ms = runtime_now_ms();
-        if (!telemetry_policy_allows_emit(policy,
-                                          frame.updated_at_ms,
-                                          now_ms,
-                                          last_ui_emit_ms[static_cast<size_t>(i)],
-                                          last_ui_emit_wall_ms[static_cast<size_t>(i)])) {
-          continue;
-        }
-
-        const auto send_started = std::chrono::steady_clock::now();
-        auto send_result = send_meta_raw_frame(client_fd,
-                                               RAW_META_ENVELOPE_V5,
-                                               static_cast<uint8_t>(i),
-                                               frame.payload.data(),
-                                               frame.payload.size(),
-                                               send_mutex);
-        const auto send_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - send_started);
-        send_result.elapsed_micros = std::max(send_result.elapsed_micros,
-                                              static_cast<uint64_t>(send_elapsed.count()));
-        const bool sampled = service_policy_samples(policy);
-        const bool sent = send_result.status == commaview::net::SendStatus::Ok;
-        note_runtime_emit(i,
-                          frame.payload.size(),
-                          sampled,
-                          sent,
-                          send_result.elapsed_micros);
-        if (!sent) {
-          if (commaview::telemetry::telemetry_send_failure_is_droppable(send_result)) {
-            append_runtime_run_event("telemetry_drop",
-                                     stream_name,
-                                     "",
-                                     "telemetry_send",
-                                     commaview::net::send_status_name(send_result.status));
-            last_ui_emit_ms[static_cast<size_t>(i)] = frame.updated_at_ms;
-            last_ui_emit_wall_ms[static_cast<size_t>(i)] = now_ms;
-            continue;
-          }
-          note_runtime_peer_disconnect(stream_name, "telemetry_send", send_result);
-          disconnect_requested->store(true);
-          shutdown(client_fd, SHUT_RDWR);
-          break;
-        }
-        last_ui_emit_ms[static_cast<size_t>(i)] = frame.updated_at_ms;
-        last_ui_emit_wall_ms[static_cast<size_t>(i)] = now_ms;
-        telem_raw_count++;
-      }
-    }
-
-    if (disconnect_requested->load()) break;
-
-    if (telem_raw_count > 0 && (telem_raw_count <= 3 || (telem_raw_count % 200) == 0)) {
-      printf("[%s] telem_raw=%llu [DIRECT_UI_SOCKET_ONLY] (read+send throttled %dms)\n",
-             stream_name,
-             static_cast<unsigned long long>(telem_raw_count),
-             g_telemetry_emit_ms);
-      fflush(stdout);
-    }
-
-    now = std::chrono::steady_clock::now();
-    if (now >= next_stats_flush) {
-      next_stats_flush = now + std::chrono::milliseconds(1000);
-      flush_runtime_state();
-    }
-
-    const auto telemetry_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - telemetry_started);
-    note_runtime_loop_sample(true, static_cast<uint64_t>(telemetry_elapsed.count()));
-  }
-}
-
-static void handle_telemetry_client(int client_fd) {
-  const char* stream_name = "telemetry";
-  char addr_str[64] = {};
-  struct sockaddr_in peer = {};
-  socklen_t peer_len = sizeof(peer);
-  if (getpeername(client_fd, reinterpret_cast<struct sockaddr*>(&peer), &peer_len) == 0) {
-    inet_ntop(AF_INET, &peer.sin_addr, addr_str, sizeof(addr_str));
-  }
-
-  append_runtime_run_event("client_connected", stream_name, addr_str);
-  printf("[%s] client connected: %s (fd=%d)\n", stream_name, addr_str, client_fd);
-  fflush(stdout);
-
-  int opt = 1;
-  setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-  int sndbuf = 524288;
-  setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-
-  note_runtime_connect();
-
-  std::atomic<bool> disconnect_requested{false};
-  std::atomic<bool> telemetry_enabled_for_client{true};
-  std::atomic<bool> udp_snapshot_transport{false};
-  std::mutex send_mutex;
-  std::thread telemetry_thread(telemetry_loop,
-                               client_fd,
-                               stream_name,
-                               &disconnect_requested,
-                               &send_mutex,
-                               &telemetry_enabled_for_client,
-                               &udp_snapshot_transport);
-  ClientControlState control_state;
-
-  while (g_running && !disconnect_requested.load()) {
-    if (!client_socket_alive(client_fd)) {
-      note_runtime_peer_disconnect(stream_name, "client_socket_alive", peer_closed_result());
-      break;
-    }
-    consume_client_control_frames(client_fd, &control_state, stream_name);
-    telemetry_enabled_for_client.store(true);
-    udp_snapshot_transport.store(control_state.telemetry_transport == "udp_snapshot");
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
-
-  append_runtime_run_event("client_disconnected", stream_name, addr_str);
-  printf("[%s] client disconnected: %s\n", stream_name, addr_str);
-  fflush(stdout);
-
-  disconnect_requested.store(true);
-  shutdown(client_fd, SHUT_RDWR);
-  if (telemetry_thread.joinable()) telemetry_thread.join();
-  close(client_fd);
-}
-
 static void accept_loop(int server_fd, const char* service_name, int port) {
   printf("[%s] listening on :%d\n", service_name, port);
   fflush(stdout);
@@ -1396,11 +1117,7 @@ static void accept_loop(int server_fd, const char* service_name, int port) {
       if (g_running) perror("accept");
       continue;
     }
-    if (port == PORT_TELEMETRY) {
-      std::thread(handle_telemetry_client, client_fd).detach();
-    } else {
-      std::thread(handle_video_client, client_fd, service_name, port).detach();
-    }
+    std::thread(handle_video_client, client_fd, service_name, port).detach();
   }
 }
 
@@ -1421,7 +1138,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
   const bool ui_export_socket_ready = g_ui_export_socket->start();
 
   const char** video_services = VIDEO_SERVICES_PROD;
-  printf("CommaView Bridge v3.3.8-safe-bundle (C++) [VIDEO+TELEMETRY][RAW_ONLY_DEFAULT][DIRECT_V2_UI_EXPORT_DEFAULT][UI_SOCKET_PREFERRED=%s][META_MODE=raw-only][EMIT_MS=%d]\n",
+  printf("CommaView Bridge v3.3.8-safe-bundle (C++) [UDP_VIDEO+UDP_TELEMETRY][RAW_ONLY_DEFAULT][DIRECT_V2_UI_EXPORT_DEFAULT][UI_SOCKET_PREFERRED=%s][META_MODE=raw-only][EMIT_MS=%d]\n",
          ui_export_socket_ready ? "on" : "off",
          g_telemetry_emit_ms);
   fflush(stdout);
@@ -1430,7 +1147,6 @@ int commaview_bridge_main(int argc, char* argv[]) {
   streams.push_back({PORT_ROAD, video_services[0]});
   streams.push_back({PORT_WIDE, video_services[1]});
   streams.push_back({PORT_DRIVER, video_services[2]});
-  streams.push_back({PORT_TELEMETRY, "telemetry"});
 
   std::vector<std::thread> threads;
   std::vector<int> server_fds;
@@ -1495,8 +1211,8 @@ int commaview_bridge_main(int argc, char* argv[]) {
   threads.emplace_back(udp_video_stream_loop, road_udp_fd, PORT_ROAD, video_services[0]);
   threads.emplace_back(udp_video_stream_loop, wide_udp_fd, PORT_WIDE, video_services[1]);
   threads.emplace_back(udp_video_stream_loop, driver_udp_fd, PORT_DRIVER, video_services[2]);
-  // Lossy latest-wins overlay telemetry snapshots (UDP port number matches the
-  // reliable TCP telemetry port).
+  // Lossy latest-wins overlay telemetry snapshots. UDP 8203 is the sole live
+  // telemetry data plane for this alpha app/runtime pair.
   threads.emplace_back(udp_telemetry_snapshot_loop, telemetry_udp_fd, PORT_TELEMETRY);
   udp_fds.clear();
 

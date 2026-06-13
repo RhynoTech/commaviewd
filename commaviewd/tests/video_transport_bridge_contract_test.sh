@@ -56,7 +56,7 @@ bridge_required = {
     'queue push before send': 'video_queue.push',
     'queue pop send path': 'video_queue.pop_next',
     'control frames still consumed': 'consume_client_control_frames(client_fd, &control_state, video_service);',
-    'telemetry thread still present': 'telemetry_thread = std::thread(telemetry_loop,',
+    'UDP telemetry snapshot pump present': 'threads.emplace_back(udp_telemetry_snapshot_loop, telemetry_udp_fd, PORT_TELEMETRY);',
 }
 accounting_required = {
     'UDP packet runtime stat': 'udpPacketsSent',

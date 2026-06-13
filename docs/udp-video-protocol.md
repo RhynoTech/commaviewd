@@ -11,15 +11,16 @@ All multi-byte fields are big-endian.
 
 | Port | Stream | Transport |
 | --- | --- | --- |
-| 8200 | road | UDP video + legacy TCP control/telemetry companion |
-| 8201 | wide | UDP video + legacy TCP control/telemetry companion |
-| 8202 | driver | UDP video |
-| 8203 | telemetry | TCP telemetry stream + UDP telemetry snapshots |
+| 8200 | road | UDP video + TCP control companion |
+| 8201 | wide | UDP video + TCP control companion |
+| 8202 | driver | UDP video + TCP control companion |
+| 8203 | telemetry | UDP telemetry snapshots |
 
-Video flows over UDP only. The runtime binds one UDP socket per stream at
-startup; no TCP connection is required to start or keep a video stream. Port
-8203 carries two independent channels: the reliable TCP telemetry stream and a
-lossy latest-wins UDP snapshot channel (same port number, separate protocol).
+Video and live telemetry flow over UDP only. The runtime binds one UDP socket
+per stream at startup; no TCP connection is required to start or keep a video or
+telemetry stream. Ports 8200/8201/8202 may still accept TCP control companions
+for stream policy, but they do not carry live telemetry fallback. UDP 8203 is
+the sole live overlay/HUD telemetry data plane for this alpha protocol.
 
 ## Common header (all datagrams)
 
@@ -101,7 +102,7 @@ with the video cadence) from the newest fresh ui-export payloads:
   liveCalibration, carControl, longitudinalPlan, onroadProjection.
 - **Slow tier (≤ 10 Hz):** carOutput, liveParameters, carParams, deviceState,
   roadCameraState, pandaStatesSummary, wideRoadCameraState.
-- **Never in snapshots:** onroadEvents (event data; reliable TCP only).
+- **Never in snapshots:** none for the alpha live overlay path; the snapshot set is the live telemetry contract.
 
 A service is included only when its ui-export frame advanced since the last
 included snapshot; unchanged state is not resent. Snapshots are fire-and-
@@ -134,21 +135,18 @@ at or below the last completed one.
 
 Each entry: `service index` (1), `flags` (1, reserved `0`), `age ms` (4, wall
 age of the payload at build time), `payload length` (4), then the unmodified
-ui-export JSON payload for that service (same bytes the TCP raw envelope
-carries).
+ui-export JSON payload for that service.
 
-**TCP interaction:** a client receiving snapshots should send the TCP
-`set_policy` control op with `"telemetryTransport": "udp_snapshot"`. The
-runtime then demotes Pass-mode snapshot-covered services on that TCP
-connection to a 2 Hz keepalive; selfdriveState, controlsState, and
-onroadEvents always stay full-rate on TCP because they carry alerts. Sending
-`"telemetryTransport": "full"` (or omitting the field) restores full-rate TCP.
+**TCP interaction:** none for live telemetry in this alpha protocol. UDP `8203`
+TelemetrySnapshot datagrams are the only live overlay/HUD telemetry data plane.
+TCP/API `5002` remains available for control, pairing, and diagnostics, but the
+runtime does not negotiate, demote, or fall back to TCP telemetry for live
+overlay state. Compatibility is handled by the release matrix: use a matching
+Android APK/runtime pair.
 
 ## Versioning
 
 Version mismatches are rejected outright; there is no negotiation. Any change
 to the layouts above requires bumping the version byte and updating both repos
 together (`release.properties` in CommaView pins the compatible runtime tag).
-Adding the TelemetrySnapshot packet type and telemetry stream id was additive
-at version `1`: older receivers never subscribe to the snapshot channel and
-reject unknown packet types on the video streams.
+The alpha UDP telemetry snapshot path is matrix-pinned with the matching Android app/runtime release line; older app/runtime combinations are unsupported rather than negotiated in-protocol.
