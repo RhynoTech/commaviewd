@@ -20,6 +20,9 @@ AUGMENTED_ROAD_RELATIVE_PATHS = (
     Path("selfdrive/ui/mici/onroad/augmented_road_view.py"),
     Path("selfdrive/ui/onroad/augmented_road_view.py"),
 )
+PLATFORM_CHOICES = ("auto", "mici", "tizi", "tici")
+NORMALIZED_PLATFORMS = {"mici": "mici", "tizi": "tizi", "tici": "tizi"}
+
 
 
 def fail(message: str) -> None:
@@ -68,6 +71,37 @@ def ensure_export_import(lines: list[str]) -> bool:
 
     lines.insert(insert_at, EXPORT_IMPORT)
     return True
+
+
+def normalize_platform(platform: str) -> str:
+    if platform == "auto":
+        return "auto"
+    try:
+        return NORMALIZED_PLATFORMS[platform]
+    except KeyError:
+        fail(f"unsupported UI platform: {platform}")
+
+
+def source_root(op_root: Path) -> Path:
+    if (op_root / "selfdrive" / "ui" / "ui_state.py").is_file():
+        return op_root
+    nested = op_root / "openpilot"
+    if (nested / "selfdrive" / "ui" / "ui_state.py").is_file():
+        return nested
+    fail(f"missing ui_state.py under {op_root} or {nested}")
+
+
+def augmented_paths_for_platform(op_root: Path, platform: str) -> list[Path]:
+    normalized = normalize_platform(platform)
+    if normalized == "mici":
+        return [op_root / AUGMENTED_ROAD_RELATIVE_PATHS[0]]
+    if normalized == "tizi":
+        return [op_root / AUGMENTED_ROAD_RELATIVE_PATHS[1]]
+
+    augmented_paths = [op_root / relpath for relpath in AUGMENTED_ROAD_RELATIVE_PATHS if (op_root / relpath).exists()]
+    if not augmented_paths:
+        augmented_paths = [op_root / AUGMENTED_ROAD_RELATIVE_PATHS[0]]
+    return augmented_paths
 
 
 def install_helper_source(op_root: Path, flavor: str) -> bool:
@@ -251,16 +285,14 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
     return changed
 
 
-def transform(op_root: Path, flavor: str) -> None:
+def transform(op_root: Path, flavor: str, platform: str = "auto") -> None:
     if flavor not in {"openpilot", "sunnypilot"}:
         fail(f"unsupported flavor: {flavor}")
-    install_helper_source(op_root, flavor)
-    transform_ui_state(op_root / "selfdrive" / "ui" / "ui_state.py")
+    ui_root = source_root(op_root)
+    install_helper_source(ui_root, flavor)
+    transform_ui_state(ui_root / "selfdrive" / "ui" / "ui_state.py")
 
-    augmented_paths = [op_root / relpath for relpath in AUGMENTED_ROAD_RELATIVE_PATHS if (op_root / relpath).exists()]
-    if not augmented_paths:
-        augmented_paths = [op_root / AUGMENTED_ROAD_RELATIVE_PATHS[0]]
-    for augmented_path in augmented_paths:
+    for augmented_path in augmented_paths_for_platform(ui_root, platform):
         transform_augmented_road_view(augmented_path)
 
 
@@ -268,8 +300,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--op-root", required=True, type=Path)
     parser.add_argument("--flavor", required=True, choices=("openpilot", "sunnypilot"))
+    parser.add_argument("--platform", default="auto", choices=PLATFORM_CHOICES)
     args = parser.parse_args(argv)
-    transform(args.op_root, args.flavor)
+    transform(args.op_root, args.flavor, args.platform)
     return 0
 
 

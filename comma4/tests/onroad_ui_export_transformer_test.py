@@ -42,9 +42,9 @@ def write_upstream_tree(
     return op_root
 
 
-def run_transformer(op_root: Path) -> subprocess.CompletedProcess[str]:
+def run_transformer(op_root: Path, *extra_args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(TRANSFORMER), "--op-root", str(op_root), "--flavor", "openpilot"],
+        [sys.executable, str(TRANSFORMER), "--op-root", str(op_root), "--flavor", "openpilot", *extra_args],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -486,6 +486,77 @@ def test_transformer_handles_flat_onroad_augmented_road_view_path(tmp_path):
     assert result.returncode == 0, result.stderr
     assert_augmented_transformed(op_root / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py")
 
+
+
+def test_transformer_platform_tizi_only_patches_flat_onroad_target(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+
+    result = run_transformer(op_root, "--platform", "tizi")
+
+    assert result.returncode == 0, result.stderr
+    assert_augmented_transformed(op_root / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py")
+    assert CAMERA_EXPORT_CALL not in (op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py").read_text()
+
+
+def test_transformer_platform_tici_alias_patches_flat_onroad_target(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+
+    result = run_transformer(op_root, "--platform", "tici")
+
+    assert result.returncode == 0, result.stderr
+    assert_augmented_transformed(op_root / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py")
+    assert CAMERA_EXPORT_CALL not in (op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py").read_text()
+
+
+def test_transformer_platform_mici_only_patches_mici_target(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+
+    result = run_transformer(op_root, "--platform", "mici")
+
+    assert result.returncode == 0, result.stderr
+    assert_augmented_transformed(op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py")
+    assert CAMERA_EXPORT_CALL not in (op_root / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py").read_text()
+
+
+def test_transformer_handles_nested_openpilot_package_root(tmp_path):
+    repo_root = tmp_path / "repo"
+    source_parent = tmp_path / "source"
+    ui_root = write_upstream_tree(
+        source_parent,
+        ui_state=NEW_UI_STATE,
+        augmented_road_view=FLAT_AUGMENTED_ROAD_VIEW,
+        augmented_road_relpath="selfdrive/ui/onroad/augmented_road_view.py",
+    )
+    repo_root.mkdir()
+    nested = repo_root / "openpilot"
+    ui_root.rename(nested)
+
+    result = run_transformer(repo_root, "--platform", "tizi")
+
+    assert result.returncode == 0, result.stderr
+    assert (nested / HELPER_PATH).exists()
+    assert_ui_state_transformed(nested / "selfdrive" / "ui" / "ui_state.py")
+    assert_augmented_transformed(nested / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py")
+
+
+def test_apply_platform_tizi_records_platform_and_patches_flat_target(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+
+    applied = run_lifecycle_script(APPLY_SCRIPT, install_dir, op_root, "--force-repair", "--platform", "tizi")
+
+    assert applied.returncode == 0, applied.stderr
+    state_env = (install_dir / "config" / "onroad-ui-export-patch.env").read_text()
+    assert "ONROAD_UI_EXPORT_UI_PLATFORM=tizi" in state_env
+    assert_augmented_transformed(op_root / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py")
+    assert CAMERA_EXPORT_CALL not in (op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py").read_text()
+
+    verified = run_lifecycle_script(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json", "--platform", "tizi")
+    assert verified.returncode == 0, verified.stdout
+    status = json.loads(verified.stdout)
+    assert status["uiPlatform"] == "tizi"
+    assert status["selectedAugmentedRoadTargets"] == ["selfdrive/ui/onroad/augmented_road_view.py"]
 
 def test_transformer_is_idempotent_for_augmented_road_view(tmp_path):
     op_root = write_augmented_tree(tmp_path)

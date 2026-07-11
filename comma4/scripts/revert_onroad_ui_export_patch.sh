@@ -12,6 +12,7 @@ FORCE_OFFROAD=0
 PREFLIGHT_ONLY=0
 FORCE_OFFROAD_OWNED=0
 FORCE_OFFROAD_PREV=""
+UI_PREFIX=""
 
 read_param() {
   local path="$PARAMS_DIR/$1"
@@ -90,6 +91,17 @@ if [ "$PREFLIGHT_ONLY" = "1" ]; then
   exit 0
 fi
 
+
+detect_ui_prefix() {
+  if [ -f "$OP_ROOT/selfdrive/ui/ui_state.py" ]; then
+    UI_PREFIX=""
+  elif [ -f "$OP_ROOT/openpilot/selfdrive/ui/ui_state.py" ]; then
+    UI_PREFIX="openpilot/"
+  else
+    UI_PREFIX=""
+  fi
+}
+
 request_openpilot_ui_restart() {
   mkdir -p "$(dirname "$RESTART_MARKER")"
   printf 'pending\n' > "$RESTART_MARKER"
@@ -130,10 +142,10 @@ restart_openpilot_ui_if_offroad() {
 
 managed_targets() {
   printf '%s\n' \
-    "selfdrive/ui/commaview_export.py" \
-    "selfdrive/ui/ui_state.py" \
-    "selfdrive/ui/mici/onroad/augmented_road_view.py" \
-    "selfdrive/ui/onroad/augmented_road_view.py"
+    "${UI_PREFIX}selfdrive/ui/commaview_export.py" \
+    "${UI_PREFIX}selfdrive/ui/ui_state.py" \
+    "${UI_PREFIX}selfdrive/ui/mici/onroad/augmented_road_view.py" \
+    "${UI_PREFIX}selfdrive/ui/onroad/augmented_road_view.py"
 }
 
 backup_managed_targets() {
@@ -207,6 +219,8 @@ if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "WARN: upstream repo not found at $OP_ROOT; skipping onroad UI export transformer revert" >&2
   exit 0
 fi
+
+detect_ui_prefix
 
 if ! backup_root="$(backup_managed_targets)"; then
   echo "ERROR: failed to back up managed onroad UI export transformer targets; refusing revert" >&2
