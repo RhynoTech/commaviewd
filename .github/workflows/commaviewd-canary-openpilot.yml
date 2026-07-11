@@ -25,8 +25,10 @@ jobs:
         target:
           - upstream_ref: nightly
             ui_platform: tizi
+            run_verification: false
           - upstream_ref: nightly-dev
             ui_platform: tizi
+            run_verification: false
           - upstream_ref: release-mici-staging
             ui_platform: mici
           - upstream_ref: release-tizi-staging
@@ -90,6 +92,7 @@ jobs:
 
 
       - name: Run commaviewd verification pipeline
+        if: ${{ matrix.target.run_verification != false }}
         env:
           OP_ROOT: ${{ github.workspace }}/openpilot-src
           ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
@@ -120,6 +123,9 @@ jobs:
             fi
             if [[ -f dist/onroad-ui-export-status.json ]]; then
               echo "- Onroad UI export status: dist/onroad-ui-export-status.json"
+            fi
+            if [[ '${{ matrix.target.run_verification }}' == 'false' ]]; then
+              echo "- Runtime verification: skipped for bleeding-edge upstream ABI; patch applicability only"
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
