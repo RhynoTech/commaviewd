@@ -21,6 +21,7 @@ assert_contains "name: openpilot-release-mici" "$WORKFLOW" "commaviewd CI should
 assert_contains "upstream_ref: release-mici" "$WORKFLOW" "commaviewd CI should include MICI release refs"
 assert_contains "name: openpilot-release-tici" "$WORKFLOW" "commaviewd CI should validate openpilot release-tici"
 assert_contains "upstream_ref: release-tici" "$WORKFLOW" "commaviewd CI should include openpilot TICI release ref"
+assert_contains "run_verification: false" "$WORKFLOW" "legacy openpilot release-tici should be patch-applicability only"
 assert_contains "upstream_repo: commaai/openpilot" "$WORKFLOW" "commaviewd CI should include commaai/openpilot"
 assert_contains "name: sunnypilot-release-mici" "$WORKFLOW" "commaviewd CI should validate sunnypilot release-mici"
 assert_contains "name: sunnypilot-release-tizi" "$WORKFLOW" "commaviewd CI should validate sunnypilot release-tizi"

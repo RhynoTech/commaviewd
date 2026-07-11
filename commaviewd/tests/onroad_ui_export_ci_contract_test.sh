@@ -43,7 +43,8 @@ for file in "$CI" "$CANARY_OPENPILOT" "$CANARY_SUNNYPILOT"; do
 done
 
 assert_contains_fixed "name: openpilot-release-mici" "$CI" "commaviewd CI should run openpilot stable MICI release"
-assert_contains_fixed "name: openpilot-release-tici" "$CI" "commaviewd CI should run openpilot stable TICI release"
+assert_contains_fixed "name: openpilot-release-tici" "$CI" "commaviewd CI should cover openpilot stable TICI release"
+assert_contains_fixed "run_verification: false" "$CI" "legacy openpilot TICI release should skip runtime verification"
 assert_contains_fixed "name: sunnypilot-release-mici" "$CI" "commaviewd CI should run sunnypilot stable MICI release"
 assert_contains_fixed "name: sunnypilot-release-tizi" "$CI" "commaviewd CI should run sunnypilot stable TIZI release"
 assert_contains_fixed '--platform "${{ matrix.target.ui_platform }}"' "$CI" "commaviewd CI should pass explicit platform for release refs"

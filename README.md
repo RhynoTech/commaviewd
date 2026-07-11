@@ -233,7 +233,7 @@ commaviewd/scripts/run-verification.sh
 Main CI matrix:
 
 - `commaai/openpilot@release-mici` (`--platform mici`)
-- `commaai/openpilot@release-tici` (`--platform tici`, backwards-compatible TICI/TIZI hook family)
+- `commaai/openpilot@release-tici` (`--platform tici`, backwards-compatible legacy hook-applicability check only)
 - `sunnypilot/sunnypilot@release-mici` (`--platform mici`)
 - `sunnypilot/sunnypilot@release-tizi` (`--platform tizi`)
 
