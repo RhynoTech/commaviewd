@@ -26,6 +26,7 @@ assert_contains "name: sunnypilot-release-mici" "$WORKFLOW" "commaviewd CI shoul
 assert_contains "name: sunnypilot-release-tizi" "$WORKFLOW" "commaviewd CI should validate sunnypilot release-tizi"
 assert_contains "upstream_ref: release-tizi" "$WORKFLOW" "commaviewd CI should include sunnypilot TIZI release ref"
 assert_contains "upstream_repo: sunnypilot/sunnypilot" "$WORKFLOW" "commaviewd CI should include sunnypilot/sunnypilot"
+assert_contains '--platform "${{ matrix.target.ui_platform }}"' "$WORKFLOW" "commaviewd CI should pass explicit MICI/TICI/TIZI platform"
 assert_contains "Resolve upstream SHA" "$WORKFLOW" "commaviewd CI should resolve upstream SHA before cache/checkout"
 assert_contains "id: upstream" "$WORKFLOW" "commaviewd CI resolved upstream SHA step should use id upstream"
 assert_contains 'ref: ${{ steps.upstream.outputs.sha }}' "$WORKFLOW" "commaviewd CI upstream checkout should be pinned to resolved SHA"

@@ -159,8 +159,8 @@ scripts/sync-canary-upstream.sh <openpilot|sunnypilot> <ref> [dest-root]
 
 Supported refs:
 
-- `openpilot`: `release-mici-staging`, `nightly`
-- `sunnypilot`: `staging`, `dev`
+- `openpilot`: `nightly`, `nightly-dev`, `release-mici-staging`, `release-tizi-staging`
+- `sunnypilot`: `staging`, `release-mici-staging`, `release-tizi-staging`
 
 Default destination is `~/.cache/commaviewd-canary/<upstream>-<ref>/openpilot-src`. The script resolves the current ref SHA, force-checks out that SHA, initializes submodules, and writes `source.env` metadata.
 
@@ -232,13 +232,15 @@ commaviewd/scripts/run-verification.sh
 
 Main CI matrix:
 
-- `commaai/openpilot@release-mici-staging`
-- `sunnypilot/sunnypilot@staging`
+- `commaai/openpilot@release-mici` (`--platform mici`)
+- `commaai/openpilot@release-tici` (`--platform tici`, backwards-compatible TICI/TIZI hook family)
+- `sunnypilot/sunnypilot@release-mici` (`--platform mici`)
+- `sunnypilot/sunnypilot@release-tizi` (`--platform tizi`)
 
 Daily canaries:
 
-- openpilot: `release-mici-staging`, `nightly`
-- sunnypilot: `staging`, `dev`
+- openpilot: `nightly`, `nightly-dev`, `release-mici-staging`, `release-tizi-staging`
+- sunnypilot: `staging`, `release-mici-staging`, `release-tizi-staging`
 
 ## Program plans and telemetry references
 

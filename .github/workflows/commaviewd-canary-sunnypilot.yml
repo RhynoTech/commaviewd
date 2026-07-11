@@ -14,7 +14,7 @@ env:
 
 jobs:
   verify:
-    name: Early drift canary verify (${{ matrix.upstream_ref }})
+    name: Early drift canary verify (${{ matrix.target.upstream_ref }})
     runs-on: ubuntu-24.04
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -22,10 +22,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream_ref:
-          - staging
-          - release-mici-staging
-          - release-tizi-staging
+        target:
+          - upstream_ref: staging
+            ui_platform: tizi
+          - upstream_ref: release-mici-staging
+            ui_platform: mici
+          - upstream_ref: release-tizi-staging
+            ui_platform: tizi
+
 
     steps:
       - name: Checkout CommaView
@@ -47,7 +51,7 @@ jobs:
         id: upstream
         run: |
           set -euo pipefail
-          REF='${{ matrix.upstream_ref }}'
+          REF='${{ matrix.target.upstream_ref }}'
           SHA="$(git ls-remote "https://github.com/sunnypilot/sunnypilot.git" "refs/heads/${REF}" | awk '{print $1}')"
           if [[ -z "$SHA" ]]; then
             SHA="$(git ls-remote "https://github.com/sunnypilot/sunnypilot.git" "refs/tags/${REF}" | awk '{print $1}')"
@@ -76,8 +80,8 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/apply_onroad_ui_export_patch.sh
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/verify_onroad_ui_export_patch.sh --json >/dev/null
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/apply_onroad_ui_export_patch.sh --platform "${{ matrix.target.ui_platform }}"
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/verify_onroad_ui_export_patch.sh --json --platform "${{ matrix.target.ui_platform }}" >/dev/null
           cp "${{ github.workspace }}/comma4/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
           git -C "${{ github.workspace }}/openpilot-src" reset --hard -q HEAD
           git -C "${{ github.workspace }}/openpilot-src" clean -fdq
@@ -88,7 +92,7 @@ jobs:
           OP_ROOT: ${{ github.workspace }}/openpilot-src
           ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
           ARM_KJ_SO: ${{ steps.armcapnp.outputs.arm_kj_so }}
-          RELEASE_SMOKE_TAG: canary-sunnypilot-${{ matrix.upstream_ref }}-${{ github.run_id }}
+          RELEASE_SMOKE_TAG: canary-sunnypilot-${{ matrix.target.upstream_ref }}-${{ github.run_id }}
         run: |
           set -euxo pipefail
           commaviewd/scripts/run-verification.sh
@@ -100,7 +104,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### early drift canary verification (sunnypilot/${{ matrix.upstream_ref }})"
+            echo "### early drift canary verification (sunnypilot/${{ matrix.target.upstream_ref }})"
             echo "- Upstream SHA: \`${{ steps.upstream.outputs.sha }}\`"
             echo "- Upstream source cache hit: \`${{ steps.upstream-cache.outputs.cache-hit || 'false' }}\`"
             if [[ -f dist/upstream-interface-manifest.json ]]; then
@@ -121,7 +125,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: commaviewd-canary-sunnypilot-${{ matrix.upstream_ref }}-${{ github.run_id }}
+          name: commaviewd-canary-sunnypilot-${{ matrix.target.upstream_ref }}-${{ github.run_id }}
           path: |
             dist/reproducible-build-manifest.json
             dist/upstream-interface-manifest.json
