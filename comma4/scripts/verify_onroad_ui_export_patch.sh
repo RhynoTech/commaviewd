@@ -8,18 +8,19 @@ TRANSFORMER="$INSTALL_DIR/scripts/transform_onroad_ui_export.py"
 SMOKE_SCRIPT="$INSTALL_DIR/scripts/smoke_onroad_ui_export_helper.py"
 STATE_JSON="$INSTALL_DIR/run/onroad-ui-export-status.json"
 STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
-HELPER_PATH="$OP_ROOT/selfdrive/ui/commaview_export.py"
-UI_STATE_PATH="$OP_ROOT/selfdrive/ui/ui_state.py"
-AUGMENTED_ROAD_PATHS=(
-  "$OP_ROOT/selfdrive/ui/mici/onroad/augmented_road_view.py"
-  "$OP_ROOT/selfdrive/ui/onroad/augmented_road_view.py"
-)
+UI_PREFIX=""
+HELPER_PATH=""
+UI_STATE_PATH=""
+AUGMENTED_ROAD_PATHS=()
+REQUESTED_UI_PLATFORM="auto"
 JSON_ONLY=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) JSON_ONLY=1; shift ;;
-    -h|--help) echo "Usage: verify_onroad_ui_export_patch.sh [--json]"; exit 0 ;;
+    --platform) REQUESTED_UI_PLATFORM="${2:-}"; shift 2 ;;
+    --platform=*) REQUESTED_UI_PLATFORM="${1#--platform=}"; shift ;;
+    -h|--help) echo "Usage: verify_onroad_ui_export_patch.sh [--json] [--platform auto|mici|tizi|tici]"; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -49,6 +50,78 @@ upstream_remote() {
 upstream_branch() {
   git -C "$OP_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true
 }
+
+detect_ui_prefix() {
+  if [ -f "$OP_ROOT/selfdrive/ui/ui_state.py" ]; then
+    UI_PREFIX=""
+  elif [ -f "$OP_ROOT/openpilot/selfdrive/ui/ui_state.py" ]; then
+    UI_PREFIX="openpilot/"
+  else
+    UI_PREFIX=""
+  fi
+  HELPER_PATH="$OP_ROOT/${UI_PREFIX}selfdrive/ui/commaview_export.py"
+  UI_STATE_PATH="$OP_ROOT/${UI_PREFIX}selfdrive/ui/ui_state.py"
+}
+
+normalize_ui_platform() {
+  case "$1" in
+    auto) printf '%s\n' auto ;;
+    mici) printf '%s\n' mici ;;
+    tizi|tici) printf '%s\n' tizi ;;
+    *) return 1 ;;
+  esac
+}
+
+read_device_model() {
+  local model_path="/sys/firmware/devicetree/base/model"
+  [ -f "$model_path" ] || return 1
+  tr -d '\000\r\n' < "$model_path" | sed 's/^comma //'
+}
+
+detect_ui_platform() {
+  local requested="$1"
+  local state_platform=""
+  local state_op_root=""
+  local device_model=""
+  if [ "$requested" != "auto" ]; then
+    normalize_ui_platform "$requested"
+    return $?
+  fi
+  device_model="$(read_device_model || true)"
+  case "$device_model" in
+    *mici*|*MICI*|*comma\ 4*) printf '%s\n' mici; return 0 ;;
+    *tizi*|*TIZI*|*tici*|*TICI*|*comma\ 3*) printf '%s\n' tizi; return 0 ;;
+  esac
+  state_platform="$(state_value ONROAD_UI_EXPORT_UI_PLATFORM || true)"
+  state_op_root="$(state_value ONROAD_UI_EXPORT_OP_ROOT || true)"
+  if [ "$state_op_root" = "$OP_ROOT" ] && normalize_ui_platform "$state_platform" >/dev/null 2>&1; then
+    normalize_ui_platform "$state_platform"
+    return 0
+  fi
+  if [ -f "$OP_ROOT/${UI_PREFIX}selfdrive/ui/mici/onroad/augmented_road_view.py" ] && [ ! -f "$OP_ROOT/${UI_PREFIX}selfdrive/ui/onroad/augmented_road_view.py" ]; then
+    printf '%s\n' mici; return 0
+  fi
+  if [ -f "$OP_ROOT/${UI_PREFIX}selfdrive/ui/onroad/augmented_road_view.py" ] && [ ! -f "$OP_ROOT/${UI_PREFIX}selfdrive/ui/mici/onroad/augmented_road_view.py" ]; then
+    printf '%s\n' tizi; return 0
+  fi
+  printf '%s\n' auto
+}
+
+augmented_paths_for_platform() {
+  case "$1" in
+    mici) printf '%s\n' "$OP_ROOT/${UI_PREFIX}selfdrive/ui/mici/onroad/augmented_road_view.py" ;;
+    tizi) printf '%s\n' "$OP_ROOT/${UI_PREFIX}selfdrive/ui/onroad/augmented_road_view.py" ;;
+    auto)
+      printf '%s\n' "$OP_ROOT/${UI_PREFIX}selfdrive/ui/mici/onroad/augmented_road_view.py"
+      printf '%s\n' "$OP_ROOT/${UI_PREFIX}selfdrive/ui/onroad/augmented_road_view.py"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+detect_ui_prefix
+ui_platform="$(detect_ui_platform "$REQUESTED_UI_PLATFORM")" || ui_platform=""
+mapfile -t AUGMENTED_ROAD_PATHS < <(augmented_paths_for_platform "${ui_platform:-auto}" || true)
 
 remote_flavor() {
   local remote="$1"
@@ -223,6 +296,8 @@ upstream_remote_value=""
 upstream_branch_value=""
 applied_upstream_head="$(state_value ONROAD_UI_EXPORT_UPSTREAM_HEAD || true)"
 upstream_changed_since_apply=false
+selected_augmented_road_targets=""
+device_model_value="$(read_device_model || true)"
 
 if git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   upstream_head_value="$(upstream_head)"
@@ -232,6 +307,8 @@ fi
 
 if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   state="missing-repo"; reason="upstream repo not found at $OP_ROOT"
+elif [ -z "$ui_platform" ]; then
+  state="unknown-platform"; reason="unable to determine UI platform for $OP_ROOT; pass --platform mici or --platform tizi"
 elif [ "$flavor_detected" -ne 1 ]; then
   state="unknown-flavor"; reason="unsupported upstream remote for $OP_ROOT; CommaView currently supports only commaai/openpilot and sunnypilot remotes"
 elif [ ! -f "$template_path" ]; then
@@ -269,6 +346,12 @@ else
       continue
     fi
     augmented_road_candidate_count=$((augmented_road_candidate_count + 1))
+    rel_augmented_path="${augmented_road_path#$OP_ROOT/}"
+    if [ -z "$selected_augmented_road_targets" ]; then
+      selected_augmented_road_targets="$rel_augmented_path"
+    else
+      selected_augmented_road_targets="$selected_augmented_road_targets,$rel_augmented_path"
+    fi
     if ! { check_fixed 'self._update_commaview_camera_export()' "$augmented_road_path" && \
       check_fixed 'def _update_commaview_camera_export(self):' "$augmented_road_path" && \
       check_fixed 'active_camera="wideRoad" if self.stream_type == WIDE_CAM else "road"' "$augmented_road_path"; }; then
@@ -406,6 +489,9 @@ json="$(
   UPSTREAM_BRANCH="$upstream_branch_value" \
   APPLIED_UPSTREAM_HEAD="$applied_upstream_head" \
   UPSTREAM_CHANGED_SINCE_APPLY="$upstream_changed_since_apply" \
+  UI_PLATFORM="$ui_platform" \
+  DEVICE_MODEL="$device_model_value" \
+  SELECTED_AUGMENTED_ROAD_TARGETS="$selected_augmented_road_targets" \
   python3 - <<'PYJSON'
 import json
 import os
@@ -428,6 +514,9 @@ payload = {
     "state": os.environ.get("STATE", ""),
     "reason": os.environ.get("REASON", ""),
     "flavor": os.environ.get("FLAVOR", ""),
+    "uiPlatform": os.environ.get("UI_PLATFORM", ""),
+    "deviceModel": os.environ.get("DEVICE_MODEL", ""),
+    "selectedAugmentedRoadTargets": [value for value in os.environ.get("SELECTED_AUGMENTED_ROAD_TARGETS", "").split(",") if value],
     "opRoot": os.environ.get("OP_ROOT_JSON", ""),
     "transformer": os.environ.get("TRANSFORMER_JSON", ""),
     "template": os.environ.get("TEMPLATE_PATH_JSON", ""),
@@ -470,11 +559,12 @@ printf '%s
 if [ -n "$fingerprint" ] && $patch_verified; then
   printf 'ONROAD_UI_EXPORT_FLAVOR=%s
 ONROAD_UI_EXPORT_METHOD=transformer
+ONROAD_UI_EXPORT_UI_PLATFORM=%s
 ONROAD_UI_EXPORT_TRANSFORMER_SHA=%s
 ONROAD_UI_EXPORT_OP_ROOT=%s
 ONROAD_UI_EXPORT_UPSTREAM_HEAD=%s
 ONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s
-' "$flavor" "$fingerprint" "$OP_ROOT" "$upstream_head_value" "$upstream_remote_value" > "$STATE_ENV"
+' "$flavor" "$ui_platform" "$fingerprint" "$OP_ROOT" "$upstream_head_value" "$upstream_remote_value" > "$STATE_ENV"
 fi
 printf '%s
 ' "$json"

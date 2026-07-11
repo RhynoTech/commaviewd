@@ -13,6 +13,8 @@ FORCE_OFFROAD=0
 FORCE_OFFROAD_OWNED=0
 FORCE_OFFROAD_PREV=""
 FORCE_REPAIR=0
+UI_PREFIX=""
+REQUESTED_UI_PLATFORM="auto"
 
 read_param() {
   local path="$PARAMS_DIR/$1"
@@ -118,7 +120,9 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --force-offroad) FORCE_OFFROAD=1; shift ;;
     --force-repair) FORCE_REPAIR=1; shift ;;
-    -h|--help) echo "Usage: apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair]"; exit 0 ;;
+    --platform) REQUESTED_UI_PLATFORM="${2:-}"; shift 2 ;;
+    --platform=*) REQUESTED_UI_PLATFORM="${1#--platform=}"; shift ;;
+    -h|--help) echo "Usage: apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair] [--platform auto|mici|tizi|tici]"; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -131,12 +135,71 @@ if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 1
 fi
 
+
+detect_ui_prefix() {
+  if [ -f "$OP_ROOT/selfdrive/ui/ui_state.py" ]; then
+    UI_PREFIX=""
+  elif [ -f "$OP_ROOT/openpilot/selfdrive/ui/ui_state.py" ]; then
+    UI_PREFIX="openpilot/"
+  else
+    UI_PREFIX=""
+  fi
+}
+
+normalize_ui_platform() {
+  case "$1" in
+    auto) printf '%s\n' auto ;;
+    mici) printf '%s\n' mici ;;
+    tizi|tici) printf '%s\n' tizi ;;
+    *) return 1 ;;
+  esac
+}
+
+read_device_model() {
+  local model_path="/sys/firmware/devicetree/base/model"
+  [ -f "$model_path" ] || return 1
+  tr -d '\000\r\n' < "$model_path" | sed 's/^comma //'
+}
+
+detect_ui_platform() {
+  local requested="$1"
+  local state_platform=""
+  local state_op_root=""
+  local device_model=""
+  if [ "$requested" != "auto" ]; then
+    normalize_ui_platform "$requested"
+    return $?
+  fi
+  device_model="$(read_device_model || true)"
+  case "$device_model" in
+    *mici*|*MICI*|*comma\ 4*) printf '%s\n' mici; return 0 ;;
+    *tizi*|*TIZI*|*tici*|*TICI*|*comma\ 3*) printf '%s\n' tizi; return 0 ;;
+  esac
+  state_platform="$(state_value ONROAD_UI_EXPORT_UI_PLATFORM || true)"
+  state_op_root="$(state_value ONROAD_UI_EXPORT_OP_ROOT || true)"
+  if [ "$state_op_root" = "$OP_ROOT" ] && normalize_ui_platform "$state_platform" >/dev/null 2>&1; then
+    normalize_ui_platform "$state_platform"
+    return 0
+  fi
+  if [ -f "$OP_ROOT/${UI_PREFIX}selfdrive/ui/mici/onroad/augmented_road_view.py" ] && [ ! -f "$OP_ROOT/${UI_PREFIX}selfdrive/ui/onroad/augmented_road_view.py" ]; then
+    printf '%s\n' mici
+    return 0
+  fi
+  if [ -f "$OP_ROOT/${UI_PREFIX}selfdrive/ui/onroad/augmented_road_view.py" ] && [ ! -f "$OP_ROOT/${UI_PREFIX}selfdrive/ui/mici/onroad/augmented_road_view.py" ]; then
+    printf '%s\n' tizi
+    return 0
+  fi
+  printf '%s\n' auto
+}
+
+detect_ui_prefix
+
 managed_targets() {
   printf '%s\n' \
-    "selfdrive/ui/commaview_export.py" \
-    "selfdrive/ui/ui_state.py" \
-    "selfdrive/ui/mici/onroad/augmented_road_view.py" \
-    "selfdrive/ui/onroad/augmented_road_view.py"
+    "${UI_PREFIX}selfdrive/ui/commaview_export.py" \
+    "${UI_PREFIX}selfdrive/ui/ui_state.py" \
+    "${UI_PREFIX}selfdrive/ui/mici/onroad/augmented_road_view.py" \
+    "${UI_PREFIX}selfdrive/ui/onroad/augmented_road_view.py"
 }
 
 backup_managed_targets() {
@@ -325,11 +388,15 @@ flavor="$(detect_flavor)" || {
   echo "ERROR: unsupported upstream remote for $OP_ROOT; CommaView currently supports only commaai/openpilot and sunnypilot remotes" >&2
   exit 1
 }
+ui_platform="$(detect_ui_platform "$REQUESTED_UI_PLATFORM")" || {
+  echo "ERROR: unable to determine UI platform for $OP_ROOT; pass --platform mici or --platform tizi" >&2
+  exit 1
+}
 template="$SRC_ROOT/commaview_export.${flavor}.py"
 [ -f "$template" ] || { echo "ERROR: missing socket UI export helper template: $template" >&2; exit 1; }
 [ -f "$TRANSFORMER" ] || { echo "ERROR: missing socket UI export transformer: $TRANSFORMER" >&2; exit 1; }
 
-if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json >/dev/null 2>&1; then
+if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json --platform "$ui_platform" >/dev/null 2>&1; then
   request_openpilot_ui_restart
   restart_openpilot_ui_if_offroad
   exit 0
@@ -357,7 +424,7 @@ if [ -f "$STATE_ENV" ]; then
   cp "$STATE_ENV" "$state_env_backup"
   state_env_existed=1
 fi
-if python3 "$TRANSFORMER" --op-root "$OP_ROOT" --flavor "$flavor"; then
+if python3 "$TRANSFORMER" --op-root "$OP_ROOT" --flavor "$flavor" --platform "$ui_platform"; then
   :
 else
   transform_ec=$?
@@ -384,15 +451,16 @@ current_upstream_remote="$(upstream_remote)"
 mkdir -p "$(dirname "$STATE_ENV")"
 printf 'ONROAD_UI_EXPORT_FLAVOR=%s
 ONROAD_UI_EXPORT_METHOD=transformer
+ONROAD_UI_EXPORT_UI_PLATFORM=%s
 ONROAD_UI_EXPORT_TRANSFORMER_SHA=%s
 ONROAD_UI_EXPORT_OP_ROOT=%s
 ONROAD_UI_EXPORT_UPSTREAM_HEAD=%s
 ONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s
-' "$flavor" "$fingerprint" "$OP_ROOT" "$current_upstream_head" "$current_upstream_remote" > "$STATE_ENV"
+' "$flavor" "$ui_platform" "$fingerprint" "$OP_ROOT" "$current_upstream_head" "$current_upstream_remote" > "$STATE_ENV"
 
 if [ -x "$VERIFY_SCRIPT" ]; then
   verify_ec=0
-  "$VERIFY_SCRIPT" --json || verify_ec=$?
+  "$VERIFY_SCRIPT" --json --platform "$ui_platform" || verify_ec=$?
   if [ "$verify_ec" -eq 0 ]; then
     request_openpilot_ui_restart
     restart_openpilot_ui_if_offroad
@@ -430,10 +498,11 @@ current_upstream_remote="$(upstream_remote)"
 mkdir -p "$(dirname "$STATE_ENV")"
 printf 'ONROAD_UI_EXPORT_FLAVOR=%s
 ONROAD_UI_EXPORT_METHOD=transformer
+ONROAD_UI_EXPORT_UI_PLATFORM=%s
 ONROAD_UI_EXPORT_TRANSFORMER_SHA=%s
 ONROAD_UI_EXPORT_OP_ROOT=%s
 ONROAD_UI_EXPORT_UPSTREAM_HEAD=%s
 ONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s
-' "$flavor" "$fingerprint" "$OP_ROOT" "$current_upstream_head" "$current_upstream_remote" > "$STATE_ENV"
+' "$flavor" "$ui_platform" "$fingerprint" "$OP_ROOT" "$current_upstream_head" "$current_upstream_remote" > "$STATE_ENV"
 request_openpilot_ui_restart
 restart_openpilot_ui_if_offroad

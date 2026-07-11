@@ -112,6 +112,7 @@ run_ref() {
   local ref="$3"
   local checkout="$4"
   local expected_runtime_flavor="$5"
+  local ui_platform="$6"
   local status_json="$REPO_ROOT/comma4/run/onroad-ui-export-status.json"
 
   echo "=== ${label} ==="
@@ -130,10 +131,10 @@ run_ref() {
   COMMAVIEWD_INSTALL_DIR="$REPO_ROOT/comma4" \
     COMMAVIEWD_OP_ROOT="$checkout" \
     COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART=1 \
-    "$APPLY_SCRIPT" || fail "transformer apply failed for ${label}"
+    "$APPLY_SCRIPT" --platform "$ui_platform" || fail "transformer apply failed for ${label}"
   COMMAVIEWD_INSTALL_DIR="$REPO_ROOT/comma4" \
     COMMAVIEWD_OP_ROOT="$checkout" \
-    "$VERIFY_SCRIPT" --json >/dev/null || fail "transformer verify failed for ${label}"
+    "$VERIFY_SCRIPT" --json --platform "$ui_platform" >/dev/null || fail "transformer verify failed for ${label}"
 
   python3 - <<'PY' "$status_json" "$label"
 import json, sys
@@ -142,14 +143,22 @@ with open(path) as f:
     status = json.load(f)
 if status.get("method") != "transformer" or not status.get("patchVerified") or status.get("repairNeeded"):
     raise SystemExit(f"bad transformer status for {label}: {status}")
+if status.get("uiPlatform") not in {"mici", "tizi"} or not status.get("selectedAugmentedRoadTargets"):
+    raise SystemExit(f"bad UI platform status for {label}: {status}")
 PY
 
-  helper_path="$checkout/selfdrive/ui/commaview_export.py"
-  ui_state_path="$checkout/selfdrive/ui/ui_state.py"
-  augmented_road_path="$checkout/selfdrive/ui/mici/onroad/augmented_road_view.py"
-  if [[ ! -f "$augmented_road_path" && -f "$checkout/selfdrive/ui/onroad/augmented_road_view.py" ]]; then
-    augmented_road_path="$checkout/selfdrive/ui/onroad/augmented_road_view.py"
+  ui_prefix=""
+  if [[ -f "$checkout/openpilot/selfdrive/ui/ui_state.py" ]]; then
+    ui_prefix="openpilot/"
   fi
+  helper_path="$checkout/${ui_prefix}selfdrive/ui/commaview_export.py"
+  ui_state_path="$checkout/${ui_prefix}selfdrive/ui/ui_state.py"
+  if [[ "$ui_platform" == "mici" ]]; then
+    augmented_road_path="$checkout/${ui_prefix}selfdrive/ui/mici/onroad/augmented_road_view.py"
+  else
+    augmented_road_path="$checkout/${ui_prefix}selfdrive/ui/onroad/augmented_road_view.py"
+  fi
+  [[ -f "$augmented_road_path" ]] || fail "selected augmented road target missing for ${label}: $augmented_road_path"
 
   grep -Fq 'from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR' "$ui_state_path" || fail "ui_state exporter import missing for ${label}"
   grep -Fq 'self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)' "$ui_state_path" || fail "ui_state exporter install missing for ${label}"
@@ -200,16 +209,20 @@ PY
   git -C "$checkout" clean -fdq
 }
 
-run_ref 'openpilot master' "$OPENPILOT_REPO" 'master' "$CACHE_ROOT/openpilot-master" 'OPENPILOT'
-run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-nightly" 'OPENPILOT'
-run_ref 'openpilot release-mici' "$OPENPILOT_REPO" 'release-mici' "$CACHE_ROOT/openpilot-release-mici" 'OPENPILOT'
-run_ref 'openpilot release-mici-staging' "$OPENPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/openpilot-release-mici-staging" 'OPENPILOT'
+run_ref 'openpilot master' "$OPENPILOT_REPO" 'master' "$CACHE_ROOT/openpilot-master" 'OPENPILOT' 'tizi'
+run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-nightly" 'OPENPILOT' 'tizi'
+run_ref 'openpilot release-tizi' "$OPENPILOT_REPO" 'release-tizi' "$CACHE_ROOT/openpilot-release-tizi" 'OPENPILOT' 'tizi'
+run_ref 'openpilot release-mici' "$OPENPILOT_REPO" 'release-mici' "$CACHE_ROOT/openpilot-release-mici" 'OPENPILOT' 'mici'
+run_ref 'openpilot release-tizi-staging' "$OPENPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/openpilot-release-tizi-staging" 'OPENPILOT' 'tizi'
+run_ref 'openpilot release-mici-staging' "$OPENPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/openpilot-release-mici-staging" 'OPENPILOT' 'mici'
 
-run_ref 'sunnypilot master' "$SUNNYPILOT_REPO" 'master' "$CACHE_ROOT/sunnypilot-master" 'SUNNYPILOT'
-run_ref 'sunnypilot latest May release tag' "$SUNNYPILOT_REPO" 'v2026.001.007' "$CACHE_ROOT/sunnypilot-v2026.001.007" 'SUNNYPILOT'
-run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" 'SUNNYPILOT'
-run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" 'SUNNYPILOT'
-run_ref 'sunnypilot release-mici' "$SUNNYPILOT_REPO" 'release-mici' "$CACHE_ROOT/sunnypilot-release-mici" 'SUNNYPILOT'
-run_ref 'sunnypilot release-mici-staging' "$SUNNYPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/sunnypilot-release-mici-staging" 'SUNNYPILOT'
+run_ref 'sunnypilot master' "$SUNNYPILOT_REPO" 'master' "$CACHE_ROOT/sunnypilot-master" 'SUNNYPILOT' 'tizi'
+run_ref 'sunnypilot latest May release tag' "$SUNNYPILOT_REPO" 'v2026.001.007' "$CACHE_ROOT/sunnypilot-v2026.001.007" 'SUNNYPILOT' 'tizi'
+run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" 'SUNNYPILOT' 'tizi'
+run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" 'SUNNYPILOT' 'tizi'
+run_ref 'sunnypilot release-tizi' "$SUNNYPILOT_REPO" 'release-tizi' "$CACHE_ROOT/sunnypilot-release-tizi" 'SUNNYPILOT' 'tizi'
+run_ref 'sunnypilot release-mici' "$SUNNYPILOT_REPO" 'release-mici' "$CACHE_ROOT/sunnypilot-release-mici" 'SUNNYPILOT' 'mici'
+run_ref 'sunnypilot release-tizi-staging' "$SUNNYPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/sunnypilot-release-tizi-staging" 'SUNNYPILOT' 'tizi'
+run_ref 'sunnypilot release-mici-staging' "$SUNNYPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/sunnypilot-release-mici-staging" 'SUNNYPILOT' 'mici'
 
 echo 'PASS: source transformer socket UI export applies and verifies on real canary refs'
