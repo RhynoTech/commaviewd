@@ -16,7 +16,8 @@ if grep -Fq "COMMAVIEWD_TELEMETRY_MODE" comma4/start.sh; then
   exit 1
 fi
 
-if ! grep -Fq "commaviewd bridge" comma4/start.sh; then
+if ! grep -Fq "commaviewd bridge" comma4/start.sh && \
+   ! grep -Fq "start_runtime_process bridge" comma4/start.sh; then
   echo "FAIL: comma4/start.sh missing bridge launch command"
   exit 1
 fi
