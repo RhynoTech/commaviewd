@@ -5,17 +5,29 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS = REPO_ROOT / "comma4" / "runtime-debug.defaults.json"
-START_SH = REPO_ROOT / "comma4" / "start.sh"
-STOP_SH = REPO_ROOT / "comma4" / "stop.sh"
-INSTALL_SH = REPO_ROOT / "comma4" / "install.sh"
-UNINSTALL_SH = REPO_ROOT / "comma4" / "uninstall.sh"
-APPLY_PATCH_SH = REPO_ROOT / "comma4" / "scripts" / "apply_onroad_ui_export_patch.sh"
-REVERT_PATCH_SH = REPO_ROOT / "comma4" / "scripts" / "revert_onroad_ui_export_patch.sh"
-VERIFY_PATCH_SH = REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh"
-SUNNYPILOT_PATCH = REPO_ROOT / "comma4" / "patches" / "sunnypilot" / "0001-commaview-ui-export-v2.patch"
+DEFAULTS = REPO_ROOT / "comma" / "runtime-debug.defaults.json"
+START_SH = REPO_ROOT / "comma" / "start.sh"
+STOP_SH = REPO_ROOT / "comma" / "stop.sh"
+INSTALL_SH = REPO_ROOT / "comma" / "install.sh"
+OLD_INSTALL_SHIM = REPO_ROOT / "comma4" / "install.sh"
+UNINSTALL_SH = REPO_ROOT / "comma" / "uninstall.sh"
+APPLY_PATCH_SH = REPO_ROOT / "comma" / "scripts" / "apply_onroad_ui_export_patch.sh"
+REVERT_PATCH_SH = REPO_ROOT / "comma" / "scripts" / "revert_onroad_ui_export_patch.sh"
+VERIFY_PATCH_SH = REPO_ROOT / "comma" / "scripts" / "verify_onroad_ui_export_patch.sh"
+SUNNYPILOT_PATCH = REPO_ROOT / "comma" / "patches" / "sunnypilot" / "0001-commaview-ui-export-v2.patch"
 CONTROL_CPP = REPO_ROOT / "commaviewd" / "src" / "control_mode.cpp"
 
+
+
+
+def test_legacy_comma4_install_shim_forwards_to_generic_comma_installer():
+    text = OLD_INSTALL_SHIM.read_text()
+    assert '/comma4/install.sh' in text
+    assert '/comma/install.sh' in text
+    assert 'curl -fsSL "$SCRIPT_URL" | bash -s -- "$@"' in text
+    assert 'case "${args[$i]}" in' in text
+    assert '--tag)' in text
+    assert '--tag=*)' in text
 
 def test_runtime_debug_defaults_match_policy_contract():
     data = json.loads(DEFAULTS.read_text())

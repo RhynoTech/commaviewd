@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 WORKFLOW="$REPO_ROOT/.github/workflows/commaviewd-release.yml"
-BUILD_BUNDLE="$REPO_ROOT/tools/release/comma4-build-bundle.sh"
+BUILD_BUNDLE="$REPO_ROOT/tools/release/comma-build-bundle.sh"
 FIREBASE_UPDATE="$REPO_ROOT/scripts/update-firebase-current-release.mjs"
 
 assert_file() {
@@ -45,14 +45,14 @@ assert_contains 'REQUIRED_ASSETS=("$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS
 assert_contains 'cd "$OUT_DIR"' "$BUILD_BUNDLE" "bundle script should enter release directory before writing checksum"
 assert_contains 'sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"' "$BUILD_BUNDLE" "bundle script should write checksum with portable asset basename"
 for staged_asset in \
-  'install -m 755 "${ROOT}/comma4/install.sh" "${STAGE_DIR}/install.sh"' \
-  'install -m 755 "${ROOT}/comma4/scripts/apply_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/apply_onroad_ui_export_patch.sh"' \
-  'install -m 755 "${ROOT}/comma4/scripts/revert_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/revert_onroad_ui_export_patch.sh"' \
-  'install -m 755 "${ROOT}/comma4/scripts/verify_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/verify_onroad_ui_export_patch.sh"' \
-  'install -m 755 "${ROOT}/comma4/scripts/transform_onroad_ui_export.py" "${STAGE_DIR}/scripts/transform_onroad_ui_export.py"' \
-  'install -m 755 "${ROOT}/comma4/scripts/smoke_onroad_ui_export_helper.py" "${STAGE_DIR}/scripts/smoke_onroad_ui_export_helper.py"' \
-  'install -m 644 "${ROOT}/comma4/src/commaview_export.openpilot.py" "${STAGE_DIR}/src/commaview_export.openpilot.py"' \
-  'install -m 644 "${ROOT}/comma4/src/commaview_export.sunnypilot.py" "${STAGE_DIR}/src/commaview_export.sunnypilot.py"'; do
+  'install -m 755 "${ROOT}/comma/install.sh" "${STAGE_DIR}/install.sh"' \
+  'install -m 755 "${ROOT}/comma/scripts/apply_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/apply_onroad_ui_export_patch.sh"' \
+  'install -m 755 "${ROOT}/comma/scripts/revert_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/revert_onroad_ui_export_patch.sh"' \
+  'install -m 755 "${ROOT}/comma/scripts/verify_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/verify_onroad_ui_export_patch.sh"' \
+  'install -m 755 "${ROOT}/comma/scripts/transform_onroad_ui_export.py" "${STAGE_DIR}/scripts/transform_onroad_ui_export.py"' \
+  'install -m 755 "${ROOT}/comma/scripts/smoke_onroad_ui_export_helper.py" "${STAGE_DIR}/scripts/smoke_onroad_ui_export_helper.py"' \
+  'install -m 644 "${ROOT}/comma/src/commaview_export.openpilot.py" "${STAGE_DIR}/src/commaview_export.openpilot.py"' \
+  'install -m 644 "${ROOT}/comma/src/commaview_export.sunnypilot.py" "${STAGE_DIR}/src/commaview_export.sunnypilot.py"'; do
   assert_contains "$staged_asset" "$BUILD_BUNDLE" "bundle script should stage UI export asset: $staged_asset"
 done
 for asset in \
@@ -64,13 +64,13 @@ for asset in \
   assert_contains "$asset" "$WORKFLOW" "release workflow should publish provenance asset $asset"
 done
 assert_contains "Missing release asset: \$asset" "$WORKFLOW" "release workflow should fail clearly when any release asset is missing"
-assert_contains '(cd "release/${TAG}" && sha256sum -c "commaview-comma4-${TAG}.tar.gz.sha256")' "$WORKFLOW" "release workflow should validate portable checksum file from inside release directory"
+assert_contains '(cd "release/${TAG}" && sha256sum -c "commaview-comma-${TAG}.tar.gz.sha256")' "$WORKFLOW" "release workflow should validate portable checksum file from inside release directory"
 assert_contains 'for manifest in "${PROVENANCE_ASSETS[@]}"; do' "$WORKFLOW" "release workflow should validate every provenance JSON manifest"
 assert_contains 'python3 -m json.tool "$manifest" >/dev/null' "$WORKFLOW" "release workflow should parse provenance manifests as JSON before publishing"
 assert_contains 'gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}"' "$WORKFLOW" "release workflow should upload bundle, checksum, and provenance manifests together"
 
 release_asset_validation_line="$(grep -n "REQUIRED_ASSETS=(" "$WORKFLOW" | cut -d: -f1 | head -1)"
-checksum_validation_line="$(grep -n 'sha256sum -c "commaview-comma4-${TAG}.tar.gz.sha256"' "$WORKFLOW" | cut -d: -f1 | head -1)"
+checksum_validation_line="$(grep -n 'sha256sum -c "commaview-comma-${TAG}.tar.gz.sha256"' "$WORKFLOW" | cut -d: -f1 | head -1)"
 json_validation_line="$(grep -n 'python3 -m json.tool "$manifest" >/dev/null' "$WORKFLOW" | cut -d: -f1 | head -1)"
 release_create_line="$(grep -n "gh release create" "$WORKFLOW" | cut -d: -f1 | head -1)"
 release_edit_line="$(grep -n "gh release edit" "$WORKFLOW" | cut -d: -f1 | head -1)"

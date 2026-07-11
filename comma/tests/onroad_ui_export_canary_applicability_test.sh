@@ -5,8 +5,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CACHE_ROOT="${COMMAVIEWD_CANARY_CACHE_ROOT:-$HOME/.cache/ci-ref-checkouts}"
 OPENPILOT_REPO="${COMMAVIEWD_OPENPILOT_REPO:-https://github.com/commaai/openpilot.git}"
 SUNNYPILOT_REPO="${COMMAVIEWD_SUNNYPILOT_REPO:-https://github.com/sunnypilot/sunnypilot.git}"
-APPLY_SCRIPT="$REPO_ROOT/comma4/scripts/apply_onroad_ui_export_patch.sh"
-VERIFY_SCRIPT="$REPO_ROOT/comma4/scripts/verify_onroad_ui_export_patch.sh"
+APPLY_SCRIPT="$REPO_ROOT/comma/scripts/apply_onroad_ui_export_patch.sh"
+VERIFY_SCRIPT="$REPO_ROOT/comma/scripts/verify_onroad_ui_export_patch.sh"
 
 fail() {
   echo "FAIL: $1" >&2
@@ -113,7 +113,7 @@ run_ref() {
   local checkout="$4"
   local expected_runtime_flavor="$5"
   local ui_platform="$6"
-  local status_json="$REPO_ROOT/comma4/run/onroad-ui-export-status.json"
+  local status_json="$REPO_ROOT/comma/run/onroad-ui-export-status.json"
 
   echo "=== ${label} ==="
   mkdir -p "$(dirname "$checkout")"
@@ -128,11 +128,11 @@ run_ref() {
   git -C "$checkout" reset --hard -q HEAD
   git -C "$checkout" clean -fdq
 
-  COMMAVIEWD_INSTALL_DIR="$REPO_ROOT/comma4" \
+  COMMAVIEWD_INSTALL_DIR="$REPO_ROOT/comma" \
     COMMAVIEWD_OP_ROOT="$checkout" \
     COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART=1 \
     "$APPLY_SCRIPT" --platform "$ui_platform" || fail "transformer apply failed for ${label}"
-  COMMAVIEWD_INSTALL_DIR="$REPO_ROOT/comma4" \
+  COMMAVIEWD_INSTALL_DIR="$REPO_ROOT/comma" \
     COMMAVIEWD_OP_ROOT="$checkout" \
     "$VERIFY_SCRIPT" --json --platform "$ui_platform" >/dev/null || fail "transformer verify failed for ${label}"
 

@@ -19,6 +19,7 @@ assert_contains() {
 assert_file "$WORKFLOW"
 assert_contains "name: openpilot-release-mici" "$WORKFLOW" "commaviewd CI should validate openpilot release-mici"
 assert_contains "upstream_ref: release-mici" "$WORKFLOW" "commaviewd CI should include MICI release refs"
+assert_contains "comma4/install.sh" "$WORKFLOW" "commaviewd CI should run when the legacy install shim changes"
 assert_contains "name: openpilot-release-tici" "$WORKFLOW" "commaviewd CI should validate openpilot release-tici"
 assert_contains "upstream_ref: release-tici" "$WORKFLOW" "commaviewd CI should include openpilot TICI release ref"
 assert_contains "run_verification: false" "$WORKFLOW" "legacy openpilot release-tici should be patch-applicability only"

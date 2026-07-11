@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-START="$ROOT/comma4/start.sh"
-STOP="$ROOT/comma4/stop.sh"
+START="$ROOT/comma/start.sh"
+STOP="$ROOT/comma/stop.sh"
 
 require_literal() {
   local file="$1"

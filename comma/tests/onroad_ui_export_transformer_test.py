@@ -11,12 +11,12 @@ import importlib.util
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TRANSFORMER = REPO_ROOT / "comma4" / "scripts" / "transform_onroad_ui_export.py"
-SMOKE_SCRIPT = REPO_ROOT / "comma4" / "scripts" / "smoke_onroad_ui_export_helper.py"
-APPLY_SCRIPT = REPO_ROOT / "comma4" / "scripts" / "apply_onroad_ui_export_patch.sh"
-REVERT_SCRIPT = REPO_ROOT / "comma4" / "scripts" / "revert_onroad_ui_export_patch.sh"
-OPENPILOT_TEMPLATE = REPO_ROOT / "comma4" / "src" / "commaview_export.openpilot.py"
-SUNNYPILOT_TEMPLATE = REPO_ROOT / "comma4" / "src" / "commaview_export.sunnypilot.py"
+TRANSFORMER = REPO_ROOT / "comma" / "scripts" / "transform_onroad_ui_export.py"
+SMOKE_SCRIPT = REPO_ROOT / "comma" / "scripts" / "smoke_onroad_ui_export_helper.py"
+APPLY_SCRIPT = REPO_ROOT / "comma" / "scripts" / "apply_onroad_ui_export_patch.sh"
+REVERT_SCRIPT = REPO_ROOT / "comma" / "scripts" / "revert_onroad_ui_export_patch.sh"
+OPENPILOT_TEMPLATE = REPO_ROOT / "comma" / "src" / "commaview_export.openpilot.py"
+SUNNYPILOT_TEMPLATE = REPO_ROOT / "comma" / "src" / "commaview_export.sunnypilot.py"
 
 EXPORT_IMPORT = "from openpilot.selfdrive.ui.commaview_export import _CommaViewSocketExporter, COMMAVIEW_RUNTIME_FLAVOR"
 EXPORT_INSTALL = "self._commaview_exporter = _CommaViewSocketExporter(COMMAVIEW_RUNTIME_FLAVOR)"
@@ -552,7 +552,7 @@ def test_apply_platform_tizi_records_platform_and_patches_flat_target(tmp_path):
     assert_augmented_transformed(op_root / "selfdrive" / "ui" / "onroad" / "augmented_road_view.py")
     assert CAMERA_EXPORT_CALL not in (op_root / "selfdrive" / "ui" / "mici" / "onroad" / "augmented_road_view.py").read_text()
 
-    verified = run_lifecycle_script(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json", "--platform", "tizi")
+    verified = run_lifecycle_script(REPO_ROOT / "comma" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json", "--platform", "tizi")
     assert verified.returncode == 0, verified.stdout
     status = json.loads(verified.stdout)
     assert status["uiPlatform"] == "tizi"
@@ -636,7 +636,7 @@ def prepare_lifecycle_install_dir(tmp_path: Path, op_root: Path) -> Path:
     shutil.copy2(SMOKE_SCRIPT, install_dir / "scripts" / "smoke_onroad_ui_export_helper.py")
     shutil.copy2(APPLY_SCRIPT, install_dir / "scripts" / "apply_onroad_ui_export_patch.sh")
     shutil.copy2(REVERT_SCRIPT, install_dir / "scripts" / "revert_onroad_ui_export_patch.sh")
-    shutil.copy2(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir / "scripts" / "verify_onroad_ui_export_patch.sh")
+    shutil.copy2(REPO_ROOT / "comma" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir / "scripts" / "verify_onroad_ui_export_patch.sh")
     shutil.copy2(OPENPILOT_TEMPLATE, install_dir / "src" / "commaview_export.openpilot.py")
     shutil.copy2(SUNNYPILOT_TEMPLATE, install_dir / "src" / "commaview_export.sunnypilot.py")
     (install_dir / "config" / "onroad-ui-export-patch.env").write_text(
@@ -1264,7 +1264,7 @@ def test_apply_records_upstream_head_and_verify_reports_matching_checkout(tmp_pa
     state_env = (install_dir / "config" / "onroad-ui-export-patch.env").read_text()
     assert f"ONROAD_UI_EXPORT_UPSTREAM_HEAD={expected_head}" in state_env
 
-    verified = run_lifecycle_script(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
+    verified = run_lifecycle_script(REPO_ROOT / "comma" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
 
     assert verified.returncode == 0, verified.stdout
     status = json.loads(verified.stdout)
@@ -1287,7 +1287,7 @@ def test_verify_requests_repair_when_upstream_head_changed_since_apply(tmp_path)
     subprocess.run(["git", "commit", "-m", "upstream update"], cwd=op_root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     current_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=op_root, text=True).strip()
 
-    result = run_lifecycle_script(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
+    result = run_lifecycle_script(REPO_ROOT / "comma" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
 
     assert result.returncode == 1
     status = json.loads(result.stdout)
@@ -1319,7 +1319,7 @@ def test_verify_script_rejects_unsupported_upstream_fork_even_with_state_flavor(
     subprocess.run(["git", "remote", "add", "origin", "git@github.com:example/sunnypilot.git"], cwd=op_root, check=True)
     install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
 
-    result = run_lifecycle_script(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
+    result = run_lifecycle_script(REPO_ROOT / "comma" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
 
     assert result.returncode == 1
     assert "unsupported upstream remote" in result.stdout
@@ -1346,7 +1346,7 @@ def test_verify_script_fails_when_existing_flat_augmented_road_target_is_stale(t
         text=True,
     )
 
-    result = run_lifecycle_script(REPO_ROOT / "comma4" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
+    result = run_lifecycle_script(REPO_ROOT / "comma" / "scripts" / "verify_onroad_ui_export_patch.sh", install_dir, op_root, "--json")
 
     assert result.returncode == 1
     status = json.loads(result.stdout)

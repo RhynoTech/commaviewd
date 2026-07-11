@@ -31,9 +31,9 @@ OP_ROOT="$OP_ROOT" DIST_DIR="$DIST_DIR" "$ROOT/scripts/reproducible-build.sh"
 DIST_DIR="$DIST_DIR" "$ROOT/scripts/binary-contract-check.sh"
 OP_ROOT="$OP_ROOT" DIST_DIR="$DIST_DIR" "$ROOT/scripts/run-unit-tests.sh"
 
-DIST_DIR="$DIST_DIR" "$REPO_ROOT/tools/release/comma4-build-bundle.sh" --skip-build "$RELEASE_SMOKE_TAG"
+DIST_DIR="$DIST_DIR" "$REPO_ROOT/tools/release/comma-build-bundle.sh" --skip-build "$RELEASE_SMOKE_TAG"
 
-release_asset="$REPO_ROOT/release/$RELEASE_SMOKE_TAG/commaview-comma4-$RELEASE_SMOKE_TAG.tar.gz"
+release_asset="$REPO_ROOT/release/$RELEASE_SMOKE_TAG/commaview-comma-$RELEASE_SMOKE_TAG.tar.gz"
 release_sha="$release_asset.sha256"
 [[ -f "$release_asset" ]] || { echo "FAIL: missing release smoke asset $release_asset" >&2; exit 1; }
 [[ -f "$release_sha" ]] || { echo "FAIL: missing release smoke checksum $release_sha" >&2; exit 1; }

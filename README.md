@@ -2,21 +2,21 @@
 
 > ⚠️ Unofficial project. Community-maintained and not affiliated with or endorsed by comma.ai.
 
-`commaviewd` is the comma-side C++ runtime for CommaView, plus comma4 install, patch, verification, and release tooling.
+`commaviewd` is the comma-side C++ runtime for CommaView, plus comma-device install, patch, verification, and release tooling.
 
 ## At a glance
 
 - Runtime binary with explicit modes:
   - `commaviewd bridge` — video + telemetry streaming runtime.
   - `commaviewd control` — local HTTP control API for pairing, status, runtime debug, and patch repair.
-- comma4 lifecycle scripts under `comma4/`.
+- comma-device lifecycle scripts under `comma/`.
 - Build/release/verification scripts under `commaviewd/scripts/`, `tools/release/`, and `scripts/`.
 - CI + canary coverage against upstream openpilot/sunnypilot branches.
 
 ## Repository layout
 
 - `commaviewd/` — runtime source, tests, and verification scripts.
-- `comma4/` — comma-device install/start/stop/uninstall scripts, runtime defaults, patch helpers, and version pin.
+- `comma/` — comma-device install/start/stop/uninstall scripts, runtime defaults, patch helpers, and version pin.
 - `tools/release/` — release bundle builder.
 - `scripts/` — host setup and upstream-canary helper scripts.
 - `.github/workflows/` — CI, release, and canary workflows.
@@ -49,19 +49,19 @@ Runtime env used by installed scripts:
 | `COMMAVIEWD_UI_EXPORT_SOCKET` | `/data/commaview/run/ui-export.sock` in patch helper code | UI export Unix socket path override. |
 | `COMMAVIEW_PARAMS_DIR` | platform default | Params directory override used by runtime JSON helpers. |
 
-## Install/update on comma4
+## Install/update on comma-device
 
 Recommended install/update from a workstation:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/install.sh \
+curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma/install.sh \
   | ssh comma@<comma-ip> bash
 ```
 
 Install/update a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma4/install.sh \
+curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma/install.sh \
   | ssh comma@<comma-ip> bash -s -- --tag vX.Y.Z
 ```
 
@@ -77,7 +77,7 @@ Force offroad before install/update:
 ssh comma@<comma-ip> 'bash /data/commaview/install.sh --force-offroad'
 ```
 
-`comma4/install.sh` flags and release env:
+`comma/install.sh` flags and release env:
 
 | Flag/env | Purpose |
 | --- | --- |
@@ -102,13 +102,13 @@ Installer safety behavior:
 - Clears stale runtime/patch state during install.
 - Applies the onroad UI export patch through the patch helper; unsafe patch repair is not automatic.
 
-## comma4 lifecycle scripts
+## comma-device lifecycle scripts
 
 | Script | Usage | Notes |
 | --- | --- | --- |
-| `comma4/start.sh` | `bash /data/commaview/start.sh` | Verifies/repairs the UI export patch when safe, consumes deferred UI restart marker, stops stale processes, then starts `commaviewd bridge` and `commaviewd control`. No CLI flags. Uses runtime env listed above. |
-| `comma4/stop.sh` | `bash /data/commaview/stop.sh` | Stops pidfile-tracked bridge/control processes and cleans stray `/data/commaview/commaviewd` processes. No flags. |
-| `comma4/uninstall.sh` | `bash /data/commaview/uninstall.sh` | Stops runtime, removes `/data/continue.sh` boot hook, deletes `/data/commaview`. No flags. |
+| `comma/start.sh` | `bash /data/commaview/start.sh` | Verifies/repairs the UI export patch when safe, consumes deferred UI restart marker, stops stale processes, then starts `commaviewd bridge` and `commaviewd control`. No CLI flags. Uses runtime env listed above. |
+| `comma/stop.sh` | `bash /data/commaview/stop.sh` | Stops pidfile-tracked bridge/control processes and cleans stray `/data/commaview/commaviewd` processes. No flags. |
+| `comma/uninstall.sh` | `bash /data/commaview/uninstall.sh` | Stops runtime, removes `/data/continue.sh` boot hook, deletes `/data/commaview`. No flags. |
 
 Uninstall from workstation:
 
@@ -122,8 +122,8 @@ These scripts manage the direct v2 socket export patch in upstream openpilot/sun
 
 | Script | Usage | Flags/env |
 | --- | --- | --- |
-| `comma4/scripts/verify_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/verify_onroad_ui_export_patch.sh [--json]` | `--json` prints machine-readable status. `COMMAVIEWD_INSTALL_DIR` overrides `/data/commaview`; `COMMAVIEWD_OP_ROOT` overrides `/data/openpilot`. |
-| `comma4/scripts/apply_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair]` | `--force-offroad` waits for offroad before patching. `--force-repair` is the only destructive repair path; it backs up targets before reset/reapply. `COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART=1` suppresses UI restart/marker behavior. |
+| `comma/scripts/verify_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/verify_onroad_ui_export_patch.sh [--json]` | `--json` prints machine-readable status. `COMMAVIEWD_INSTALL_DIR` overrides `/data/commaview`; `COMMAVIEWD_OP_ROOT` overrides `/data/openpilot`. |
+| `comma/scripts/apply_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair]` | `--force-offroad` waits for offroad before patching. `--force-repair` is the only destructive repair path; it backs up targets before reset/reapply. `COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART=1` suppresses UI restart/marker behavior. |
 
 Patch safety rules:
 
@@ -138,7 +138,7 @@ Patch safety rules:
 | --- | --- | --- |
 | `scripts/install-commaviewd-toolchain.sh` | `bash scripts/install-commaviewd-toolchain.sh` | Installs host + arm64 build dependencies via `sudo apt`. Mutates apt source config and adds arm64 architecture; use only on a build host/runner. No flags. Emits `ARM_CAPNP_SO` and `ARM_KJ_SO`; writes GitHub outputs when `GITHUB_OUTPUT` is set. |
 | `commaviewd/scripts/build-ubuntu.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/build-ubuntu.sh` | Builds host and aarch64 binaries into `DIST_DIR` (`dist/` by default). Env: `OP_ROOT`, `DIST_DIR`, `HOST_CXX`, `CXX`, `CROSS_CXX`, `COMMAVIEWD_SKIP_ARM=1`, `ARM_CAPNP_SO`, `ARM_KJ_SO`, `PATCHED_MSGQ_LOCAL`. No CLI flags. |
-| `tools/release/comma4-build-bundle.sh` | `tools/release/comma4-build-bundle.sh [--skip-build] [<tag>]` | Builds/stages release bundle under `release/<tag>/`. `--skip-build` uses existing `DIST_DIR` artifacts. `<tag>` overrides `comma4/version.env` `RELEASE_TAG`. Env: `DIST_DIR`. |
+| `tools/release/comma-build-bundle.sh` | `tools/release/comma-build-bundle.sh [--skip-build] [<tag>]` | Builds/stages release bundle under `release/<tag>/`. `--skip-build` uses existing `DIST_DIR` artifacts. `<tag>` overrides `comma/version.env` `RELEASE_TAG`. Env: `DIST_DIR`. |
 
 ## Verification scripts
 
@@ -170,8 +170,8 @@ These are mostly CI-facing but useful for targeted local checks.
 
 | Script | Purpose |
 | --- | --- |
-| `comma4/tests/onroad_ui_export_patch_contract_test.sh` | Static contract check for the socket UI export patch. |
-| `comma4/tests/onroad_ui_export_canary_applicability_test.sh` | Applies/verifies patch against real openpilot/sunnypilot canary refs. |
+| `comma/tests/onroad_ui_export_patch_contract_test.sh` | Static contract check for the socket UI export patch. |
+| `comma/tests/onroad_ui_export_canary_applicability_test.sh` | Applies/verifies patch against real openpilot/sunnypilot canary refs. |
 | `commaviewd/tests/control_mode_api_contract_test.sh` | Verifies control API routes/contract are present. |
 | `commaviewd/tests/local_discovery_contract_test.sh` | Verifies local discovery responder contract. |
 | `commaviewd/tests/onroad_ui_export_ci_contract_test.sh` | Ensures workflows align to direct v2 validation. |
@@ -184,15 +184,15 @@ These are mostly CI-facing but useful for targeted local checks.
 Python contract tests:
 
 ```bash
-python3 -m pytest comma4/tests -q
+python3 -m pytest comma/tests -q
 ```
 
 ## Standard local verification
 
 ```bash
-python3 -m pytest comma4/tests -q
-bash comma4/tests/onroad_ui_export_patch_contract_test.sh
-bash comma4/tests/onroad_ui_export_canary_applicability_test.sh
+python3 -m pytest comma/tests -q
+bash comma/tests/onroad_ui_export_patch_contract_test.sh
+bash comma/tests/onroad_ui_export_canary_applicability_test.sh
 bash commaviewd/tests/onroad_ui_export_ci_contract_test.sh
 bash commaviewd/tests/runtime_debug_policy_contract_test.sh
 bash commaviewd/tests/raw_only_runtime_contract_test.sh
@@ -210,7 +210,7 @@ commaviewd/scripts/run-verification.sh
 
 ## Release flow
 
-1. Update `comma4/version.env` with the target runtime release tag.
+1. Update `comma/version.env` with the target runtime release tag.
 2. Run verification:
 
    ```bash
@@ -220,13 +220,13 @@ commaviewd/scripts/run-verification.sh
 3. Build release bundle:
 
    ```bash
-   tools/release/comma4-build-bundle.sh <tag>
+   tools/release/comma-build-bundle.sh <tag>
    ```
 
 4. Push `master`, then tag with runtime format `v*`.
 5. Confirm GitHub Actions release publishes:
-   - `commaview-comma4-<tag>.tar.gz`
-   - `commaview-comma4-<tag>.tar.gz.sha256`
+   - `commaview-comma-<tag>.tar.gz`
+   - `commaview-comma-<tag>.tar.gz.sha256`
 
 ## CI targets
 
@@ -244,7 +244,7 @@ Daily canaries:
 
 ## Program plans and telemetry references
 
-- `commaviewd/docs/COM-55-onroad-ui-parity-program.md` — phased execution plan for comma4 onroad UI parity.
+- `commaviewd/docs/COM-55-onroad-ui-parity-program.md` — phased execution plan for comma-device onroad UI parity.
 - `commaviewd/docs/ai/telemetry-raw-only-readme.md` — short operator doc.
 - `commaviewd/docs/ai/telemetry-raw-only-deep-dive.md` — deep technical doc.
 

@@ -1,4 +1,4 @@
-# COM-55 — comma4 onroad UI parity program plan
+# COM-55 — comma-device onroad UI parity program plan
 
 ## Objective
 Deliver testable onroad UI parity against sunnypilot staging baseline `33a8902` with phased milestones and evidence gates.

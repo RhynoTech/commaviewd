@@ -11,14 +11,14 @@ if ! grep -Fq "telemetryMode" commaviewd/src/control_mode.cpp; then
   exit 1
 fi
 
-if grep -Fq "COMMAVIEWD_TELEMETRY_MODE" comma4/start.sh; then
-  echo "FAIL: comma4/start.sh should not use COMMAVIEWD_TELEMETRY_MODE override anymore"
+if grep -Fq "COMMAVIEWD_TELEMETRY_MODE" comma/start.sh; then
+  echo "FAIL: comma/start.sh should not use COMMAVIEWD_TELEMETRY_MODE override anymore"
   exit 1
 fi
 
-if ! grep -Fq "commaviewd bridge" comma4/start.sh && \
-   ! grep -Fq "start_runtime_process bridge" comma4/start.sh; then
-  echo "FAIL: comma4/start.sh missing bridge launch command"
+if ! grep -Fq "commaviewd bridge" comma/start.sh && \
+   ! grep -Fq "start_runtime_process bridge" comma/start.sh; then
+  echo "FAIL: comma/start.sh missing bridge launch command"
   exit 1
 fi
 

@@ -3,16 +3,16 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--help" ]]; then
   cat <<USAGE
-Usage: tools/release/comma4-build-bundle.sh [--skip-build] [<tag>]
-Builds/stages CommaView comma4 bundle and outputs:
-  release/<tag>/commaview-comma4-<tag>.tar.gz
-  release/<tag>/commaview-comma4-<tag>.tar.gz.sha256
+Usage: tools/release/comma-build-bundle.sh [--skip-build] [<tag>]
+Builds/stages CommaView comma-device bundle and outputs:
+  release/<tag>/commaview-comma-<tag>.tar.gz
+  release/<tag>/commaview-comma-<tag>.tar.gz.sha256
 USAGE
   exit 0
 fi
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-VERSION_ENV="${ROOT}/comma4/version.env"
+VERSION_ENV="${ROOT}/comma/version.env"
 if [[ ! -f "$VERSION_ENV" ]]; then
   echo "ERROR: missing required version source: $VERSION_ENV" >&2
   exit 1
@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 TAG="${TAG_OVERRIDE:-$RELEASE_TAG}"
-NAME="commaview-comma4-${TAG}"
+NAME="commaview-comma-${TAG}"
 OUT_DIR="${ROOT}/release/${TAG}"
 STAGE_DIR="${OUT_DIR}/${NAME}"
 ASSET_TGZ="${OUT_DIR}/${NAME}.tar.gz"
@@ -124,17 +124,17 @@ for src in "${capnp_libs[@]}" "${kj_libs[@]}"; do
   install -m 755 "$src" "${STAGE_DIR}/lib/$(basename "$src")"
 done
 
-install -m 755 "${ROOT}/comma4/start.sh" "${STAGE_DIR}/start.sh"
-install -m 755 "${ROOT}/comma4/stop.sh" "${STAGE_DIR}/stop.sh"
-install -m 755 "${ROOT}/comma4/uninstall.sh" "${STAGE_DIR}/uninstall.sh"
-install -m 755 "${ROOT}/comma4/install.sh" "${STAGE_DIR}/install.sh"
-install -m 755 "${ROOT}/comma4/scripts/apply_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/apply_onroad_ui_export_patch.sh"
-install -m 755 "${ROOT}/comma4/scripts/revert_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/revert_onroad_ui_export_patch.sh"
-install -m 755 "${ROOT}/comma4/scripts/verify_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/verify_onroad_ui_export_patch.sh"
-install -m 755 "${ROOT}/comma4/scripts/transform_onroad_ui_export.py" "${STAGE_DIR}/scripts/transform_onroad_ui_export.py"
-install -m 755 "${ROOT}/comma4/scripts/smoke_onroad_ui_export_helper.py" "${STAGE_DIR}/scripts/smoke_onroad_ui_export_helper.py"
-install -m 644 "${ROOT}/comma4/src/commaview_export.openpilot.py" "${STAGE_DIR}/src/commaview_export.openpilot.py"
-install -m 644 "${ROOT}/comma4/src/commaview_export.sunnypilot.py" "${STAGE_DIR}/src/commaview_export.sunnypilot.py"
+install -m 755 "${ROOT}/comma/start.sh" "${STAGE_DIR}/start.sh"
+install -m 755 "${ROOT}/comma/stop.sh" "${STAGE_DIR}/stop.sh"
+install -m 755 "${ROOT}/comma/uninstall.sh" "${STAGE_DIR}/uninstall.sh"
+install -m 755 "${ROOT}/comma/install.sh" "${STAGE_DIR}/install.sh"
+install -m 755 "${ROOT}/comma/scripts/apply_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/apply_onroad_ui_export_patch.sh"
+install -m 755 "${ROOT}/comma/scripts/revert_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/revert_onroad_ui_export_patch.sh"
+install -m 755 "${ROOT}/comma/scripts/verify_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/verify_onroad_ui_export_patch.sh"
+install -m 755 "${ROOT}/comma/scripts/transform_onroad_ui_export.py" "${STAGE_DIR}/scripts/transform_onroad_ui_export.py"
+install -m 755 "${ROOT}/comma/scripts/smoke_onroad_ui_export_helper.py" "${STAGE_DIR}/scripts/smoke_onroad_ui_export_helper.py"
+install -m 644 "${ROOT}/comma/src/commaview_export.openpilot.py" "${STAGE_DIR}/src/commaview_export.openpilot.py"
+install -m 644 "${ROOT}/comma/src/commaview_export.sunnypilot.py" "${STAGE_DIR}/src/commaview_export.sunnypilot.py"
 
 cat > "${STAGE_DIR}/VERSION" <<VER
 ${TAG}

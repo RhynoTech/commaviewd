@@ -84,9 +84,9 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/apply_onroad_ui_export_patch.sh --platform "${{ matrix.target.ui_platform }}"
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/verify_onroad_ui_export_patch.sh --json --platform "${{ matrix.target.ui_platform }}" >/dev/null
-          cp "${{ github.workspace }}/comma4/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/apply_onroad_ui_export_patch.sh --platform "${{ matrix.target.ui_platform }}"
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/verify_onroad_ui_export_patch.sh --json --platform "${{ matrix.target.ui_platform }}" >/dev/null
+          cp "${{ github.workspace }}/comma/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
           git -C "${{ github.workspace }}/openpilot-src" reset --hard -q HEAD
           git -C "${{ github.workspace }}/openpilot-src" clean -fdq
 

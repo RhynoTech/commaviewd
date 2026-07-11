@@ -40,7 +40,7 @@ assert_contains "upstream_ref: staging" "$WORKFLOW" "device-test matrix should i
 assert_contains "apply_onroad_ui_export_patch.sh" "$WORKFLOW" "device-test workflow should apply the transformer patch"
 assert_contains "verify_onroad_ui_export_patch.sh" "$WORKFLOW" "device-test workflow should verify the transformer patch"
 assert_contains "commaviewd/scripts/run-verification.sh" "$WORKFLOW" "device-test workflow should run full verification"
-assert_contains "tools/release/comma4-build-bundle.sh" "$WORKFLOW" "device-test workflow should build release-shaped bundles"
+assert_contains "tools/release/comma-build-bundle.sh" "$WORKFLOW" "device-test workflow should build release-shaped bundles"
 assert_contains 'ref: ${{ steps.upstream.outputs.sha }}' "$WORKFLOW" "device-test upstream checkout should be pinned to resolved SHA"
 assert_contains "actions/upload-artifact" "$WORKFLOW" "device-test workflow should upload artifacts"
 assert_contains "Upload device-test diagnostics on failure" "$WORKFLOW" "device-test workflow should upload failure diagnostics"

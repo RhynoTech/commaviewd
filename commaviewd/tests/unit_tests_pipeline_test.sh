@@ -11,9 +11,9 @@ DEVICE_TEST_WORKFLOW_CONTRACT="$ROOT/tests/device_test_workflow_contract_test.sh
 CI_WORKFLOW_CONTRACT="$ROOT/tests/ci_workflow_contract_test.sh"
 BINARY_CONTRACT="$ROOT/scripts/binary-contract-check.sh"
 HUD_LITE_CI_CONTRACT="$ROOT/tests/onroad_ui_export_ci_contract_test.sh"
-HUD_LITE_PATCH_CONTRACT="$REPO_ROOT/comma4/tests/onroad_ui_export_patch_contract_test.sh"
+HUD_LITE_PATCH_CONTRACT="$REPO_ROOT/comma/tests/onroad_ui_export_patch_contract_test.sh"
 LOCAL_DISCOVERY_CONTRACT="$ROOT/tests/local_discovery_contract_test.sh"
-BUNDLE="$REPO_ROOT/tools/release/comma4-build-bundle.sh"
+BUNDLE="$REPO_ROOT/tools/release/comma-build-bundle.sh"
 
 for script in "$RUNNER" "$PIPELINE" "$INTERFACE_GUARD" "$INTERFACE_GUARD_CONTRACT" "$BINARY_CONTRACT" "$HUD_LITE_CI_CONTRACT" "$HUD_LITE_PATCH_CONTRACT" "$LOCAL_DISCOVERY_CONTRACT" "$BUNDLE" "$DEVICE_TEST_WORKFLOW_CONTRACT" "$CI_WORKFLOW_CONTRACT"; do
   [ -x "$script" ] || { echo "FAIL: missing executable $script"; exit 1; }

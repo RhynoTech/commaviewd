@@ -70,10 +70,10 @@ if printf '%s' "$remote" | grep -qi 'sunnypilot'; then
 fi
 
 required_transformer_files=(
-  "$REPO_ROOT/comma4/scripts/transform_onroad_ui_export.py"
-  "$REPO_ROOT/comma4/scripts/apply_onroad_ui_export_patch.sh"
-  "$REPO_ROOT/comma4/scripts/verify_onroad_ui_export_patch.sh"
-  "$REPO_ROOT/comma4/src/commaview_export.$onroad_ui_export_flavor.py"
+  "$REPO_ROOT/comma/scripts/transform_onroad_ui_export.py"
+  "$REPO_ROOT/comma/scripts/apply_onroad_ui_export_patch.sh"
+  "$REPO_ROOT/comma/scripts/verify_onroad_ui_export_patch.sh"
+  "$REPO_ROOT/comma/src/commaview_export.$onroad_ui_export_flavor.py"
 )
 
 for f in "${required_transformer_files[@]}"; do

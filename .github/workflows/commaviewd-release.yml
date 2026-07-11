@@ -33,7 +33,7 @@ env:
 
 jobs:
   bundle-and-publish:
-    name: Build comma4 release bundle + publish assets
+    name: Build comma-device release bundle + publish assets
     runs-on: ubuntu-24.04
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -69,9 +69,9 @@ jobs:
           WANT_VERSION='${{ steps.vars.outputs.version }}'
           WANT_TAG='${{ steps.vars.outputs.tag }}'
           # shellcheck disable=SC1091
-          . comma4/version.env
-          echo "VERSION in comma4/version.env: ${VERSION:-}"
-          echo "RELEASE_TAG in comma4/version.env: ${RELEASE_TAG:-}"
+          . comma/version.env
+          echo "VERSION in comma/version.env: ${VERSION:-}"
+          echo "RELEASE_TAG in comma/version.env: ${RELEASE_TAG:-}"
           [[ "${VERSION:-}" == "$WANT_VERSION" ]] || {
             echo "VERSION mismatch: expected $WANT_VERSION from tag, got ${VERSION:-}" >&2
             exit 1
@@ -125,9 +125,9 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/apply_onroad_ui_export_patch.sh
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma4" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma4/scripts/verify_onroad_ui_export_patch.sh --json >/dev/null
-          cp "${{ github.workspace }}/comma4/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/apply_onroad_ui_export_patch.sh
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/verify_onroad_ui_export_patch.sh --json >/dev/null
+          cp "${{ github.workspace }}/comma/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
           git -C "${{ github.workspace }}/openpilot-src" reset --hard -q HEAD
           git -C "${{ github.workspace }}/openpilot-src" clean -fdq
 
@@ -149,7 +149,7 @@ jobs:
           RELEASE_TAG: ${{ steps.vars.outputs.tag }}
         run: |
           set -euxo pipefail
-          tools/release/comma4-build-bundle.sh "$RELEASE_TAG"
+          tools/release/comma-build-bundle.sh "$RELEASE_TAG"
 
       - name: Upload release assets to GitHub release
         env:
@@ -157,7 +157,7 @@ jobs:
         run: |
           set -euxo pipefail
           TAG='${{ steps.vars.outputs.tag }}'
-          ASSET_TGZ="release/${TAG}/commaview-comma4-${TAG}.tar.gz"
+          ASSET_TGZ="release/${TAG}/commaview-comma-${TAG}.tar.gz"
           ASSET_SHA="${ASSET_TGZ}.sha256"
           PROVENANCE_ASSETS=(
             dist/reproducible-build-manifest.json
@@ -181,7 +181,7 @@ jobs:
               exit 1
             fi
           done
-          (cd "release/${TAG}" && sha256sum -c "commaview-comma4-${TAG}.tar.gz.sha256")
+          (cd "release/${TAG}" && sha256sum -c "commaview-comma-${TAG}.tar.gz.sha256")
           for manifest in "${PROVENANCE_ASSETS[@]}"; do
             python3 -m json.tool "$manifest" >/dev/null
           done

@@ -131,5 +131,5 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
 "$ROOT/tests/video_msgq_conflate_contract_test.sh"
 "$ROOT/tests/video_transport_bridge_contract_test.sh"
 "$ROOT/tests/runtime_split_transport_contract_test.sh"
-python3 -m pytest "$REPO_ROOT/comma4/tests" -q
+python3 -m pytest "$REPO_ROOT/comma/tests" -q
 echo "PASS: commaviewd unit tests passed"

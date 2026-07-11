@@ -2,13 +2,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OPENPILOT_TEMPLATE="$REPO_ROOT/comma4/src/commaview_export.openpilot.py"
-SUNNYPILOT_TEMPLATE="$REPO_ROOT/comma4/src/commaview_export.sunnypilot.py"
-TRANSFORMER="$REPO_ROOT/comma4/scripts/transform_onroad_ui_export.py"
-SMOKE_SCRIPT="$REPO_ROOT/comma4/scripts/smoke_onroad_ui_export_helper.py"
-INSTALLER="$REPO_ROOT/comma4/install.sh"
-APPLY_SCRIPT="$REPO_ROOT/comma4/scripts/apply_onroad_ui_export_patch.sh"
-VERIFY_SCRIPT="$REPO_ROOT/comma4/scripts/verify_onroad_ui_export_patch.sh"
+OPENPILOT_TEMPLATE="$REPO_ROOT/comma/src/commaview_export.openpilot.py"
+SUNNYPILOT_TEMPLATE="$REPO_ROOT/comma/src/commaview_export.sunnypilot.py"
+TRANSFORMER="$REPO_ROOT/comma/scripts/transform_onroad_ui_export.py"
+SMOKE_SCRIPT="$REPO_ROOT/comma/scripts/smoke_onroad_ui_export_helper.py"
+INSTALLER="$REPO_ROOT/comma/install.sh"
+APPLY_SCRIPT="$REPO_ROOT/comma/scripts/apply_onroad_ui_export_patch.sh"
+VERIFY_SCRIPT="$REPO_ROOT/comma/scripts/verify_onroad_ui_export_patch.sh"
 
 fail() {
   echo "FAIL: $1" >&2

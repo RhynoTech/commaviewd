@@ -117,7 +117,7 @@ Findings from `app-v0.0.156-alpha`:
 
 - The setup flow calls `SshInstaller.install(host, script)` with `InstallScriptSource.remoteInstallScript(...)` after a generic SSH connectivity check. It does not branch on `deviceModel`, `mici`, `tici`, or `tizi` before installing.
 - `InstallScriptSource.remoteInstallScript(...)` pipes the configured runtime install URL into `bash --tag <runtime-tag>` with optional `--force-offroad`. It does not pass or enforce a comma-four-only platform value.
-- `RuntimeReleaseConfig.INSTALL_SCRIPT_PATH` is still `comma4/install.sh`, so the main compatibility issue is naming/copy and raw installer path, not an Android-side hardware block.
+- `RuntimeReleaseConfig.INSTALL_SCRIPT_PATH` in older app releases is still `comma4/install.sh`, so the runtime repo now keeps that path as a backwards-compatible shim while the canonical companion tree moves to `comma/`.
 - The device identity parser already accepts a generic `deviceModel` field from runtime `/commaview/version` or discovery responses.
 - Device card avatar labels already recognize `comma 3X`/`comma3x` as `C3X` and `comma 3`/`comma3` as `C3`, so the app is not strictly comma-four-only in device-list presentation.
 
@@ -125,7 +125,7 @@ Recommended app-side changes before the comma 3/3X test app release:
 
 1. Keep installation permissive for any paired comma device and let the runtime installer enforce actual support.
 2. Update visible copy from `comma4 install/upgrade scripts` or comma-four-specific language to `comma device` / `comma runtime` where user-facing.
-3. Consider renaming the runtime install path only when the runtime release actually provides a stable `comma/install.sh` path. For the immediate restored-runtime release, the app can keep `comma4/install.sh` if the runtime tag still ships that path.
+3. Use canonical `comma/install.sh` in new app releases, but keep accepting old app releases that fetch `comma4/install.sh` through the runtime shim.
 4. Add a regression test that a `deviceModel` like `comma 3X`, `comma tizi`, or `comma tici` does not suppress setup/reinstall actions.
 5. Once the runtime exposes `uiPlatform` in patch status, optionally surface it in diagnostics/settings for support, but do not make it a blocker for install.
 

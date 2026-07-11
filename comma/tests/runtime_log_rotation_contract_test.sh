@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-START="$ROOT/comma4/start.sh"
+START="$ROOT/comma/start.sh"
 CONTROL="$ROOT/commaviewd/src/control_mode.cpp"
 
 require_literal() {

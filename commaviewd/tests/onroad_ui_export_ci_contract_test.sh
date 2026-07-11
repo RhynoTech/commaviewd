@@ -58,7 +58,7 @@ assert_contains_fixed "upstream_ref: staging" "$CANARY_SUNNYPILOT" "sunnypilot c
 assert_contains_fixed "upstream_ref: release-mici-staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover MICI staging drift"
 assert_contains_fixed "upstream_ref: release-tizi-staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover TIZI staging drift"
 
-for patch in "$REPO_ROOT/comma4/patches/openpilot/0001-commaview-ui-export-v2.patch" "$REPO_ROOT/comma4/patches/sunnypilot/0001-commaview-ui-export-v2.patch"; do
+for patch in "$REPO_ROOT/comma/patches/openpilot/0001-commaview-ui-export-v2.patch" "$REPO_ROOT/comma/patches/sunnypilot/0001-commaview-ui-export-v2.patch"; do
   [[ -f "$patch" ]] || fail "missing patch $patch"
   assert_contains_fixed '"faceOrientationStd"' "$patch" "$patch should export driverStateV2 faceOrientationStd for DMOji parity"
   assert_contains_fixed '"facePosition"' "$patch" "$patch should export driverStateV2 facePosition for upstream face_orientation_from_net parity"
