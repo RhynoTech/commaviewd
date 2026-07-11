@@ -23,7 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         upstream_ref:
-          - master
+          - nightly
+          - nightly-dev
           - release-mici-staging
           - release-tizi-staging
 

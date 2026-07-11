@@ -42,13 +42,17 @@ for file in "$CI" "$CANARY_OPENPILOT" "$CANARY_SUNNYPILOT"; do
   assert_contains_fixed "verify-telemetry-hardening.sh" "$file" "$file should run the telemetry hardening guard"
 done
 
-assert_contains_fixed "name: openpilot-master" "$CI" "commaviewd CI should run openpilot master now that MICI/TIZI share master"
-assert_contains_fixed "name: sunnypilot-master" "$CI" "commaviewd CI should run sunnypilot master now that MICI/TIZI share master"
-assert_contains_fixed "- master" "$CANARY_OPENPILOT" "openpilot canary should cover master drift"
+assert_contains_fixed "name: openpilot-release-mici" "$CI" "commaviewd CI should run openpilot stable MICI release"
+assert_contains_fixed "name: openpilot-release-tici" "$CI" "commaviewd CI should run openpilot stable TICI release"
+assert_contains_fixed "name: sunnypilot-release-mici" "$CI" "commaviewd CI should run sunnypilot stable MICI release"
+assert_contains_fixed "name: sunnypilot-release-tizi" "$CI" "commaviewd CI should run sunnypilot stable TIZI release"
+assert_contains_fixed "- nightly" "$CANARY_OPENPILOT" "openpilot canary should cover nightly drift"
+assert_contains_fixed "- nightly-dev" "$CANARY_OPENPILOT" "openpilot canary should cover nightly-dev drift"
 assert_contains_fixed "- release-mici-staging" "$CANARY_OPENPILOT" "openpilot canary should cover MICI staging drift"
 assert_contains_fixed "- release-tizi-staging" "$CANARY_OPENPILOT" "openpilot canary should cover TIZI staging drift"
-assert_contains_fixed "- master" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover master drift"
-assert_contains_fixed "- staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover staging drift"
+assert_contains_fixed "- staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover aggregate staging drift"
+assert_contains_fixed "- release-mici-staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover MICI staging drift"
+assert_contains_fixed "- release-tizi-staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover TIZI staging drift"
 
 for patch in "$REPO_ROOT/comma4/patches/openpilot/0001-commaview-ui-export-v2.patch" "$REPO_ROOT/comma4/patches/sunnypilot/0001-commaview-ui-export-v2.patch"; do
   [[ -f "$patch" ]] || fail "missing patch $patch"

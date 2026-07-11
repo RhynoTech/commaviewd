@@ -17,9 +17,14 @@ assert_contains() {
 }
 
 assert_file "$WORKFLOW"
-assert_contains "name: openpilot-master" "$WORKFLOW" "commaviewd CI should validate openpilot master"
+assert_contains "name: openpilot-release-mici" "$WORKFLOW" "commaviewd CI should validate openpilot release-mici"
+assert_contains "upstream_ref: release-mici" "$WORKFLOW" "commaviewd CI should include MICI release refs"
+assert_contains "name: openpilot-release-tici" "$WORKFLOW" "commaviewd CI should validate openpilot release-tici"
+assert_contains "upstream_ref: release-tici" "$WORKFLOW" "commaviewd CI should include openpilot TICI release ref"
 assert_contains "upstream_repo: commaai/openpilot" "$WORKFLOW" "commaviewd CI should include commaai/openpilot"
-assert_contains "name: sunnypilot-master" "$WORKFLOW" "commaviewd CI should validate sunnypilot master"
+assert_contains "name: sunnypilot-release-mici" "$WORKFLOW" "commaviewd CI should validate sunnypilot release-mici"
+assert_contains "name: sunnypilot-release-tizi" "$WORKFLOW" "commaviewd CI should validate sunnypilot release-tizi"
+assert_contains "upstream_ref: release-tizi" "$WORKFLOW" "commaviewd CI should include sunnypilot TIZI release ref"
 assert_contains "upstream_repo: sunnypilot/sunnypilot" "$WORKFLOW" "commaviewd CI should include sunnypilot/sunnypilot"
 assert_contains "Resolve upstream SHA" "$WORKFLOW" "commaviewd CI should resolve upstream SHA before cache/checkout"
 assert_contains "id: upstream" "$WORKFLOW" "commaviewd CI resolved upstream SHA step should use id upstream"

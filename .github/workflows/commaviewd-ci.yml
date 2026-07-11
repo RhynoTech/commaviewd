@@ -39,12 +39,18 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - name: openpilot-master
+          - name: openpilot-release-mici
             upstream_repo: commaai/openpilot
-            upstream_ref: master
-          - name: sunnypilot-master
+            upstream_ref: release-mici
+          - name: openpilot-release-tici
+            upstream_repo: commaai/openpilot
+            upstream_ref: release-tici
+          - name: sunnypilot-release-mici
             upstream_repo: sunnypilot/sunnypilot
-            upstream_ref: master
+            upstream_ref: release-mici
+          - name: sunnypilot-release-tizi
+            upstream_repo: sunnypilot/sunnypilot
+            upstream_ref: release-tizi
 
     steps:
       - name: Checkout CommaView
