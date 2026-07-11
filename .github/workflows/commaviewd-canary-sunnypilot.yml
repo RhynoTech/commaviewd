@@ -23,6 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         target:
+          - upstream_ref: dev
+            ui_platform: tizi
           - upstream_ref: staging
             ui_platform: tizi
           - upstream_ref: release-mici-staging

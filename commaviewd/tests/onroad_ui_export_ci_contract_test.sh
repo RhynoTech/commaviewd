@@ -53,6 +53,7 @@ assert_contains_fixed "upstream_ref: nightly-dev" "$CANARY_OPENPILOT" "openpilot
 assert_contains_fixed "run_verification: false" "$CANARY_OPENPILOT" "openpilot nightly canaries should be patch-applicability only"
 assert_contains_fixed "upstream_ref: release-mici-staging" "$CANARY_OPENPILOT" "openpilot canary should cover MICI staging drift"
 assert_contains_fixed "upstream_ref: release-tizi-staging" "$CANARY_OPENPILOT" "openpilot canary should cover TIZI staging drift"
+assert_contains_fixed "upstream_ref: dev" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover early dev drift"
 assert_contains_fixed "upstream_ref: staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover aggregate staging drift"
 assert_contains_fixed "upstream_ref: release-mici-staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover MICI staging drift"
 assert_contains_fixed "upstream_ref: release-tizi-staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover TIZI staging drift"
