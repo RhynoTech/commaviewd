@@ -25,6 +25,7 @@ jobs:
         upstream_ref:
           - master
           - release-mici-staging
+          - release-tizi-staging
 
     steps:
       - name: Checkout CommaView

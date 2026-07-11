@@ -16,14 +16,14 @@ assert_contains_fixed() {
   local needle="$1"
   local file="$2"
   local message="$3"
-  grep -Fq "$needle" "$file" || fail "$message"
+  grep -Fq -- "$needle" "$file" || fail "$message"
 }
 
 assert_not_contains_fixed() {
   local needle="$1"
   local file="$2"
   local message="$3"
-  if grep -Fq "$needle" "$file"; then
+  if grep -Fq -- "$needle" "$file"; then
     fail "$message"
   fi
 }
@@ -42,6 +42,13 @@ for file in "$CI" "$CANARY_OPENPILOT" "$CANARY_SUNNYPILOT"; do
   assert_contains_fixed "verify-telemetry-hardening.sh" "$file" "$file should run the telemetry hardening guard"
 done
 
+assert_contains_fixed "name: openpilot-master" "$CI" "commaviewd CI should run openpilot master now that MICI/TIZI share master"
+assert_contains_fixed "name: sunnypilot-master" "$CI" "commaviewd CI should run sunnypilot master now that MICI/TIZI share master"
+assert_contains_fixed "- master" "$CANARY_OPENPILOT" "openpilot canary should cover master drift"
+assert_contains_fixed "- release-mici-staging" "$CANARY_OPENPILOT" "openpilot canary should cover MICI staging drift"
+assert_contains_fixed "- release-tizi-staging" "$CANARY_OPENPILOT" "openpilot canary should cover TIZI staging drift"
+assert_contains_fixed "- master" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover master drift"
+assert_contains_fixed "- staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover staging drift"
 
 for patch in "$REPO_ROOT/comma4/patches/openpilot/0001-commaview-ui-export-v2.patch" "$REPO_ROOT/comma4/patches/sunnypilot/0001-commaview-ui-export-v2.patch"; do
   [[ -f "$patch" ]] || fail "missing patch $patch"

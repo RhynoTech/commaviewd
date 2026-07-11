@@ -23,7 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         upstream_ref:
-          - dev
+          - master
           - staging
 
     steps:
