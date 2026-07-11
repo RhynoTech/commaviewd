@@ -29,6 +29,20 @@ done
 
 missing=()
 
+source_root() {
+  if [[ -f "$OP_ROOT/cereal/log.capnp" && -f "$OP_ROOT/cereal/services.py" ]]; then
+    printf '%s\n' "$OP_ROOT"
+    return 0
+  fi
+  if [[ -f "$OP_ROOT/openpilot/cereal/log.capnp" && -f "$OP_ROOT/openpilot/cereal/services.py" ]]; then
+    printf '%s\n' "$OP_ROOT/openpilot"
+    return 0
+  fi
+  printf '%s\n' "$OP_ROOT"
+}
+
+OP_SOURCE_ROOT="$(source_root)"
+
 check_file() {
   local p="$1"
   [[ -f "$p" ]] || missing+=("file:$p")
@@ -41,8 +55,8 @@ check_token() {
 }
 
 required_files=(
-  "$OP_ROOT/cereal/log.capnp"
-  "$OP_ROOT/cereal/services.py"
+  "$OP_SOURCE_ROOT/cereal/log.capnp"
+  "$OP_SOURCE_ROOT/cereal/services.py"
 )
 
 for f in "${required_files[@]}"; do
@@ -100,8 +114,8 @@ required_services=(
 )
 
 for svc in "${required_services[@]}"; do
-  check_token "$OP_ROOT/cereal/services.py" "$svc"
-  check_token "$OP_ROOT/cereal/log.capnp" "$svc"
+  check_token "$OP_SOURCE_ROOT/cereal/services.py" "$svc"
+  check_token "$OP_SOURCE_ROOT/cereal/log.capnp" "$svc"
 done
 
 required_capnp_fields=(
@@ -118,7 +132,7 @@ required_capnp_fields=(
 )
 
 for field in "${required_capnp_fields[@]}"; do
-  check_token "$OP_ROOT/cereal/log.capnp" "$field"
+  check_token "$OP_SOURCE_ROOT/cereal/log.capnp" "$field"
 done
 
 if [[ ${#missing[@]} -gt 0 ]]; then
@@ -136,6 +150,7 @@ fi
 cat > "$MANIFEST" <<JSON
 {
   "opRoot": "${OP_ROOT}",
+  "opSourceRoot": "${OP_SOURCE_ROOT}",
   "upstreamSha": "${upstream_sha}",
   "checks": {
     "onroadUiExportMethod": "transformer",

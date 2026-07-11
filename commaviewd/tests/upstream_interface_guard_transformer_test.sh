@@ -15,9 +15,10 @@ trap cleanup EXIT
 
 op_root="$tmpdir/openpilot-src"
 manifest="$tmpdir/manifest.json"
-mkdir -p "$op_root/cereal"
+source_root="$op_root/cereal"
+mkdir -p "$source_root"
 
-cat > "$op_root/cereal/services.py" <<'PY'
+cat > "$source_root/services.py" <<'PY'
 roadEncodeData = None
 wideRoadEncodeData = None
 driverEncodeData = None
@@ -44,7 +45,7 @@ pandaStates = None
 wideRoadCameraState = None
 PY
 
-cat > "$op_root/cereal/log.capnp" <<'CAPNP'
+cat > "$source_root/log.capnp" <<'CAPNP'
 roadEncodeData
 wideRoadEncodeData
 driverEncodeData
@@ -111,3 +112,32 @@ if checks.get("requiredServices", 0) < expected_services:
 PY
 
 echo "PASS: upstream interface guard validates transformer prerequisites"
+
+nested_op_root="$tmpdir/openpilot-nested"
+nested_manifest="$tmpdir/nested-manifest.json"
+mkdir -p "$nested_op_root/openpilot"
+cp -a "$op_root/cereal" "$nested_op_root/openpilot/cereal"
+git -C "$nested_op_root" init -q
+git -C "$nested_op_root" remote add origin https://github.com/commaai/openpilot.git
+
+nested_output="$(OP_ROOT="$nested_op_root" "$GUARD" --manifest "$nested_manifest" 2>&1)" || {
+  printf '%s\n' "$nested_output" >&2
+  echo "FAIL: upstream guard should support nested openpilot package roots" >&2
+  exit 1
+}
+
+printf '%s\n' "$nested_output" | grep -Fq 'PASS: upstream interface guard' || {
+  printf '%s\n' "$nested_output" >&2
+  echo "FAIL: nested guard did not report success" >&2
+  exit 1
+}
+
+python3 - "$nested_manifest" "$nested_op_root/openpilot" <<'PY'
+import json
+import sys
+manifest = json.loads(open(sys.argv[1]).read())
+if manifest.get("opSourceRoot") != sys.argv[2]:
+    raise SystemExit(f"nested manifest should record opSourceRoot: {manifest}")
+PY
+
+echo "PASS: upstream interface guard validates nested openpilot package roots"
