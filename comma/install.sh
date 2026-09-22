@@ -517,6 +517,7 @@ backup_managed_install_tree() {
     lib \
     scripts \
     patches \
+    vendor \
     src; do
     [ -e "$INSTALL_DIR/$rel" ] || continue
     cp -a "$INSTALL_DIR/$rel" "$backup_dir/$rel"
@@ -538,6 +539,7 @@ clean_managed_install_tree() {
     "$INSTALL_DIR/lib" \
     "$INSTALL_DIR/scripts" \
     "$INSTALL_DIR/patches" \
+    "$INSTALL_DIR/vendor" \
     "$INSTALL_DIR/src" \
     "$INSTALL_DIR/run"
   mkdir -p \

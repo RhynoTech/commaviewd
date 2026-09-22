@@ -191,7 +191,7 @@ PY
   grep -Fq 'os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT' "$helper_path" || fail "socket env override missing for ${label}"
   grep -Fq 'socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' "$helper_path" || fail "unix socket client missing for ${label}"
   grep -Fq 'struct.pack(">I", len(frame)) + frame' "$helper_path" || fail "frame packing missing for ${label}"
-  grep -Fq 'json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")' "$helper_path" || fail "compact json encoding missing for ${label}"
+  grep -Fq 'raw = _encode_json(payload)' "$helper_path" || fail "pluggable compact json encoding missing for ${label}"
   grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$helper_path" || fail "torque accel helper import missing for ${label}"
   grep -Fq 'def _torque_bar_value(ui_state, service_resolver=None) -> float:' "$helper_path" || fail "torque bar helper missing for ${label}"
   grep -Fq 'def _worker_main(self) -> None:' "$helper_path" || fail "export worker missing for ${label}"

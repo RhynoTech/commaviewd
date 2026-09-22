@@ -3,11 +3,21 @@ import math
 import os
 import socket
 import struct
+import sys
 import threading
 import time
 from collections import deque
 
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
+
+COMMAVIEW_VENDOR_DIR = os.environ.get("COMMAVIEWD_PYTHON_VENDOR_DIR", "/data/commaview/vendor")
+if os.path.isdir(COMMAVIEW_VENDOR_DIR) and COMMAVIEW_VENDOR_DIR not in sys.path:
+  sys.path.insert(0, COMMAVIEW_VENDOR_DIR)
+
+try:
+  import orjson as _orjson
+except (ImportError, OSError):
+  _orjson = None
 
 COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"
 COMMAVIEW_FRAME_VERSION = 1
@@ -46,6 +56,12 @@ UPSTREAM_SERVICE_ALIASES = {
   "road_camera": ("narrowRoadCameraState", "roadCameraState"),
   "vehicle_parameters": ("vehicleParameters", "liveParameters"),
 }
+
+
+def _encode_json(payload: dict) -> bytes:
+  if _orjson is not None:
+    return _orjson.dumps(payload)
+  return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def _safe_float(value) -> float:
@@ -572,7 +588,7 @@ class _CommaViewSocketExporter:
   def _send_json(self, service_index: int, payload: dict) -> None:
     if not self._connect():
       return
-    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    raw = _encode_json(payload)
     frame = bytes((COMMAVIEW_FRAME_VERSION, service_index)) + raw
     packet = struct.pack(">I", len(frame)) + frame
     try:

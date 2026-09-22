@@ -141,7 +141,7 @@ for template in "$OPENPILOT_TEMPLATE" "$SUNNYPILOT_TEMPLATE"; do
   grep -Fq 'os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT' "$template" || fail "$template missing socket env override"
   grep -Fq 'socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' "$template" || fail "$template missing unix socket client"
   grep -Fq 'struct.pack(">I", len(frame)) + frame' "$template" || fail "$template missing framing"
-  grep -Fq 'json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")' "$template" || fail "$template missing compact json encoding"
+  grep -Fq 'raw = _encode_json(payload)' "$template" || fail "$template missing pluggable compact json encoding"
   grep -Fq 'self._offer_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$template" || fail "$template missing latest-value onroad projection offer"
   grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$template" || fail "$template missing torque helper import"
   grep -Fq 'def _torque_bar_value(ui_state, service_resolver=None) -> float:' "$template" || fail "$template missing torque bar helper"

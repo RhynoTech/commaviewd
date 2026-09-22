@@ -44,6 +44,9 @@ assert_contains "PROVENANCE_ASSETS=(" "$WORKFLOW" "release workflow should defin
 assert_contains 'REQUIRED_ASSETS=("$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}")' "$WORKFLOW" "release workflow should validate bundle, checksum, and provenance assets"
 assert_contains 'cd "$OUT_DIR"' "$BUILD_BUNDLE" "bundle script should enter release directory before writing checksum"
 assert_contains 'sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"' "$BUILD_BUNDLE" "bundle script should write checksum with portable asset basename"
+assert_contains 'comma/vendor/orjson-wheel.env' "$BUILD_BUNDLE" "release bundle should pin the bundled orjson wheel"
+assert_contains 'ORJSON_WHEEL_SHA256' "$BUILD_BUNDLE" "release bundle should verify the pinned orjson wheel checksum"
+assert_contains 'STAGE_DIR/vendor' "$BUILD_BUNDLE" "release bundle should stage Python vendor dependencies"
 for staged_asset in \
   'install -m 755 "${ROOT}/comma/install.sh" "${STAGE_DIR}/install.sh"' \
   'install -m 755 "${ROOT}/comma/scripts/apply_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/apply_onroad_ui_export_patch.sh"' \

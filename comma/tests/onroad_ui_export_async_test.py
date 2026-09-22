@@ -96,6 +96,31 @@ def test_wire_service_indexes_remain_stable(template, flavor):
 
 
 @pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_json_encoder_falls_back_to_stdlib_and_preserves_compact_unicode(template, flavor, monkeypatch):
+  module = load_exporter(template)
+  monkeypatch.setattr(module, "_orjson", None)
+
+  assert module._encode_json({"label": "café", "ok": True}) == b'{"label":"caf\xc3\xa9","ok":true}'
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_json_encoder_uses_orjson_when_available(template, flavor, monkeypatch):
+  module = load_exporter(template)
+  calls = []
+
+  class FakeOrjson:
+    @staticmethod
+    def dumps(payload):
+      calls.append(payload)
+      return b'{"fast":true}'
+
+  monkeypatch.setattr(module, "_orjson", FakeOrjson())
+
+  assert module._encode_json({"fast": True}) == b'{"fast":true}'
+  assert calls == [{"fast": True}]
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
 def test_release_and_current_aliases_emit_equivalent_wire_semantics(template, flavor):
   module = load_exporter(template)
   legacy_exporter = module._CommaViewSocketExporter(flavor, start_worker=False)

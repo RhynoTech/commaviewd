@@ -170,6 +170,8 @@ def test_install_script_rolls_back_managed_src_tree():
     backup_body = _shell_function_body(text, "backup_managed_install_tree")
     clean_body = _shell_function_body(text, "clean_managed_install_tree")
     restore_body = _shell_function_body(text, "restore_previous_install_tree")
+    assert "vendor" in backup_body
+    assert '"$INSTALL_DIR/vendor"' in clean_body
     deploy_body = _shell_function_body(text, "deploy_required_scripts")
 
     assert "src" in backup_body

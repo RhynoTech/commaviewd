@@ -13,12 +13,14 @@ fi
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VERSION_ENV="${ROOT}/comma/version.env"
+ORJSON_WHEEL_ENV="${ROOT}/comma/vendor/orjson-wheel.env"
 if [[ ! -f "$VERSION_ENV" ]]; then
   echo "ERROR: missing required version source: $VERSION_ENV" >&2
   exit 1
 fi
 # shellcheck disable=SC1090
 . "$VERSION_ENV"
+. "$ORJSON_WHEEL_ENV"
 if [[ -z "${RELEASE_TAG:-}" ]]; then
   echo "ERROR: version.env must define RELEASE_TAG" >&2
   exit 1
@@ -88,13 +90,17 @@ validate_stage_contents() {
     echo "ERROR: staged bundle missing libkj-*.so" >&2
     missing=1
   fi
+  if ! find "$STAGE_DIR/vendor/orjson" -maxdepth 1 -type f -name '*.so' -print -quit | grep -q .; then
+    echo "ERROR: staged bundle missing bundled orjson extension" >&2
+    missing=1
+  fi
 
   [[ "$missing" -eq 0 ]] || exit 1
 }
 
 mkdir -p "$OUT_DIR"
 rm -rf "$STAGE_DIR"
-mkdir -p "$STAGE_DIR/lib" "$STAGE_DIR/scripts" "$STAGE_DIR/src"
+mkdir -p "$STAGE_DIR/lib" "$STAGE_DIR/scripts" "$STAGE_DIR/src" "$STAGE_DIR/vendor"
 
 if [[ "$SKIP_BUILD" -eq 1 ]]; then
   echo "[1/3] Skipping build (using existing dist artifacts)..."
@@ -135,6 +141,23 @@ install -m 755 "${ROOT}/comma/scripts/transform_onroad_ui_export.py" "${STAGE_DI
 install -m 755 "${ROOT}/comma/scripts/smoke_onroad_ui_export_helper.py" "${STAGE_DIR}/scripts/smoke_onroad_ui_export_helper.py"
 install -m 644 "${ROOT}/comma/src/commaview_export.openpilot.py" "${STAGE_DIR}/src/commaview_export.openpilot.py"
 install -m 644 "${ROOT}/comma/src/commaview_export.sunnypilot.py" "${STAGE_DIR}/src/commaview_export.sunnypilot.py"
+
+wheel_path="${OUT_DIR}/${ORJSON_WHEEL_FILENAME}"
+if [[ ! -f "$wheel_path" ]] || [[ "$(sha256sum "$wheel_path" | awk '{print $1}')" != "$ORJSON_WHEEL_SHA256" ]]; then
+  echo "Fetching pinned orjson ${ORJSON_VERSION} wheel..."
+  curl -fsSL --retry 3 --retry-delay 1 -o "$wheel_path" "$ORJSON_WHEEL_URL"
+fi
+echo "${ORJSON_WHEEL_SHA256}  ${wheel_path}" | sha256sum -c -
+python3 - "$wheel_path" "$STAGE_DIR/vendor" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+wheel = pathlib.Path(sys.argv[1])
+destination = pathlib.Path(sys.argv[2])
+with zipfile.ZipFile(wheel) as archive:
+  archive.extractall(destination)
+PY
 
 cat > "${STAGE_DIR}/VERSION" <<VER
 ${TAG}
