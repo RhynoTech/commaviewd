@@ -50,13 +50,17 @@ assert_contains_fixed "name: sunnypilot-release-tizi" "$CI" "commaviewd CI shoul
 assert_contains_fixed '--platform "${{ matrix.target.ui_platform }}"' "$CI" "commaviewd CI should pass explicit platform for release refs"
 assert_contains_fixed "upstream_ref: nightly" "$CANARY_OPENPILOT" "openpilot canary should cover nightly drift"
 assert_contains_fixed "upstream_ref: nightly-dev" "$CANARY_OPENPILOT" "openpilot canary should cover nightly-dev drift"
+assert_contains_fixed "upstream_ref: master" "$CANARY_OPENPILOT" "openpilot canary should cover current master drift"
 assert_contains_fixed "run_verification: false" "$CANARY_OPENPILOT" "openpilot nightly canaries should be patch-applicability only"
 assert_contains_fixed "upstream_ref: release-mici-staging" "$CANARY_OPENPILOT" "openpilot canary should cover MICI staging drift"
 assert_contains_fixed "upstream_ref: release-tizi-staging" "$CANARY_OPENPILOT" "openpilot canary should cover TIZI staging drift"
 assert_contains_fixed "upstream_ref: dev" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover early dev drift"
+assert_contains_fixed "upstream_ref: master" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover current master drift"
 assert_contains_fixed "upstream_ref: staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover aggregate staging drift"
 assert_contains_fixed "upstream_ref: release-mici-staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover MICI staging drift"
 assert_contains_fixed "upstream_ref: release-tizi-staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover TIZI staging drift"
+assert_contains_fixed "./commaviewd/scripts/upstream-interface-guard.sh" "$CANARY_OPENPILOT" "openpilot canary should run semantic interface guard even when runtime verification is skipped"
+assert_contains_fixed "./commaviewd/scripts/upstream-interface-guard.sh" "$CANARY_SUNNYPILOT" "sunnypilot canary should run semantic interface guard"
 
 for patch in "$REPO_ROOT/comma/patches/openpilot/0001-commaview-ui-export-v2.patch" "$REPO_ROOT/comma/patches/sunnypilot/0001-commaview-ui-export-v2.patch"; do
   [[ -f "$patch" ]] || fail "missing patch $patch"

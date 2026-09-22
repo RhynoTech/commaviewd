@@ -7,6 +7,7 @@ OPENPILOT_REPO="${COMMAVIEWD_OPENPILOT_REPO:-https://github.com/commaai/openpilo
 SUNNYPILOT_REPO="${COMMAVIEWD_SUNNYPILOT_REPO:-https://github.com/sunnypilot/sunnypilot.git}"
 APPLY_SCRIPT="$REPO_ROOT/comma/scripts/apply_onroad_ui_export_patch.sh"
 VERIFY_SCRIPT="$REPO_ROOT/comma/scripts/verify_onroad_ui_export_patch.sh"
+INTERFACE_GUARD="$REPO_ROOT/commaviewd/scripts/upstream-interface-guard.sh"
 
 fail() {
   echo "FAIL: $1" >&2
@@ -114,6 +115,7 @@ run_ref() {
   local expected_runtime_flavor="$5"
   local ui_platform="$6"
   local status_json="$REPO_ROOT/comma/run/onroad-ui-export-status.json"
+  local interface_manifest="$checkout/commaview-interface-manifest.json"
 
   echo "=== ${label} ==="
   mkdir -p "$(dirname "$checkout")"
@@ -127,6 +129,18 @@ run_ref() {
 
   git -C "$checkout" reset --hard -q HEAD
   git -C "$checkout" clean -fdq
+
+  OP_ROOT="$checkout" DIST_DIR="$checkout" \
+    "$INTERFACE_GUARD" --telemetry-only --manifest "$interface_manifest" >/dev/null || fail "semantic interface guard failed for ${label}"
+  python3 - <<'PY' "$interface_manifest" "$label"
+import json, sys
+path, label = sys.argv[1:]
+with open(path) as f:
+    manifest = json.load(f)
+resolved = manifest.get("resolvedServices", {})
+if set(resolved) != {"calibration", "roadCamera", "vehicleParameters"} or not all(resolved.values()):
+    raise SystemExit(f"bad semantic service mapping for {label}: {manifest}")
+PY
 
   COMMAVIEWD_INSTALL_DIR="$REPO_ROOT/comma" \
     COMMAVIEWD_OP_ROOT="$checkout" \
@@ -170,7 +184,7 @@ PY
   grep -Fq 'active_camera="wideRoad" if is_wide_camera else "road"' "$augmented_road_path" || fail "wide onroad projection camera mapping missing for ${label}"
   grep -Fq 'model_transform = video_transform @ calib_transform' "$augmented_road_path" || fail "model transform assignment missing for ${label}"
   grep -Fq 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$augmented_road_path" || grep -Fq 'camera_offset=getattr(self.model_renderer, "_camera_offset", 0.0)' "$augmented_road_path" || fail "projection camera offset missing for ${label}"
-  grep -Fq 'self._publish_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$helper_path" || fail "immediate onroad projection export missing for ${label}"
+  grep -Fq 'self._offer_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$helper_path" || fail "latest-value onroad projection offer missing for ${label}"
   grep -Fq "COMMAVIEW_RUNTIME_FLAVOR = \"$expected_runtime_flavor\"" "$helper_path" || fail "runtime flavor constant missing for ${label}"
   grep -Fq 'COMMAVIEW_FRAME_VERSION = 1' "$helper_path" || fail "frame version missing for ${label}"
   grep -Fq 'COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"' "$helper_path" || fail "socket path missing for ${label}"
@@ -179,7 +193,8 @@ PY
   grep -Fq 'struct.pack(">I", len(frame)) + frame' "$helper_path" || fail "frame packing missing for ${label}"
   grep -Fq 'json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")' "$helper_path" || fail "compact json encoding missing for ${label}"
   grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$helper_path" || fail "torque accel helper import missing for ${label}"
-  grep -Fq 'def _torque_bar_value(ui_state) -> float:' "$helper_path" || fail "torque bar helper missing for ${label}"
+  grep -Fq 'def _torque_bar_value(ui_state, service_resolver=None) -> float:' "$helper_path" || fail "torque bar helper missing for ${label}"
+  grep -Fq 'def _worker_main(self) -> None:' "$helper_path" || fail "export worker missing for ${label}"
 
   for marker in "${payload_markers[@]}"; do
     grep -Fq "$marker" "$helper_path" || fail "payload helper missing for ${label}: $marker"
@@ -215,11 +230,14 @@ run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-n
 run_ref 'openpilot nightly-dev' "$OPENPILOT_REPO" 'nightly-dev' "$CACHE_ROOT/openpilot-nightly-dev" 'OPENPILOT' 'tizi'
 run_ref 'openpilot release-tizi-staging' "$OPENPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/openpilot-release-tizi-staging" 'OPENPILOT' 'tizi'
 run_ref 'openpilot release-mici-staging' "$OPENPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/openpilot-release-mici-staging" 'OPENPILOT' 'mici'
+run_ref 'openpilot master' "$OPENPILOT_REPO" 'master' "$CACHE_ROOT/openpilot-master" 'OPENPILOT' 'mici'
 
 run_ref 'sunnypilot release-tizi' "$SUNNYPILOT_REPO" 'release-tizi' "$CACHE_ROOT/sunnypilot-release-tizi" 'SUNNYPILOT' 'tizi'
 run_ref 'sunnypilot release-mici' "$SUNNYPILOT_REPO" 'release-mici' "$CACHE_ROOT/sunnypilot-release-mici" 'SUNNYPILOT' 'mici'
 run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" 'SUNNYPILOT' 'tizi'
 run_ref 'sunnypilot release-tizi-staging' "$SUNNYPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/sunnypilot-release-tizi-staging" 'SUNNYPILOT' 'tizi'
 run_ref 'sunnypilot release-mici-staging' "$SUNNYPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/sunnypilot-release-mici-staging" 'SUNNYPILOT' 'mici'
+run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" 'SUNNYPILOT' 'mici'
+run_ref 'sunnypilot master' "$SUNNYPILOT_REPO" 'master' "$CACHE_ROOT/sunnypilot-master" 'SUNNYPILOT' 'mici'
 
 echo 'PASS: source transformer socket UI export applies and verifies on real canary refs'
