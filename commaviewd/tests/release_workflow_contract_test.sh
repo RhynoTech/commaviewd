@@ -47,6 +47,7 @@ assert_contains 'sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"' "$BUILD_B
 assert_contains 'comma/vendor/orjson-wheel.env' "$BUILD_BUNDLE" "release bundle should pin the bundled orjson wheel"
 assert_contains 'ORJSON_WHEEL_SHA256' "$BUILD_BUNDLE" "release bundle should verify the pinned orjson wheel checksum"
 assert_contains 'STAGE_DIR/vendor' "$BUILD_BUNDLE" "release bundle should stage Python vendor dependencies"
+assert_contains 'rm -f "$INSTALL_DIR/scripts/commaview_export_worker.py"' "$REPO_ROOT/comma/install.sh" "installer should remove the retired export subprocess helper"
 for staged_asset in \
   'install -m 755 "${ROOT}/comma/install.sh" "${STAGE_DIR}/install.sh"' \
   'install -m 755 "${ROOT}/comma/scripts/apply_onroad_ui_export_patch.sh" "${STAGE_DIR}/scripts/apply_onroad_ui_export_patch.sh"' \

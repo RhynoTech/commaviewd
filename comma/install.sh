@@ -436,6 +436,8 @@ deploy_required_scripts() {
   copy_required_file "scripts/revert_onroad_ui_export_patch.sh" "$INSTALL_DIR/scripts/revert_onroad_ui_export_patch.sh"
   copy_required_file "scripts/smoke_onroad_ui_export_helper.py" "$INSTALL_DIR/scripts/smoke_onroad_ui_export_helper.py"
   copy_required_file "scripts/transform_onroad_ui_export.py" "$INSTALL_DIR/scripts/transform_onroad_ui_export.py"
+  # Remove the retired experimental subprocess helper when upgrading from that build.
+  rm -f "$INSTALL_DIR/scripts/commaview_export_worker.py"
   copy_required_file "src/commaview_export.openpilot.py" "$INSTALL_DIR/src/commaview_export.openpilot.py" 644
   copy_required_file "src/commaview_export.sunnypilot.py" "$INSTALL_DIR/src/commaview_export.sunnypilot.py" 644
   copy_required_file "stop.sh" "$INSTALL_DIR/stop.sh"
