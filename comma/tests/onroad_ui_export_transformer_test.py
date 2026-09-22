@@ -256,28 +256,19 @@ def test_exporter_publish_continues_after_service_payload_error():
         exporter = module._CommaViewSocketExporter(flavor)
         sent = []
         exporter._send_json = lambda service_index, payload: sent.append(service_index)
-        exporter._latest_onroad_projection = {"exportVersion": 1}
-        exporter._ui_state_onroad_payload = lambda ui_state: {"service": "uiStateOnroad"}
-        exporter._selfdrive_state_payload = lambda ui_state: {"service": "selfdriveState"}
-        exporter._car_state_payload = lambda ui_state: {"service": "carState"}
-        exporter._controls_state_payload = lambda ui_state: {"service": "controlsState"}
-        exporter._onroad_events_payload = lambda ui_state: {"service": "onroadEvents"}
-        exporter._driver_monitoring_state_payload = lambda ui_state: (_ for _ in ()).throw(AttributeError("schema drift"))
-        exporter._driver_state_v2_payload = lambda ui_state: {"service": "driverStateV2"}
-        exporter._model_v2_payload = lambda ui_state: {"service": "modelV2"}
-        exporter._radar_state_payload = lambda ui_state: {"service": "radarState"}
-        exporter._live_calibration_payload = lambda ui_state: {"service": "liveCalibration"}
-        exporter._car_output_payload = lambda ui_state: {"service": "carOutput"}
-        exporter._car_control_payload = lambda ui_state: {"service": "carControl"}
-        exporter._live_parameters_payload = lambda ui_state: {"service": "liveParameters"}
-        exporter._longitudinal_plan_payload = lambda ui_state: {"service": "longitudinalPlan"}
-        exporter._car_params_payload = lambda ui_state: {"service": "carParams"}
-        exporter._device_state_payload = lambda ui_state: {"service": "deviceState"}
-        exporter._road_camera_state_payload = lambda ui_state: {"service": "roadCameraState"}
-        exporter._panda_states_summary_payload = lambda ui_state: {"service": "pandaStates"}
-        exporter._wide_road_camera_state_payload = lambda ui_state: {"service": "wideRoadCameraState"}
-
-        exporter.publish(FakeUiState({}))
+        for service_index in exporter._payload_builders:
+            exporter._payload_builders[service_index] = lambda ui_state: {"exportVersion": 1}
+        exporter._payload_builders[module.COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX] = (
+            lambda ui_state: (_ for _ in ()).throw(AttributeError("schema drift"))
+        )
+        exporter._offer_payload(module.COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, {"exportVersion": 1})
+        exporter.publish(FakeUiState({
+            "liveCalibration": object(),
+            "roadCameraState": object(),
+            "liveParameters": object(),
+        }))
+        assert exporter.wait_for_idle(1.0)
+        exporter.shutdown()
 
         assert module.COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX not in sent
         assert module.COMMAVIEW_DRIVER_STATE_V2_SERVICE_INDEX in sent

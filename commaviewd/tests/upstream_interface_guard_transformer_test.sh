@@ -78,8 +78,15 @@ laneLineStds
 roadEdgeStds
 leadsV3
 rpyCalib
+height
 calStatus
 calPerc
+wideFromDeviceEuler
+roll
+frameId
+timestampEof
+timestampSof
+sensor
 CAPNP
 
 git -C "$op_root" init -q
@@ -109,9 +116,43 @@ if "directV2PatchFlavor" in checks:
 expected_services = 24
 if checks.get("requiredServices", 0) < expected_services:
     raise SystemExit(f"guard should cover all exporter services; expected at least {expected_services}, got {checks.get('requiredServices')}: {checks}")
+expected = {"calibration": "liveCalibration", "roadCamera": "roadCameraState", "vehicleParameters": "liveParameters"}
+if manifest.get("resolvedServices") != expected:
+    raise SystemExit(f"legacy aliases were not resolved: {manifest}")
 PY
 
 echo "PASS: upstream interface guard validates transformer prerequisites"
+
+current_op_root="$tmpdir/openpilot-current"
+current_manifest="$tmpdir/current-manifest.json"
+mkdir -p "$current_op_root/cereal"
+sed -e 's/liveCalibration/extrinsicsCalibration/g' \
+    -e 's/roadCameraState/narrowRoadCameraState/g' \
+    -e 's/liveParameters/vehicleParameters/g' \
+    "$source_root/services.py" > "$current_op_root/cereal/services.py"
+sed -e 's/liveCalibration/extrinsicsCalibration/g' \
+    -e 's/roadCameraState/narrowRoadCameraState/g' \
+    -e 's/liveParameters/vehicleParameters/g' \
+    "$source_root/log.capnp" > "$current_op_root/cereal/log.capnp"
+git -C "$current_op_root" init -q
+git -C "$current_op_root" remote add origin https://github.com/commaai/openpilot.git
+
+current_output="$(OP_ROOT="$current_op_root" "$GUARD" --manifest "$current_manifest" 2>&1)" || {
+  printf '%s\n' "$current_output" >&2
+  echo "FAIL: upstream guard should accept current semantic aliases" >&2
+  exit 1
+}
+
+python3 - "$current_manifest" <<'PY'
+import json
+import sys
+manifest = json.loads(open(sys.argv[1]).read())
+expected = {"calibration": "extrinsicsCalibration", "roadCamera": "narrowRoadCameraState", "vehicleParameters": "vehicleParameters"}
+if manifest.get("resolvedServices") != expected:
+    raise SystemExit(f"current aliases were not resolved: {manifest}")
+PY
+
+echo "PASS: upstream interface guard validates current semantic aliases"
 
 nested_op_root="$tmpdir/openpilot-nested"
 nested_manifest="$tmpdir/nested-manifest.json"

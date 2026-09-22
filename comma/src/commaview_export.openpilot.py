@@ -3,7 +3,9 @@ import math
 import os
 import socket
 import struct
+import threading
 import time
+from collections import deque
 
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
 
@@ -33,6 +35,14 @@ COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"
 COMMAVIEW_CONNECT_RETRY_SEC = 1.0
 COMMAVIEW_SOCKET_TIMEOUT_SEC = 0.05
 COMMAVIEW_DEFAULT_MAX_LAT_ACCEL = 3.0
+COMMAVIEW_MAX_EXPORT_HZ = 20.0
+COMMAVIEW_MIN_EXPORT_INTERVAL_SEC = 1.0 / COMMAVIEW_MAX_EXPORT_HZ
+
+UPSTREAM_SERVICE_ALIASES = {
+  "calibration": ("extrinsicsCalibration", "liveCalibration"),
+  "road_camera": ("narrowRoadCameraState", "roadCameraState"),
+  "vehicle_parameters": ("vehicleParameters", "liveParameters"),
+}
 
 
 def _safe_float(value) -> float:
@@ -112,7 +122,47 @@ def _interp(value: float, xp: list[float], fp: list[float]) -> float:
   return fp[0] + (fp[-1] - fp[0]) * ((value - xp[0]) / span)
 
 
-def _torque_bar_value(ui_state) -> float:
+class _ServiceResolver:
+  def __init__(self):
+    self._resolved = {}
+
+  def resolve(self, ui_state, semantic: str) -> str:
+    if semantic in self._resolved:
+      return self._resolved[semantic]
+    aliases = UPSTREAM_SERVICE_ALIASES.get(semantic)
+    if aliases is None:
+      raise KeyError(f"unknown upstream service semantic: {semantic}")
+    recv_frame = getattr(ui_state.sm, "recv_frame", {})
+    for service in aliases:
+      try:
+        present = service in recv_frame
+      except TypeError:
+        present = False
+      if present:
+        self._resolved[semantic] = service
+        return service
+    raise KeyError(f"missing {semantic} upstream service; expected one of: {', '.join(aliases)}")
+
+  def message(self, ui_state, semantic: str):
+    return ui_state.sm[self.resolve(ui_state, semantic)]
+
+  def recv_frame(self, ui_state, semantic: str) -> int:
+    return ui_state.sm.recv_frame[self.resolve(ui_state, semantic)]
+
+  def log_mono_time(self, ui_state, semantic: str) -> int:
+    service = self.resolve(ui_state, semantic)
+    try:
+      return int(ui_state.sm.logMonoTime.get(service, 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+      return 0
+
+  @property
+  def resolved(self) -> dict:
+    return dict(self._resolved)
+
+
+def _torque_bar_value(ui_state, service_resolver=None) -> float:
+  service_resolver = service_resolver or _ServiceResolver()
   if ui_state.sm.recv_frame["controlsState"] < ui_state.started_frame:
     return 0.0
 
@@ -123,13 +173,13 @@ def _torque_bar_value(ui_state) -> float:
     if (
       ui_state.sm.recv_frame["carState"] < ui_state.started_frame or
       ui_state.sm.recv_frame["carControl"] < ui_state.started_frame or
-      ui_state.sm.recv_frame["liveParameters"] < ui_state.started_frame
+      service_resolver.recv_frame(ui_state, "vehicle_parameters") < ui_state.started_frame
     ):
       return 0.0
 
     car_state = ui_state.sm["carState"]
     car_control = ui_state.sm["carControl"]
-    live_parameters = ui_state.sm["liveParameters"]
+    live_parameters = service_resolver.message(ui_state, "vehicle_parameters")
     v_ego = max(_safe_float(car_state.vEgo), 0.0)
     actual_lateral_accel = _safe_float(getattr(controls_state, "curvature", 0.0)) * v_ego ** 2
     desired_lateral_accel = _safe_float(getattr(controls_state, "desiredCurvature", 0.0)) * v_ego ** 2
@@ -171,7 +221,7 @@ def _panda_states_summary(ui_state) -> tuple[bool, bool, bool]:
 
 
 class _CommaViewSocketExporter:
-  def __init__(self, flavor: str):
+  def __init__(self, flavor: str, start_worker: bool = True):
     self._flavor = flavor
     self._socket_path = os.environ.get("COMMAVIEWD_UI_EXPORT_SOCKET") or COMMAVIEW_SOCKET_PATH_DEFAULT
     self._sock = None
@@ -180,6 +230,72 @@ class _CommaViewSocketExporter:
     self._active_camera_override = None
     self._wide_camera_available_override = None
     self._latest_onroad_projection = None
+    self._service_resolver = _ServiceResolver()
+    self._pending = {}
+    self._condition = threading.Condition()
+    self._stopping = False
+    self._worker_busy = False
+    self._worker = None
+    self._worker_enabled = start_worker
+    self._last_generation = {}
+    self._last_offer_time = {}
+    self._last_projection_offer_time = 0.0
+    self._snapshot_durations_ns = deque(maxlen=512)
+    self._worker_lag_ns = deque(maxlen=512)
+    self._stats = {
+      "offers": 0,
+      "overwritten": 0,
+      "rateLimited": 0,
+      "snapshotExceptions": 0,
+      "workerExceptions": 0,
+      "socketExceptions": 0,
+      "reconnects": 0,
+      "sent": 0,
+      "bytesSent": 0,
+      "maxPending": 0,
+    }
+    self._payload_builders = {
+      COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX: self._ui_state_onroad_payload,
+      COMMAVIEW_SELFDRIVE_STATE_SERVICE_INDEX: self._selfdrive_state_payload,
+      COMMAVIEW_CAR_STATE_SERVICE_INDEX: self._car_state_payload,
+      COMMAVIEW_CONTROLS_STATE_SERVICE_INDEX: self._controls_state_payload,
+      COMMAVIEW_ONROAD_EVENTS_SERVICE_INDEX: self._onroad_events_payload,
+      COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX: self._driver_monitoring_state_payload,
+      COMMAVIEW_DRIVER_STATE_V2_SERVICE_INDEX: self._driver_state_v2_payload,
+      COMMAVIEW_MODEL_V2_SERVICE_INDEX: self._model_v2_payload,
+      COMMAVIEW_RADAR_STATE_SERVICE_INDEX: self._radar_state_payload,
+      COMMAVIEW_LIVE_CALIBRATION_SERVICE_INDEX: self._live_calibration_payload,
+      COMMAVIEW_CAR_OUTPUT_SERVICE_INDEX: self._car_output_payload,
+      COMMAVIEW_CAR_CONTROL_SERVICE_INDEX: self._car_control_payload,
+      COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX: self._live_parameters_payload,
+      COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX: self._longitudinal_plan_payload,
+      COMMAVIEW_CAR_PARAMS_SERVICE_INDEX: self._car_params_payload,
+      COMMAVIEW_DEVICE_STATE_SERVICE_INDEX: self._device_state_payload,
+      COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX: self._road_camera_state_payload,
+      COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX: self._panda_states_summary_payload,
+      COMMAVIEW_WIDE_ROAD_CAMERA_STATE_SERVICE_INDEX: self._wide_road_camera_state_payload,
+    }
+    self._service_specs = (
+      (COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX, self._ui_state_onroad_payload, ("selfdriveState", "carState", "deviceState", "pandaStates", "wideRoadCameraState")),
+      (COMMAVIEW_SELFDRIVE_STATE_SERVICE_INDEX, self._selfdrive_state_payload, ("selfdriveState",)),
+      (COMMAVIEW_CAR_STATE_SERVICE_INDEX, self._car_state_payload, ("carState",)),
+      (COMMAVIEW_CONTROLS_STATE_SERVICE_INDEX, self._controls_state_payload, ("controlsState", "carOutput", "carControl", "@vehicle_parameters", "carState")),
+      (COMMAVIEW_ONROAD_EVENTS_SERVICE_INDEX, self._onroad_events_payload, ("onroadEvents",)),
+      (COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX, self._driver_monitoring_state_payload, ("driverMonitoringState",)),
+      (COMMAVIEW_DRIVER_STATE_V2_SERVICE_INDEX, self._driver_state_v2_payload, ("driverStateV2",)),
+      (COMMAVIEW_MODEL_V2_SERVICE_INDEX, self._model_v2_payload, ("modelV2",)),
+      (COMMAVIEW_RADAR_STATE_SERVICE_INDEX, self._radar_state_payload, ("radarState",)),
+      (COMMAVIEW_LIVE_CALIBRATION_SERVICE_INDEX, self._live_calibration_payload, ("@calibration",)),
+      (COMMAVIEW_CAR_OUTPUT_SERVICE_INDEX, self._car_output_payload, ("carOutput",)),
+      (COMMAVIEW_CAR_CONTROL_SERVICE_INDEX, self._car_control_payload, ("carControl",)),
+      (COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX, self._live_parameters_payload, ("@vehicle_parameters",)),
+      (COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX, self._longitudinal_plan_payload, ("longitudinalPlan",)),
+      (COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload, ()),
+      (COMMAVIEW_DEVICE_STATE_SERVICE_INDEX, self._device_state_payload, ("deviceState",)),
+      (COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX, self._road_camera_state_payload, ("@road_camera",)),
+      (COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX, self._panda_states_summary_payload, ("pandaStates",)),
+      (COMMAVIEW_WIDE_ROAD_CAMERA_STATE_SERVICE_INDEX, self._wide_road_camera_state_payload, ("wideRoadCameraState",)),
+    )
 
   def set_onroad_camera(self, active_camera: str, wide_camera_available: bool) -> None:
     camera = _safe_str(active_camera)
@@ -195,15 +311,21 @@ class _CommaViewSocketExporter:
     model_transform,
     camera_offset: float = 0.0,
   ) -> None:
+    now = time.monotonic()
+    if self._last_projection_offer_time and now - self._last_projection_offer_time < COMMAVIEW_MIN_EXPORT_INTERVAL_SEC:
+      self._stats["rateLimited"] += 1
+      return
     camera = _safe_str(active_camera)
     camera = "wideRoad" if camera in ("wideRoad", "wide") else "road"
-    road_camera = self._service_msg(ui_state, "roadCameraState")
+    road_service = self._service_resolver.resolve(ui_state, "road_camera")
+    calibration_service = self._service_resolver.resolve(ui_state, "calibration")
+    road_camera = self._service_msg(ui_state, road_service)
     wide_camera = self._service_msg(ui_state, "wideRoadCameraState")
     model = self._service_msg(ui_state, "modelV2")
-    road_log_mono = self._service_log_mono(ui_state, "roadCameraState")
+    road_log_mono = self._service_log_mono(ui_state, road_service)
     wide_log_mono = self._service_log_mono(ui_state, "wideRoadCameraState")
     model_log_mono = self._service_log_mono(ui_state, "modelV2")
-    live_calib_log_mono = self._service_log_mono(ui_state, "liveCalibration")
+    live_calib_log_mono = self._service_log_mono(ui_state, calibration_service)
     self._latest_onroad_projection = {
       "valid": True,
       "camera": camera,
@@ -225,50 +347,144 @@ class _CommaViewSocketExporter:
       "liveCalibrationLogMonoTime": live_calib_log_mono,
       "logMonoTime": max(road_log_mono, wide_log_mono, model_log_mono, live_calib_log_mono),
     }
-    try:
-      self._send_json(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)
-    except OSError:
-      self._close()
+    self._last_projection_offer_time = now
+    self._offer_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)
 
   def publish(self, ui_state) -> None:
-    services = (
-      (COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX, self._ui_state_onroad_payload),
-      (COMMAVIEW_SELFDRIVE_STATE_SERVICE_INDEX, self._selfdrive_state_payload),
-      (COMMAVIEW_CAR_STATE_SERVICE_INDEX, self._car_state_payload),
-      (COMMAVIEW_CONTROLS_STATE_SERVICE_INDEX, self._controls_state_payload),
-      (COMMAVIEW_ONROAD_EVENTS_SERVICE_INDEX, self._onroad_events_payload),
-      (COMMAVIEW_DRIVER_MONITORING_STATE_SERVICE_INDEX, self._driver_monitoring_state_payload),
-      (COMMAVIEW_DRIVER_STATE_V2_SERVICE_INDEX, self._driver_state_v2_payload),
-      (COMMAVIEW_MODEL_V2_SERVICE_INDEX, self._model_v2_payload),
-      (COMMAVIEW_RADAR_STATE_SERVICE_INDEX, self._radar_state_payload),
-      (COMMAVIEW_LIVE_CALIBRATION_SERVICE_INDEX, self._live_calibration_payload),
-      (COMMAVIEW_CAR_OUTPUT_SERVICE_INDEX, self._car_output_payload),
-      (COMMAVIEW_CAR_CONTROL_SERVICE_INDEX, self._car_control_payload),
-      (COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX, self._live_parameters_payload),
-      (COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX, self._longitudinal_plan_payload),
-      (COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload),
-      (COMMAVIEW_DEVICE_STATE_SERVICE_INDEX, self._device_state_payload),
-      (COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX, self._road_camera_state_payload),
-      (COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX, self._panda_states_summary_payload),
-      (COMMAVIEW_WIDE_ROAD_CAMERA_STATE_SERVICE_INDEX, self._wide_road_camera_state_payload),
-    )
-    for service_index, payload_fn in services:
-      self._publish_json(service_index, payload_fn, ui_state)
-    if self._latest_onroad_projection is not None:
-      self._publish_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)
+    started_ns = time.monotonic_ns()
+    for semantic in UPSTREAM_SERVICE_ALIASES:
+      self._service_resolver.resolve(ui_state, semantic)
+    now = time.monotonic()
+    for service_index, _, dependencies in self._service_specs:
+      generation = self._generation(ui_state, dependencies)
+      if self._last_generation.get(service_index) == generation:
+        continue
+      last_offer = self._last_offer_time.get(service_index, 0.0)
+      if service_index in self._last_generation and now - last_offer < COMMAVIEW_MIN_EXPORT_INTERVAL_SEC:
+        self._stats["rateLimited"] += 1
+        continue
+      payload_fn = self._payload_builders[service_index]
+      try:
+        payload = payload_fn(ui_state)
+      except Exception:
+        self._stats["snapshotExceptions"] += 1
+        continue
+      self._last_generation[service_index] = generation
+      self._last_offer_time[service_index] = now
+      self._offer_payload(service_index, payload)
+    self._snapshot_durations_ns.append(time.monotonic_ns() - started_ns)
 
   def _publish_json(self, service_index: int, payload_fn, ui_state) -> None:
     try:
       payload = payload_fn(ui_state)
     except Exception:
+      self._stats["snapshotExceptions"] += 1
       return
     self._publish_payload(service_index, payload)
 
   def _publish_payload(self, service_index: int, payload: dict) -> None:
-    try:
-      self._send_json(service_index, payload)
-    except OSError:
-      self._close()
+    self._offer_payload(service_index, payload)
+
+  def _generation(self, ui_state, dependencies) -> tuple:
+    generation = []
+    for dependency in dependencies:
+      service = self._service_resolver.resolve(ui_state, dependency[1:]) if dependency.startswith("@") else dependency
+      try:
+        recv_frame = int(ui_state.sm.recv_frame.get(service, -1))
+      except (AttributeError, TypeError, ValueError):
+        recv_frame = -1
+      try:
+        log_mono_time = int(ui_state.sm.logMonoTime.get(service, 0) or 0)
+      except (AttributeError, TypeError, ValueError):
+        log_mono_time = 0
+      generation.append((service, recv_frame, log_mono_time))
+    return tuple(generation)
+
+  def _offer_payload(self, service_index: int, payload: dict) -> None:
+    offered_ns = time.monotonic_ns()
+    with self._condition:
+      if self._worker_enabled and self._worker is None:
+        self._worker = threading.Thread(target=self._worker_main, name="commaview-export", daemon=True)
+        self._worker.start()
+      if service_index in self._pending:
+        self._stats["overwritten"] += 1
+      self._pending[service_index] = (payload, offered_ns)
+      self._stats["offers"] += 1
+      self._stats["maxPending"] = max(self._stats["maxPending"], len(self._pending))
+      self._condition.notify()
+
+  def _pending_payload(self, service_index: int):
+    with self._condition:
+      pending = self._pending.get(service_index)
+      return None if pending is None else pending[0]
+
+  def _worker_main(self) -> None:
+    while True:
+      with self._condition:
+        while not self._pending and not self._stopping:
+          self._condition.wait()
+        if self._stopping:
+          break
+        batch = self._pending
+        self._pending = {}
+        self._worker_busy = True
+      for service_index, pending in batch.items():
+        with self._condition:
+          pending = self._pending.pop(service_index, pending)
+        payload, offered_ns = pending
+        self._worker_lag_ns.append(max(0, time.monotonic_ns() - offered_ns))
+        try:
+          self._send_json(service_index, payload)
+        except OSError:
+          self._stats["socketExceptions"] += 1
+        except Exception:
+          self._stats["workerExceptions"] += 1
+      with self._condition:
+        self._worker_busy = False
+        self._condition.notify_all()
+    self._close()
+    with self._condition:
+      self._worker_busy = False
+      self._condition.notify_all()
+
+  def wait_for_idle(self, timeout: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout
+    with self._condition:
+      while self._pending or self._worker_busy:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+          return False
+        self._condition.wait(remaining)
+      return True
+
+  def shutdown(self, timeout: float = 1.0) -> None:
+    if self._worker is None:
+      return
+    with self._condition:
+      self._stopping = True
+      self._pending.clear()
+      self._condition.notify_all()
+    self._worker.join(timeout)
+
+  def stats(self) -> dict:
+    def percentile_ms(values, percentile):
+      if not values:
+        return 0.0
+      ordered = sorted(values)
+      index = min(len(ordered) - 1, int((len(ordered) - 1) * percentile))
+      return ordered[index] / 1_000_000.0
+
+    with self._condition:
+      result = dict(self._stats)
+      result["pending"] = len(self._pending)
+    result.update({
+      "snapshotP50Ms": percentile_ms(self._snapshot_durations_ns, 0.50),
+      "snapshotP95Ms": percentile_ms(self._snapshot_durations_ns, 0.95),
+      "snapshotP99Ms": percentile_ms(self._snapshot_durations_ns, 0.99),
+      "snapshotMaxMs": percentile_ms(self._snapshot_durations_ns, 1.0),
+      "workerLagP95Ms": percentile_ms(self._worker_lag_ns, 0.95),
+    })
+    return result
 
   def _connect(self) -> bool:
     if self._sock is not None:
@@ -276,16 +492,20 @@ class _CommaViewSocketExporter:
     now = time.monotonic()
     if now < self._next_connect_attempt:
       return False
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(COMMAVIEW_SOCKET_TIMEOUT_SEC)
     try:
+      sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+      sock.settimeout(COMMAVIEW_SOCKET_TIMEOUT_SEC)
       sock.connect(self._socket_path)
     except OSError:
-      sock.close()
+      try:
+        sock.close()
+      except (OSError, UnboundLocalError):
+        pass
       self._next_connect_attempt = now + COMMAVIEW_CONNECT_RETRY_SEC
       return False
     self._sock = sock
     self._next_connect_attempt = 0.0
+    self._stats["reconnects"] += 1
     return True
 
   def _close(self) -> None:
@@ -304,6 +524,8 @@ class _CommaViewSocketExporter:
     packet = struct.pack(">I", len(frame)) + frame
     try:
       self._sock.sendall(packet)
+      self._stats["sent"] += 1
+      self._stats["bytesSent"] += len(packet)
     except OSError:
       self._close()
       raise
@@ -466,7 +688,10 @@ class _CommaViewSocketExporter:
       "curvature": 0.0,
       "desiredCurvature": 0.0,
       "torqueBarValue": 0.0,
-      "logMonoTime": self._service_log_mono(ui_state, "controlsState", "carOutput", "carControl", "liveParameters", "carState"),
+      "logMonoTime": max(
+        self._service_log_mono(ui_state, "controlsState", "carOutput", "carControl", "carState"),
+        self._service_resolver.log_mono_time(ui_state, "vehicle_parameters"),
+      ),
     }
     if ui_state.sm.recv_frame["controlsState"] >= ui_state.started_frame:
       controls_state = ui_state.sm["controlsState"]
@@ -488,7 +713,7 @@ class _CommaViewSocketExporter:
         "curvature": _safe_float(getattr(controls_state, "curvature", 0.0)),
         "desiredCurvature": _safe_float(getattr(controls_state, "desiredCurvature", 0.0)),
       })
-    payload["torqueBarValue"] = _safe_float(_torque_bar_value(ui_state))
+    payload["torqueBarValue"] = _safe_float(_torque_bar_value(ui_state, self._service_resolver))
     return payload
 
   def _onroad_events_payload(self, ui_state) -> dict:
@@ -675,10 +900,10 @@ class _CommaViewSocketExporter:
       "calStatus": 0,
       "calPerc": 0,
       "wideFromDeviceEuler": [],
-      "logMonoTime": self._service_log_mono(ui_state, "liveCalibration"),
+      "logMonoTime": self._service_resolver.log_mono_time(ui_state, "calibration"),
     }
-    if ui_state.sm.recv_frame["liveCalibration"] >= ui_state.started_frame:
-      live_calibration = ui_state.sm["liveCalibration"]
+    if self._service_resolver.recv_frame(ui_state, "calibration") >= ui_state.started_frame:
+      live_calibration = self._service_resolver.message(ui_state, "calibration")
       payload.update({
         "rpyCalib": _float_list(live_calibration.rpyCalib),
         "height": _float_list(live_calibration.height),
@@ -728,10 +953,10 @@ class _CommaViewSocketExporter:
     payload = {
       "exportVersion": 1,
       "roll": 0.0,
-      "logMonoTime": self._service_log_mono(ui_state, "liveParameters"),
+      "logMonoTime": self._service_resolver.log_mono_time(ui_state, "vehicle_parameters"),
     }
-    if ui_state.sm.recv_frame["liveParameters"] >= ui_state.started_frame:
-      payload["roll"] = _safe_float(ui_state.sm["liveParameters"].roll)
+    if self._service_resolver.recv_frame(ui_state, "vehicle_parameters") >= ui_state.started_frame:
+      payload["roll"] = _safe_float(self._service_resolver.message(ui_state, "vehicle_parameters").roll)
     return payload
 
   def _longitudinal_plan_payload(self, ui_state) -> dict:
@@ -776,10 +1001,10 @@ class _CommaViewSocketExporter:
       "exportVersion": 1,
       "sensor": "",
       "frameId": 0,
-      "logMonoTime": self._service_log_mono(ui_state, "roadCameraState"),
+      "logMonoTime": self._service_resolver.log_mono_time(ui_state, "road_camera"),
     }
-    if ui_state.sm.recv_frame["roadCameraState"] >= 0:
-      road_camera_state = ui_state.sm["roadCameraState"]
+    if self._service_resolver.recv_frame(ui_state, "road_camera") >= 0:
+      road_camera_state = self._service_resolver.message(ui_state, "road_camera")
       payload.update({
         "sensor": _safe_str(getattr(road_camera_state, "sensor", "")),
         "frameId": _safe_int(getattr(road_camera_state, "frameId", 0)),

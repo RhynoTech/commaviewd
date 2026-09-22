@@ -362,7 +362,7 @@ else
       check_fixed 'active_camera="wideRoad" if is_wide_camera else "road"' "$augmented_road_path" && \
       check_fixed 'video_frame_matrix=self._cached_matrix' "$augmented_road_path" && \
       { check_fixed 'camera_offset=getattr(self._model_renderer, "_camera_offset", 0.0)' "$augmented_road_path" || check_fixed 'camera_offset=getattr(self.model_renderer, "_camera_offset", 0.0)' "$augmented_road_path"; } && \
-      check_fixed 'self._publish_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$HELPER_PATH"; }; then
+      check_fixed 'self._offer_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$HELPER_PATH"; }; then
       onroad_projection_present=false
     fi
   done

@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--help" ]]; then
   cat <<USAGE
-Usage: OP_ROOT=/path/to/openpilot-src commaviewd/scripts/upstream-interface-guard.sh [--manifest <path>]
+Usage: OP_ROOT=/path/to/openpilot-src commaviewd/scripts/upstream-interface-guard.sh [--manifest <path>] [--telemetry-only]
 Fast-fails when upstream schema/service interfaces drift in ways that can break CommaViewD.
 USAGE
   exit 0
@@ -19,10 +19,12 @@ else
 fi
 DIST_DIR="${DIST_DIR:-$REPO_ROOT/dist}"
 MANIFEST="$DIST_DIR/upstream-interface-manifest.json"
+TELEMETRY_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --manifest) MANIFEST="$2"; shift 2 ;;
+    --telemetry-only) TELEMETRY_ONLY=1; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -96,7 +98,6 @@ required_services=(
   carState
   selfdriveState
   deviceState
-  liveCalibration
   radarState
   modelV2
   controlsState
@@ -105,18 +106,42 @@ required_services=(
   driverStateV2
   carOutput
   carControl
-  liveParameters
   longitudinalPlan
   carParams
-  roadCameraState
   pandaStates
   wideRoadCameraState
 )
 
+checked_required_services=0
 for svc in "${required_services[@]}"; do
+  if [[ "$TELEMETRY_ONLY" -eq 1 && "$svc" =~ ^(roadEncodeData|wideRoadEncodeData|driverEncodeData|livestreamRoadEncodeData|livestreamWideRoadEncodeData|livestreamDriverEncodeData)$ ]]; then
+    continue
+  fi
   check_token "$OP_SOURCE_ROOT/cereal/services.py" "$svc"
   check_token "$OP_SOURCE_ROOT/cereal/log.capnp" "$svc"
+  checked_required_services=$((checked_required_services + 1))
 done
+
+resolve_service_alias() {
+  local semantic="$1"
+  shift
+  local service
+  for service in "$@"; do
+    if grep -Eq "(^|[^A-Za-z0-9_])${service}([^A-Za-z0-9_]|$)" "$OP_SOURCE_ROOT/cereal/services.py" && \
+       grep -Eq "(^|[^A-Za-z0-9_])${service}([^A-Za-z0-9_]|$)" "$OP_SOURCE_ROOT/cereal/log.capnp"; then
+      printf '%s\n' "$service"
+      return 0
+    fi
+  done
+  return 1
+}
+
+calibration_service="$(resolve_service_alias calibration extrinsicsCalibration liveCalibration || true)"
+road_camera_service="$(resolve_service_alias road_camera narrowRoadCameraState roadCameraState || true)"
+vehicle_parameters_service="$(resolve_service_alias vehicle_parameters vehicleParameters liveParameters || true)"
+[[ -n "$calibration_service" ]] || missing+=("service-alias:calibration(one-of:extrinsicsCalibration liveCalibration)")
+[[ -n "$road_camera_service" ]] || missing+=("service-alias:road_camera(one-of:narrowRoadCameraState roadCameraState)")
+[[ -n "$vehicle_parameters_service" ]] || missing+=("service-alias:vehicle_parameters(one-of:vehicleParameters liveParameters)")
 
 required_capnp_fields=(
   alertText1
@@ -127,8 +152,15 @@ required_capnp_fields=(
   roadEdgeStds
   leadsV3
   rpyCalib
+  height
   calStatus
   calPerc
+  wideFromDeviceEuler
+  roll
+  frameId
+  timestampEof
+  timestampSof
+  sensor
 )
 
 for field in "${required_capnp_fields[@]}"; do
@@ -146,17 +178,24 @@ upstream_sha="unknown"
 if git -C "$OP_ROOT" rev-parse --short HEAD >/dev/null 2>&1; then
   upstream_sha="$(git -C "$OP_ROOT" rev-parse --short HEAD)"
 fi
+required_service_count=$((checked_required_services + 3))
 
 cat > "$MANIFEST" <<JSON
 {
   "opRoot": "${OP_ROOT}",
   "opSourceRoot": "${OP_SOURCE_ROOT}",
   "upstreamSha": "${upstream_sha}",
+  "telemetryOnly": $([[ "$TELEMETRY_ONLY" -eq 1 ]] && printf true || printf false),
+  "resolvedServices": {
+    "calibration": "${calibration_service}",
+    "roadCamera": "${road_camera_service}",
+    "vehicleParameters": "${vehicle_parameters_service}"
+  },
   "checks": {
     "onroadUiExportMethod": "transformer",
     "onroadUiExportFlavor": "${onroad_ui_export_flavor}",
     "requiredTransformerFiles": ${#required_transformer_files[@]},
-    "requiredServices": ${#required_services[@]},
+    "requiredServices": ${required_service_count},
     "requiredCapnpFields": ${#required_capnp_fields[@]},
     "requiredFiles": ${#required_files[@]}
   }

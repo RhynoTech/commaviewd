@@ -46,10 +46,11 @@ class Params:
 class FakeSubMaster:
   def __init__(self, values: dict[str, object]):
     self.values = values
-    self.recv_frame = defaultdict(lambda: 10)
-    self.logMonoTime = defaultdict(lambda: 1000)
-    self.valid = defaultdict(lambda: True)
-    self.alive = defaultdict(lambda: True)
+    self.recv_frame = defaultdict(lambda: 10, {key: 10 for key in values})
+    self.logMonoTime = defaultdict(lambda: 1000, {key: 1000 for key in values})
+    self.valid = defaultdict(lambda: True, {key: True for key in values})
+    self.alive = defaultdict(lambda: True, {key: True for key in values})
+    self.updated = defaultdict(lambda: True, {key: True for key in values})
 
   def __getitem__(self, key: str):
     return self.values.get(key, Dot())
@@ -94,7 +95,7 @@ def driver_data() -> Dot:
   )
 
 
-def fake_values() -> dict[str, object]:
+def fake_values(current_layout: bool = False) -> dict[str, object]:
   nested_driver_monitoring = Dot(
     isRHD=False,
     visionPolicyState=Dot(
@@ -106,7 +107,7 @@ def fake_values() -> dict[str, object]:
       ),
     ),
   )
-  return {
+  values = {
     "selfdriveState": Dot(enabled=True, active=True, engageable=True, alertText1="", alertText2="", alertType="none", alertStatus=0, alertSize=0, experimentalMode=False),
     "carState": Dot(vEgo=12.0, vEgoCluster=12.0, vCruiseCluster=25.0, standstill=False, steeringAngleDeg=1.5, steeringPressed=False, leftBlinker=False, rightBlinker=False, leftBlindspot=False, rightBlindspot=False),
     "controlsState": Dot(enabled=True, active=True, engageable=True, alertText1="", alertText2="", alertType="none", alertStatus=0, alertSize=0, experimentalMode=False, vCruiseDEPRECATED=25.0, lateralControlState=LateralControlState(), curvature=0.01, desiredCurvature=0.02),
@@ -126,6 +127,11 @@ def fake_values() -> dict[str, object]:
     "wideRoadCameraState": Dot(sensor="wide", frameId=1),
     "pandaStates": [],
   }
+  if current_layout:
+    values["extrinsicsCalibration"] = values.pop("liveCalibration")
+    values["narrowRoadCameraState"] = values.pop("roadCameraState")
+    values["vehicleParameters"] = values.pop("liveParameters")
+  return values
 
 
 def install_import_stubs() -> None:
@@ -152,19 +158,24 @@ def main() -> int:
   helper_path = Path(sys.argv[1])
   flavor = sys.argv[2]
   module = load_module(helper_path)
-  exporter = module._CommaViewSocketExporter(flavor)
   sent: list[int] = []
-  exporter._send_json = lambda service_index, payload: sent.append(int(service_index))
-  ui_state = FakeUiState(fake_values())
-  exporter.set_onroad_projection(
-    ui_state,
-    active_camera="road",
-    content_rect=Dot(x=0, y=0, width=1928, height=1208),
-    video_frame_matrix=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-    model_transform=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-    camera_offset=0.0,
-  )
-  exporter.publish(ui_state)
+  resolved_layouts = {}
+  for layout_name, current_layout in (("legacy", False), ("current", True)):
+    exporter = module._CommaViewSocketExporter(flavor)
+    exporter._send_json = lambda service_index, payload: sent.append(int(service_index))
+    ui_state = FakeUiState(fake_values(current_layout=current_layout))
+    exporter.set_onroad_projection(
+      ui_state,
+      active_camera="road",
+      content_rect=Dot(x=0, y=0, width=1928, height=1208),
+      video_frame_matrix=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+      model_transform=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+      camera_offset=0.0,
+    )
+    exporter.publish(ui_state)
+    exporter.wait_for_idle(1.0)
+    resolved_layouts[layout_name] = exporter._service_resolver.resolved
+    exporter.shutdown()
   critical = [int(getattr(module, name)) for name in CRITICAL_SERVICE_NAMES]
   missing = [service for service in critical if service not in sent]
   status = {
@@ -173,6 +184,7 @@ def main() -> int:
     "serviceSendCount": len(sent),
     "sentServices": sent,
     "missingCriticalServices": missing,
+    "resolvedLayouts": resolved_layouts,
   }
   print(json.dumps(status, separators=(",", ":")))
   return 0 if not missing else 1

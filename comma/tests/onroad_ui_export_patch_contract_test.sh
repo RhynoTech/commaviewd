@@ -142,10 +142,12 @@ for template in "$OPENPILOT_TEMPLATE" "$SUNNYPILOT_TEMPLATE"; do
   grep -Fq 'socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' "$template" || fail "$template missing unix socket client"
   grep -Fq 'struct.pack(">I", len(frame)) + frame' "$template" || fail "$template missing framing"
   grep -Fq 'json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")' "$template" || fail "$template missing compact json encoding"
-  grep -Fq 'self._publish_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$template" || fail "$template missing immediate onroad projection export"
+  grep -Fq 'self._offer_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$template" || fail "$template missing latest-value onroad projection offer"
   grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$template" || fail "$template missing torque helper import"
-  grep -Fq 'def _torque_bar_value(ui_state) -> float:' "$template" || fail "$template missing torque bar helper"
+  grep -Fq 'def _torque_bar_value(ui_state, service_resolver=None) -> float:' "$template" || fail "$template missing torque bar helper"
   grep -Fq 'def _publish_json(self, service_index: int, payload_fn, ui_state) -> None:' "$template" || fail "$template missing per-service publish wrapper"
+  grep -Fq 'def _worker_main(self) -> None:' "$template" || fail "$template missing isolated export worker"
+  grep -Fq 'UPSTREAM_SERVICE_ALIASES = {' "$template" || fail "$template missing semantic service aliases"
   grep -Fq 'except Exception:' "$template" || fail "$template missing per-service payload isolation"
 
   for marker in "${payload_markers[@]}"; do
