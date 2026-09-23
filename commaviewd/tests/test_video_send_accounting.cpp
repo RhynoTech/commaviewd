@@ -112,6 +112,17 @@ void test_ok_counts_bridge_chunk_counters_only() {
   assert(stats.last_status == "ok");
 }
 
+void test_recovered_partial_send_is_observable() {
+  commaview::runtime::RuntimeVideoSendStats stats;
+  auto recovered = result(commaview::net::SendStatus::Ok, 128);
+  recovered.partial_recovery_attempted = true;
+  recovered.partial_recovery_succeeded = true;
+  commaview::runtime::note_video_chunk_send_result(stats, chunk(), recovered, 1005);
+  assert(stats.partial_recovery_attempt_count == 1);
+  assert(stats.partial_recovery_success_count == 1);
+  assert(stats.partial_chunk_reset_count == 0);
+}
+
 void test_serialized_video_send_json_includes_chunk_accounting() {
   commaview::runtime::RuntimeVideoSendStats stats;
   commaview::runtime::note_video_chunk_send_result(
@@ -144,6 +155,7 @@ int main() {
   test_partial_invalid_argument_increments_bridge_partial_chunk_reset();
   test_zero_byte_backpressure_counts_bridge_abandon_path_only();
   test_ok_counts_bridge_chunk_counters_only();
+  test_recovered_partial_send_is_observable();
   test_serialized_video_send_json_includes_chunk_accounting();
   return 0;
 }

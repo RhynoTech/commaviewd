@@ -25,6 +25,8 @@ void note_video_send_result(RuntimeVideoSendStats& stats,
                             const commaview::net::SendResult& result,
                             uint64_t now_ms) {
   stats.max_send_micros = std::max(stats.max_send_micros, result.elapsed_micros);
+  if (result.partial_recovery_attempted) stats.partial_recovery_attempt_count += 1;
+  if (result.partial_recovery_succeeded) stats.partial_recovery_success_count += 1;
   if (result.status != commaview::net::SendStatus::Ok) {
     note_video_send_failure_details(stats, result, now_ms);
   }
@@ -84,6 +86,8 @@ std::string video_send_stats_json(const RuntimeVideoSendStats& stats) {
   out << "\"frameAbandonCount\":" << stats.frame_abandon_count << ",";
   out << "\"zeroByteChunkBackpressureCount\":" << stats.zero_byte_chunk_backpressure_count << ",";
   out << "\"partialChunkResetCount\":" << stats.partial_chunk_reset_count << ",";
+  out << "\"partialRecoveryAttemptCount\":" << stats.partial_recovery_attempt_count << ",";
+  out << "\"partialRecoverySuccessCount\":" << stats.partial_recovery_success_count << ",";
   out << "\"maxChunksPerFrame\":" << stats.max_chunks_per_frame << ",";
   out << "\"maxChunkSendMicros\":" << stats.max_chunk_send_micros << ",";
   out << "\"queueDropCount\":" << stats.queue_drop_count << ",";

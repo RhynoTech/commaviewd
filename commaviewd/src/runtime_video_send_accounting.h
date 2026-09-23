@@ -19,6 +19,8 @@ struct RuntimeVideoSendStats {
   uint64_t frame_abandon_count = 0;
   uint64_t zero_byte_chunk_backpressure_count = 0;
   uint64_t partial_chunk_reset_count = 0;
+  uint64_t partial_recovery_attempt_count = 0;
+  uint64_t partial_recovery_success_count = 0;
   uint64_t max_chunks_per_frame = 0;
   uint64_t max_chunk_send_micros = 0;
   uint64_t queue_drop_count = 0;

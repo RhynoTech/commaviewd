@@ -244,6 +244,38 @@ static void test_bounded_send_buffers_waits_for_socket_writability_before_deadli
   assert(result.elapsed_micros >= 1000);
 }
 
+static void test_partial_frame_send_recovers_without_breaking_framing() {
+  int fds[2]{};
+  assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+  int sndbuf = 4096;
+  assert(setsockopt(fds[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) == 0);
+
+  std::vector<uint8_t> payload(256 * 1024, 0x5A);
+  std::thread drainer([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::vector<uint8_t> buffer(64 * 1024);
+    size_t received = 0;
+    while (received < payload.size() + 4) {
+      const ssize_t n = ::recv(fds[1], buffer.data(), buffer.size(), 0);
+      if (n <= 0) break;
+      received += static_cast<size_t>(n);
+    }
+  });
+
+  const auto result = commaview::net::send_frame_with_partial_recovery(
+      fds[0],
+      payload.data(),
+      payload.size(),
+      commaview::net::SendDeadline::after_micros(1000),
+      500000);
+
+  close_socketpair_and_join(fds, &drainer);
+  assert(result.status == commaview::net::SendStatus::Ok);
+  assert(result.bytes_sent == payload.size() + 4);
+  assert(result.partial_recovery_attempted);
+  assert(result.partial_recovery_succeeded);
+}
+
 int main() {
   test_send_diagnostics_names_are_stable();
   test_bounded_send_retries_eintr_and_partial_success();
@@ -254,6 +286,7 @@ int main() {
   test_send_iov_handles_partial_iovec_boundaries();
   test_bounded_send_waits_for_socket_writability_before_deadline();
   test_bounded_send_buffers_waits_for_socket_writability_before_deadline();
+  test_partial_frame_send_recovers_without_breaking_framing();
 
   uint8_t b[4]{};
   commaview::net::put_be32(b, 0xA1B2C3D4u);

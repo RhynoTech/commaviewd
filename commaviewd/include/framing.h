@@ -23,6 +23,8 @@ struct SendResult {
   size_t bytes_sent = 0;
   int error = 0;
   uint64_t elapsed_micros = 0;
+  bool partial_recovery_attempted = false;
+  bool partial_recovery_succeeded = false;
 };
 
 const char* send_status_name(SendStatus status);
@@ -53,6 +55,11 @@ struct SendBuffer {
 
 SendResult send_all_bounded(int fd, const void* data, size_t len, SendDeadline deadline);
 SendResult send_frame_bounded(int fd, const uint8_t* payload, size_t payload_len, SendDeadline deadline);
+SendResult send_frame_with_partial_recovery(int fd,
+                                            const uint8_t* payload,
+                                            size_t payload_len,
+                                            SendDeadline initial_deadline,
+                                            uint64_t recovery_budget_micros);
 SendResult send_buffers_bounded(int fd,
                                 const SendBuffer* buffers,
                                 size_t buffer_count,

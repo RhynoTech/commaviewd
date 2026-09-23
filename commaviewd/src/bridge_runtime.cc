@@ -80,6 +80,7 @@ static constexpr int PORT_WIDE = 8201;
 static constexpr int PORT_DRIVER = 8202;
 static constexpr int PORT_TELEMETRY = 8203;
 static constexpr uint64_t VIDEO_SEND_BUDGET_MICROS = 16000ULL;
+static constexpr uint64_t PARTIAL_SEND_RECOVERY_BUDGET_MICROS = 250000ULL;
 static constexpr size_t VIDEO_FRAME_QUEUE_CAPACITY = 3;
 
 // Runtime policy defaults favor the upstream-organized onroad domains we export over the UI socket.
@@ -177,17 +178,19 @@ static commaview::net::SendResult send_meta_bytes_bounded(int fd,
   memcpy(&framed_payload[1], bytes, bytes_len);
   if (send_mutex != nullptr) {
     std::lock_guard<std::mutex> send_lock(*send_mutex);
-    return commaview::net::send_frame_bounded(
+    return commaview::net::send_frame_with_partial_recovery(
         fd,
         framed_payload.data(),
         framed_payload.size(),
-        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
+        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS),
+        PARTIAL_SEND_RECOVERY_BUDGET_MICROS);
   }
-  return commaview::net::send_frame_bounded(
+  return commaview::net::send_frame_with_partial_recovery(
       fd,
       framed_payload.data(),
       framed_payload.size(),
-      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
+      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS),
+      PARTIAL_SEND_RECOVERY_BUDGET_MICROS);
 }
 
 static commaview::net::SendResult send_meta_raw_frame(int fd,
@@ -576,17 +579,19 @@ static commaview::net::SendResult send_frame_locked(int fd,
                                                     std::mutex* send_mutex) {
   if (send_mutex != nullptr) {
     std::lock_guard<std::mutex> send_lock(*send_mutex);
-    return commaview::net::send_frame_bounded(
+    return commaview::net::send_frame_with_partial_recovery(
         fd,
         payload,
         payload_len,
-        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
+        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS),
+        PARTIAL_SEND_RECOVERY_BUDGET_MICROS);
   }
-  return commaview::net::send_frame_bounded(
+  return commaview::net::send_frame_with_partial_recovery(
       fd,
       payload,
       payload_len,
-      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS));
+      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS),
+      PARTIAL_SEND_RECOVERY_BUDGET_MICROS);
 }
 
 static bool client_socket_alive(int fd) {

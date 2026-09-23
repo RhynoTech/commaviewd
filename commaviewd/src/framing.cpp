@@ -405,6 +405,42 @@ SendResult send_frame_bounded(int fd, const uint8_t* payload, size_t payload_len
   return send_buffers_bounded(fd, buffers, 2, deadline);
 }
 
+SendResult send_frame_with_partial_recovery(int fd,
+                                            const uint8_t* payload,
+                                            size_t payload_len,
+                                            SendDeadline initial_deadline,
+                                            uint64_t recovery_budget_micros) {
+  if (payload == nullptr && payload_len > 0) {
+    SendResult invalid;
+    invalid.status = SendStatus::InvalidArgument;
+    invalid.error = EINVAL;
+    return invalid;
+  }
+
+  std::vector<uint8_t> frame(4 + payload_len);
+  put_be32(frame.data(), static_cast<uint32_t>(payload_len));
+  if (payload_len > 0) memcpy(frame.data() + 4, payload, payload_len);
+
+  SendResult result = send_all_bounded(fd, frame.data(), frame.size(), initial_deadline);
+  if (result.status != SendStatus::Backpressure || result.bytes_sent == 0 ||
+      result.bytes_sent >= frame.size()) {
+    return result;
+  }
+
+  const size_t initial_bytes = result.bytes_sent;
+  const uint64_t initial_elapsed = result.elapsed_micros;
+  SendResult recovery = send_all_bounded(
+      fd,
+      frame.data() + initial_bytes,
+      frame.size() - initial_bytes,
+      SendDeadline::after_micros(recovery_budget_micros));
+  recovery.bytes_sent += initial_bytes;
+  recovery.elapsed_micros += initial_elapsed;
+  recovery.partial_recovery_attempted = true;
+  recovery.partial_recovery_succeeded = recovery.status == SendStatus::Ok;
+  return recovery;
+}
+
 bool send_all(int fd, const void* data, size_t len) {
   return send_all_bounded(fd, data, len, SendDeadline::after_micros(0)).status == SendStatus::Ok;
 }
