@@ -38,7 +38,7 @@ case "$action" in
     # replay supplies decoded route frames over VisionIPC. Blocking every encoded
     # service is mandatory: replay otherwise opens empty publishers that evict
     # encoderd's real publishers from msgq.
-    tmux new-session -d -s cv-replay "cd '$replay_root' && . .venv/bin/activate && ./openpilot/tools/replay/replay '$route' --data_dir /data/media/0/realdata -x 1 -b '$video_services'"
+    tmux new-session -d -s cv-replay "cd '$replay_root' && . .venv/bin/activate && ./openpilot/tools/replay/replay '$route' --data_dir /data/media/0/realdata -x 1 --wide-road -b '$video_services'"
     sleep 5
     tmux new-session -d -s cv-encoderd "cd '$prod_root' && ./openpilot/system/loggerd/encoderd 2>&1 | tee '$results/encoderd.log'"
     sleep 10
