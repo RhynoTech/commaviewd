@@ -27,6 +27,10 @@ case "$action" in
     [[ -n "$route" && "$route" == *'|'* ]] || { usage; exit 2; }
     [[ "$(param IsOffroad)" == "1" ]] || { echo "ERROR: device must be offroad before startup" >&2; exit 42; }
     [[ "$(param IsEngaged)" != "1" ]] || { echo "ERROR: device is engaged" >&2; exit 42; }
+    bash /data/commaview/scripts/verify_onroad_ui_export_patch.sh >/dev/null || {
+      echo "ERROR: CommaView UI exporter patch is not verified" >&2
+      exit 43
+    }
     [[ -x "$prod_root/openpilot/system/camerad/camerad" ]] || { echo "ERROR: production camerad missing" >&2; exit 1; }
     [[ -x "$prod_root/openpilot/system/loggerd/encoderd" ]] || { echo "ERROR: production encoderd missing" >&2; exit 1; }
     [[ -x "$replay_root/openpilot/tools/replay/replay" ]] || { echo "ERROR: replay binary missing" >&2; exit 1; }
