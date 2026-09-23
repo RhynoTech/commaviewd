@@ -89,12 +89,8 @@ done
 }
 
 required_services=(
-  roadEncodeData
   wideRoadEncodeData
-  driverEncodeData
-  livestreamRoadEncodeData
   livestreamWideRoadEncodeData
-  livestreamDriverEncodeData
   carState
   selfdriveState
   deviceState
@@ -114,7 +110,7 @@ required_services=(
 
 checked_required_services=0
 for svc in "${required_services[@]}"; do
-  if [[ "$TELEMETRY_ONLY" -eq 1 && "$svc" =~ ^(roadEncodeData|wideRoadEncodeData|driverEncodeData|livestreamRoadEncodeData|livestreamWideRoadEncodeData|livestreamDriverEncodeData)$ ]]; then
+  if [[ "$TELEMETRY_ONLY" -eq 1 && "$svc" =~ ^(wideRoadEncodeData|livestreamWideRoadEncodeData)$ ]]; then
     continue
   fi
   check_token "$OP_SOURCE_ROOT/cereal/services.py" "$svc"
@@ -139,9 +135,19 @@ resolve_service_alias() {
 calibration_service="$(resolve_service_alias calibration extrinsicsCalibration liveCalibration || true)"
 road_camera_service="$(resolve_service_alias road_camera narrowRoadCameraState roadCameraState || true)"
 vehicle_parameters_service="$(resolve_service_alias vehicle_parameters vehicleParameters liveParameters || true)"
+road_encode_service="$(resolve_service_alias road_encode narrowRoadEncodeData roadEncodeData || true)"
+driver_encode_service="$(resolve_service_alias cabin_encode cabinEncodeData driverEncodeData || true)"
+livestream_road_encode_service="$(resolve_service_alias livestream_road_encode livestreamNarrowRoadEncodeData livestreamRoadEncodeData || true)"
+livestream_driver_encode_service="$(resolve_service_alias livestream_cabin_encode livestreamCabinEncodeData livestreamDriverEncodeData || true)"
 [[ -n "$calibration_service" ]] || missing+=("service-alias:calibration(one-of:extrinsicsCalibration liveCalibration)")
 [[ -n "$road_camera_service" ]] || missing+=("service-alias:road_camera(one-of:narrowRoadCameraState roadCameraState)")
 [[ -n "$vehicle_parameters_service" ]] || missing+=("service-alias:vehicle_parameters(one-of:vehicleParameters liveParameters)")
+if [[ "$TELEMETRY_ONLY" -ne 1 ]]; then
+  [[ -n "$road_encode_service" ]] || missing+=("service-alias:road_encode(one-of:narrowRoadEncodeData roadEncodeData)")
+  [[ -n "$driver_encode_service" ]] || missing+=("service-alias:cabin_encode(one-of:cabinEncodeData driverEncodeData)")
+  [[ -n "$livestream_road_encode_service" ]] || missing+=("service-alias:livestream_road_encode(one-of:livestreamNarrowRoadEncodeData livestreamRoadEncodeData)")
+  [[ -n "$livestream_driver_encode_service" ]] || missing+=("service-alias:livestream_cabin_encode(one-of:livestreamCabinEncodeData livestreamDriverEncodeData)")
+fi
 
 required_capnp_fields=(
   alertText1
@@ -179,6 +185,9 @@ if git -C "$OP_ROOT" rev-parse --short HEAD >/dev/null 2>&1; then
   upstream_sha="$(git -C "$OP_ROOT" rev-parse --short HEAD)"
 fi
 required_service_count=$((checked_required_services + 3))
+if [[ "$TELEMETRY_ONLY" -ne 1 ]]; then
+  required_service_count=$((required_service_count + 4))
+fi
 
 cat > "$MANIFEST" <<JSON
 {
@@ -190,6 +199,10 @@ cat > "$MANIFEST" <<JSON
     "calibration": "${calibration_service}",
     "roadCamera": "${road_camera_service}",
     "vehicleParameters": "${vehicle_parameters_service}"
+    ,"roadEncode": "${road_encode_service}"
+    ,"cabinEncode": "${driver_encode_service}"
+    ,"livestreamRoadEncode": "${livestream_road_encode_service}"
+    ,"livestreamCabinEncode": "${livestream_driver_encode_service}"
   },
   "checks": {
     "onroadUiExportMethod": "transformer",

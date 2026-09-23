@@ -109,9 +109,15 @@ static constexpr int NUM_TELEM = static_cast<int>(kTelemetryServices.size());
 static constexpr int TELEMETRY_EMIT_MS_DEFAULT = 50;  // 20 Hz base poll for PASS and future SAMPLE modes
 static int g_telemetry_emit_ms = TELEMETRY_EMIT_MS_DEFAULT;
 
+#if defined(COMMAVIEW_CURRENT_VIDEO_SCHEMA)
+static const char* VIDEO_SERVICES_PROD[] = {
+  "narrowRoadEncodeData", "wideRoadEncodeData", "cabinEncodeData"
+};
+#else
 static const char* VIDEO_SERVICES_PROD[] = {
   "roadEncodeData", "wideRoadEncodeData", "driverEncodeData"
 };
+#endif
 
 
 static std::atomic<bool> g_running{true};
@@ -137,8 +143,14 @@ static cereal::Event::Which expected_video_which_for_port(int port) {
 
 
 
-static size_t queue_size_for_service(const char* service_name) {
-  auto it = services.find(std::string(service_name));
+static const char* compiled_video_service_for_port(int port) {
+  if (port == PORT_ROAD) return VIDEO_SERVICES_PROD[0];
+  if (port == PORT_WIDE) return VIDEO_SERVICES_PROD[1];
+  return VIDEO_SERVICES_PROD[2];
+}
+
+static size_t queue_size_for_port(int port) {
+  auto it = services.find(std::string(compiled_video_service_for_port(port)));
   if (it == services.end()) return 0;
   return it->second.queue_size;
 }
@@ -621,7 +633,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   const bool enable_video = true;
   SubSocket* video_sock = nullptr;
   if (enable_video) {
-    const size_t video_segment_size = queue_size_for_service(video_service);
+    const size_t video_segment_size = queue_size_for_port(port);
     video_sock = SubSocket::create(ctx, video_service, "127.0.0.1", true, true, video_segment_size);
   }
 

@@ -116,7 +116,11 @@ if "directV2PatchFlavor" in checks:
 expected_services = 24
 if checks.get("requiredServices", 0) < expected_services:
     raise SystemExit(f"guard should cover all exporter services; expected at least {expected_services}, got {checks.get('requiredServices')}: {checks}")
-expected = {"calibration": "liveCalibration", "roadCamera": "roadCameraState", "vehicleParameters": "liveParameters"}
+expected = {
+    "calibration": "liveCalibration", "roadCamera": "roadCameraState", "vehicleParameters": "liveParameters",
+    "roadEncode": "roadEncodeData", "cabinEncode": "driverEncodeData",
+    "livestreamRoadEncode": "livestreamRoadEncodeData", "livestreamCabinEncode": "livestreamDriverEncodeData",
+}
 if manifest.get("resolvedServices") != expected:
     raise SystemExit(f"legacy aliases were not resolved: {manifest}")
 PY
@@ -129,10 +133,18 @@ mkdir -p "$current_op_root/cereal"
 sed -e 's/liveCalibration/extrinsicsCalibration/g' \
     -e 's/roadCameraState/narrowRoadCameraState/g' \
     -e 's/liveParameters/vehicleParameters/g' \
+    -e 's/livestreamRoadEncodeData/livestreamNarrowRoadEncodeData/g' \
+    -e 's/livestreamDriverEncodeData/livestreamCabinEncodeData/g' \
+    -e 's/roadEncodeData/narrowRoadEncodeData/g' \
+    -e 's/driverEncodeData/cabinEncodeData/g' \
     "$source_root/services.py" > "$current_op_root/cereal/services.py"
 sed -e 's/liveCalibration/extrinsicsCalibration/g' \
     -e 's/roadCameraState/narrowRoadCameraState/g' \
     -e 's/liveParameters/vehicleParameters/g' \
+    -e 's/livestreamRoadEncodeData/livestreamNarrowRoadEncodeData/g' \
+    -e 's/livestreamDriverEncodeData/livestreamCabinEncodeData/g' \
+    -e 's/roadEncodeData/narrowRoadEncodeData/g' \
+    -e 's/driverEncodeData/cabinEncodeData/g' \
     "$source_root/log.capnp" > "$current_op_root/cereal/log.capnp"
 git -C "$current_op_root" init -q
 git -C "$current_op_root" remote add origin https://github.com/commaai/openpilot.git
@@ -147,12 +159,27 @@ python3 - "$current_manifest" <<'PY'
 import json
 import sys
 manifest = json.loads(open(sys.argv[1]).read())
-expected = {"calibration": "extrinsicsCalibration", "roadCamera": "narrowRoadCameraState", "vehicleParameters": "vehicleParameters"}
+expected = {
+    "calibration": "extrinsicsCalibration", "roadCamera": "narrowRoadCameraState", "vehicleParameters": "vehicleParameters",
+    "roadEncode": "narrowRoadEncodeData", "cabinEncode": "cabinEncodeData",
+    "livestreamRoadEncode": "livestreamNarrowRoadEncodeData", "livestreamCabinEncode": "livestreamCabinEncodeData",
+}
 if manifest.get("resolvedServices") != expected:
     raise SystemExit(f"current aliases were not resolved: {manifest}")
 PY
 
 echo "PASS: upstream interface guard validates current semantic aliases"
+
+broken_op_root="$tmpdir/openpilot-broken"
+broken_manifest="$tmpdir/broken-manifest.json"
+cp -a "$current_op_root" "$broken_op_root"
+sed -i '/narrowRoadEncodeData/d' "$broken_op_root/cereal/services.py" "$broken_op_root/cereal/log.capnp"
+if OP_ROOT="$broken_op_root" "$GUARD" --manifest "$broken_manifest" >/dev/null 2>&1; then
+  echo "FAIL: guard accepted a current schema missing narrowRoadEncodeData" >&2
+  exit 1
+fi
+
+echo "PASS: upstream interface guard rejects a missing encoded-video alias"
 
 nested_op_root="$tmpdir/openpilot-nested"
 nested_manifest="$tmpdir/nested-manifest.json"
