@@ -7,7 +7,7 @@ prod_root="${COMMAVIEW_BENCH_OP_ROOT:-/data/openpilot}"
 replay_root="${COMMAVIEW_BENCH_REPLAY_ROOT:-/data/openpilot-dev}"
 results="${COMMAVIEW_BENCH_RESULTS:-/data/commaview-bench/results/native-pipeline}"
 sessions=(cv-sensord cv-encoderd cv-camerad cv-replay cv-ui)
-video_services="narrowRoadEncodeData,wideRoadEncodeData,cabinEncodeData,livestreamNarrowRoadEncodeData,livestreamWideRoadEncodeData,livestreamCabinEncodeData"
+telemetry_services="modelV2,controlsState,onroadEvents,extrinsicsCalibration,radarState,deviceState,pandaStates,carParams,driverMonitoringState,carState,driverStateV2,managerState,selfdriveState,longitudinalPlan,gpsLocationExternal,carOutput,carControl,vehicleParameters,modelManagerSP,selfdriveStateSP,longitudinalPlanSP,backupManagerSP,gpsLocation,lateralTorqueParameters,carStateSP,liveMapDataSP,carParamsSP,lateralDelay"
 
 usage() {
   echo "Usage: comma4-native-pipeline.sh start <dongle|route> | stop | status" >&2
@@ -36,11 +36,12 @@ case "$action" in
     stop_sessions
     mkdir -p "$results"
 
-    # Physical cameras and stock encoderd provide continuous production-rate
-    # video. Replay is state/telemetry only; --all includes manager health needed
-    # by the stock UI. Keep replay at real time for a production-like baseline.
+    # Physical cameras and stock encoderd own every camera/video service. Replay
+    # is limited to the non-camera services consumed by the stock UI/exporter;
+    # replaying all route services conflicts with live publishers and overloads
+    # the bench at real time.
     tmux new-session -d -s cv-sensord "cd '$prod_root' && /usr/local/venv/bin/python -m openpilot.system.sensord.sensord 2>&1 | tee '$results/sensord.log'"
-    tmux new-session -d -s cv-replay "cd '$replay_root' && . .venv/bin/activate && ./openpilot/tools/replay/replay '$route' --data_dir /data/media/0/realdata -x 1 --no-vipc --all -b '$video_services'"
+    tmux new-session -d -s cv-replay "cd '$replay_root' && . .venv/bin/activate && ./openpilot/tools/replay/replay '$route' --data_dir /data/media/0/realdata -x 1 --no-vipc -a '$telemetry_services'"
     sleep 2
     tmux new-session -d -s cv-encoderd "cd '$prod_root' && ./openpilot/system/loggerd/encoderd 2>&1 | tee '$results/encoderd.log'"
     tmux new-session -d -s cv-camerad "cd '$prod_root' && ./openpilot/system/camerad/camerad 2>&1 | tee '$results/camerad.log'"
