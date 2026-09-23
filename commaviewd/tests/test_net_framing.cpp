@@ -1,8 +1,10 @@
 #include "framing.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <sys/socket.h>
@@ -177,10 +179,16 @@ static void test_send_iov_handles_partial_iovec_boundaries() {
   assert(sender.bytes == expected);
 }
 
-static void fill_socket_until_backpressure(int fd) {
+static size_t fill_socket_until_backpressure(int fd) {
   std::vector<uint8_t> filler(4096, 0xEE);
-  while (::send(fd, filler.data(), filler.size(), MSG_DONTWAIT | MSG_NOSIGNAL) > 0) {}
+  size_t bytes_sent = 0;
+  while (true) {
+    const ssize_t n = ::send(fd, filler.data(), filler.size(), MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (n <= 0) break;
+    bytes_sent += static_cast<size_t>(n);
+  }
   assert(errno == EAGAIN || errno == EWOULDBLOCK);
+  return bytes_sent;
 }
 
 static std::thread drain_socket_after_delay(int fd) {
@@ -251,13 +259,25 @@ static void test_partial_frame_send_recovers_without_breaking_framing() {
   assert(setsockopt(fds[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) == 0);
 
   std::vector<uint8_t> payload(256 * 1024, 0x5A);
+  const size_t filler_bytes = 0;
+  std::vector<uint8_t> recovered_frame;
   std::thread drainer([&] {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     std::vector<uint8_t> buffer(64 * 1024);
     size_t received = 0;
-    while (received < payload.size() + 4) {
+    const size_t expected = filler_bytes + payload.size() + 4;
+    recovered_frame.reserve(payload.size() + 4);
+    while (received < expected) {
       const ssize_t n = ::recv(fds[1], buffer.data(), buffer.size(), 0);
       if (n <= 0) break;
+      const size_t chunk_start = received;
+      const size_t chunk_end = received + static_cast<size_t>(n);
+      if (chunk_end > filler_bytes) {
+        const size_t copy_start = std::max(chunk_start, filler_bytes) - chunk_start;
+        recovered_frame.insert(recovered_frame.end(),
+                               buffer.begin() + static_cast<std::ptrdiff_t>(copy_start),
+                               buffer.begin() + n);
+      }
       received += static_cast<size_t>(n);
     }
   });
@@ -269,11 +289,23 @@ static void test_partial_frame_send_recovers_without_breaking_framing() {
       commaview::net::SendDeadline::after_micros(1000),
       500000);
 
-  close_socketpair_and_join(fds, &drainer);
+  drainer.join();
   assert(result.status == commaview::net::SendStatus::Ok);
   assert(result.bytes_sent == payload.size() + 4);
   assert(result.partial_recovery_attempted);
   assert(result.partial_recovery_succeeded);
+  assert(recovered_frame.size() == payload.size() + 4);
+  assert(commaview::net::read_be32(recovered_frame.data()) == payload.size());
+  assert(std::equal(payload.begin(), payload.end(), recovered_frame.begin() + 4));
+
+  const std::vector<uint8_t> next_payload{0x11, 0x22, 0x33};
+  assert(commaview::net::send_frame(fds[0], next_payload.data(), next_payload.size()));
+  uint8_t next_frame[7]{};
+  assert(::recv(fds[1], next_frame, sizeof(next_frame), MSG_WAITALL) == sizeof(next_frame));
+  assert(commaview::net::read_be32(next_frame) == next_payload.size());
+  assert(std::equal(next_payload.begin(), next_payload.end(), next_frame + 4));
+
+  close_socketpair_and_join(fds, nullptr);
 }
 
 int main() {
