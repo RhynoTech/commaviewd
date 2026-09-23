@@ -132,8 +132,8 @@ fi
 mkdir -p "$OP_SOURCE_ROOT/cereal/gen/cpp" "$DIST_DIR" "$BUNDLE_LIB_DIR"
 
 VIDEO_SCHEMA_FLAGS=()
-if grep -Eq 'narrowRoadEncodeData|cabinEncodeData' "$OP_SOURCE_ROOT/cereal/log.capnp"; then
-  if ! grep -Eq 'narrowRoadEncodeData' "$OP_SOURCE_ROOT/cereal/log.capnp" || ! grep -Eq 'cabinEncodeData' "$OP_SOURCE_ROOT/cereal/log.capnp"; then
+if grep -Eq 'narrowRoadEncodeData|cabinEncodeData' "$OP_SOURCE_ROOT/cereal/services.py"; then
+  if ! grep -Eq 'narrowRoadEncodeData' "$OP_SOURCE_ROOT/cereal/services.py" || ! grep -Eq 'cabinEncodeData' "$OP_SOURCE_ROOT/cereal/services.py"; then
     echo "[ERR] Upstream encoded-video schema is only partially renamed" >&2
     exit 2
   fi
