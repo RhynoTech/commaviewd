@@ -38,9 +38,9 @@ case "$action" in
 
     # Physical cameras and stock encoderd provide continuous production-rate
     # video. Replay is state/telemetry only; --all includes manager health needed
-    # by the stock UI, while the slower rate keeps this route continuous >30 min.
+    # by the stock UI. Keep replay at real time for a production-like baseline.
     tmux new-session -d -s cv-sensord "cd '$prod_root' && /usr/local/venv/bin/python -m openpilot.system.sensord.sensord 2>&1 | tee '$results/sensord.log'"
-    tmux new-session -d -s cv-replay "cd '$replay_root' && . .venv/bin/activate && ./openpilot/tools/replay/replay '$route' --data_dir /data/media/0/realdata -x 0.25 --no-vipc --all -b '$video_services'"
+    tmux new-session -d -s cv-replay "cd '$replay_root' && . .venv/bin/activate && ./openpilot/tools/replay/replay '$route' --data_dir /data/media/0/realdata -x 1 --no-vipc --all -b '$video_services'"
     sleep 2
     tmux new-session -d -s cv-encoderd "cd '$prod_root' && ./openpilot/system/loggerd/encoderd 2>&1 | tee '$results/encoderd.log'"
     tmux new-session -d -s cv-camerad "cd '$prod_root' && ./openpilot/system/camerad/camerad 2>&1 | tee '$results/camerad.log'"
