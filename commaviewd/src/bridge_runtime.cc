@@ -26,6 +26,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -666,11 +667,95 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   uint64_t wrong_union_count = 0;
   uint64_t suppressed_video_count = 0;
   commaview::video::VideoFrameQueue video_queue(VIDEO_FRAME_QUEUE_CAPACITY);
+  std::mutex video_queue_mutex;
+  std::condition_variable video_queue_cv;
+  std::atomic<bool> video_sender_disconnect_requested{false};
   uint64_t last_queue_drop_count = 0;
   uint64_t last_keyframe_wait_drop_count = 0;
   auto t0 = std::chrono::steady_clock::now();
   AlignedBuffer aligned_buf;
   ClientControlState control_state;
+
+  // Keep msgq ingestion independent from socket backpressure. Each connected camera owns
+  // this bounded queue and sender thread, so a slow cabin client cannot stop road/wide
+  // subscribers from consuming their latest conflated encoder frames.
+  std::thread video_sender_thread([&] {
+    while (g_running && !video_sender_disconnect_requested.load()) {
+      std::optional<commaview::video::PendingVideoFrame> queued;
+      {
+        std::unique_lock<std::mutex> queue_lock(video_queue_mutex);
+        video_queue_cv.wait_for(queue_lock, std::chrono::milliseconds(50), [&] {
+          return video_sender_disconnect_requested.load() || video_queue.size() > 0;
+        });
+        if (video_sender_disconnect_requested.load()) break;
+        queued = video_queue.pop_next();
+        note_video_queue_deltas(
+            video_queue.drop_count() - last_queue_drop_count,
+            video_queue.keyframe_wait_drop_count() - last_keyframe_wait_drop_count,
+            video_queue.high_watermark());
+        last_queue_drop_count = video_queue.drop_count();
+        last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
+      }
+      if (!queued.has_value()) continue;
+
+      note_video_queued_frame_age(runtime_now_ms() - queued->created_at_ms);
+      const uint32_t queued_header_len = static_cast<uint32_t>(queued->codec_header.size());
+      commaview::video::VideoFrameForChunking frame;
+      frame.sequence = chunk_wire_sequence(queued->sequence);
+      frame.timestamp_ns = queued->timestamp_ns;
+      frame.width = queued->width;
+      frame.height = queued->height;
+      frame.is_keyframe = queued->is_keyframe;
+      frame.codec_header = queued->codec_header;
+      frame.data = queued->data;
+
+      const auto chunks = commaview::video::plan_video_chunks(
+          frame,
+          commaview::video::DEFAULT_VIDEO_CHUNK_BYTES);
+
+      bool frame_sent_successfully = true;
+      for (const auto& chunk : chunks) {
+        const auto payload = commaview::video::encode_video_chunk_payload(chunk);
+        const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);
+        note_video_chunk_send_result(video_service, chunk, send_result);
+        if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
+          {
+            std::lock_guard<std::mutex> queue_lock(video_queue_mutex);
+            video_queue.note_backpressure_without_partial_send();
+          }
+          note_video_zero_byte_backpressure_recovered();
+          note_video_frame_abandoned(video_service, queued->sequence, chunk.chunk_index);
+          frame_sent_successfully = false;
+          break;
+        }
+        if (send_result.status != commaview::net::SendStatus::Ok) {
+          note_runtime_peer_disconnect(video_service, "video_chunk_send", send_result);
+          video_sender_disconnect_requested.store(true);
+          telemetry_disconnect_requested.store(true);
+          shutdown(client_fd, SHUT_RDWR);
+          frame_sent_successfully = false;
+          break;
+        }
+      }
+
+      if (!frame_sent_successfully) continue;
+
+      frame_count++;
+      if (frame_count <= 5 || (frame_count % 200) == 0) {
+        auto now = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double>(now - t0).count();
+        const double fps = elapsed > 0 ? frame_count / elapsed : 0.0;
+        printf("[%s] frames=%llu fps=%.1f header=%u data=%zu key=%d\n",
+               video_service,
+               static_cast<unsigned long long>(frame_count),
+               fps,
+               queued_header_len,
+               queued->data.size(),
+               queued->is_keyframe ? 1 : 0);
+        fflush(stdout);
+      }
+    }
+  });
 
   while (g_running) {
     const auto loop_started = std::chrono::steady_clock::now();
@@ -684,7 +769,8 @@ static void handle_video_client(int client_fd, const char* video_service, int po
       telemetry_enabled_for_client.store(control_state.telemetry_on_video);
     }
 
-    if (include_telemetry && telemetry_disconnect_requested.load()) break;
+    if (video_sender_disconnect_requested.load() ||
+        (include_telemetry && telemetry_disconnect_requested.load())) break;
 
     int video_poll_ms = 20;
     auto ready = video_poller->poll(video_poll_ms);
@@ -761,72 +847,17 @@ static void handle_video_client(int client_fd, const char* video_service, int po
           pending.height = video_height;
           pending.codec_header.assign(header.begin(), header.begin() + header_len);
           pending.data.assign(data.begin(), data.begin() + data_len);
-          video_queue.push(std::move(pending));
-          note_video_queue_deltas(
-              video_queue.drop_count() - last_queue_drop_count,
-              video_queue.keyframe_wait_drop_count() - last_keyframe_wait_drop_count,
-              video_queue.high_watermark());
-          last_queue_drop_count = video_queue.drop_count();
-          last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
-
-          while (auto queued = video_queue.pop_next()) {
+          {
+            std::lock_guard<std::mutex> queue_lock(video_queue_mutex);
+            video_queue.push(std::move(pending));
             note_video_queue_deltas(
                 video_queue.drop_count() - last_queue_drop_count,
                 video_queue.keyframe_wait_drop_count() - last_keyframe_wait_drop_count,
                 video_queue.high_watermark());
             last_queue_drop_count = video_queue.drop_count();
             last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
-            note_video_queued_frame_age(runtime_now_ms() - queued->created_at_ms);
-            const uint32_t queued_header_len = static_cast<uint32_t>(queued->codec_header.size());
-            commaview::video::VideoFrameForChunking frame;
-            frame.sequence = chunk_wire_sequence(queued->sequence);
-            frame.timestamp_ns = queued->timestamp_ns;
-            frame.width = queued->width;
-            frame.height = queued->height;
-            frame.is_keyframe = queued->is_keyframe;
-            frame.codec_header = queued->codec_header;
-            frame.data = queued->data;
-
-            const auto chunks = commaview::video::plan_video_chunks(
-                frame,
-                commaview::video::DEFAULT_VIDEO_CHUNK_BYTES);
-
-            bool frame_sent_successfully = true;
-            for (const auto& chunk : chunks) {
-              const auto payload = commaview::video::encode_video_chunk_payload(chunk);
-              const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);
-              note_video_chunk_send_result(video_service, chunk, send_result);
-              if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
-                video_queue.note_backpressure_without_partial_send();
-                note_video_zero_byte_backpressure_recovered();
-                note_video_frame_abandoned(video_service, queued->sequence, chunk.chunk_index);
-                frame_sent_successfully = false;
-                break;
-              }
-              if (send_result.status != commaview::net::SendStatus::Ok) {
-                note_runtime_peer_disconnect(video_service, "video_chunk_send", send_result);
-                shutdown(client_fd, SHUT_RDWR);
-                goto disconnect;
-              }
-            }
-
-            if (!frame_sent_successfully) break;
-
-            frame_count++;
-            if (frame_count <= 5 || (frame_count % 200) == 0) {
-              auto now = std::chrono::steady_clock::now();
-              const double elapsed = std::chrono::duration<double>(now - t0).count();
-              const double fps = elapsed > 0 ? frame_count / elapsed : 0.0;
-              printf("[%s] frames=%llu fps=%.1f header=%u data=%zu key=%d\n",
-                     video_service,
-                     static_cast<unsigned long long>(frame_count),
-                     fps,
-                     queued_header_len,
-                     queued->data.size(),
-                     queued->is_keyframe ? 1 : 0);
-              fflush(stdout);
-            }
           }
+          video_queue_cv.notify_one();
         }
       } catch (const std::exception& e) {
         parse_error_count++;
@@ -850,7 +881,8 @@ static void handle_video_client(int client_fd, const char* video_service, int po
         std::chrono::steady_clock::now() - loop_started);
     note_runtime_loop_sample(false, static_cast<uint64_t>(video_loop_elapsed.count()));
 
-    if (include_telemetry && telemetry_disconnect_requested.load()) {
+    if (video_sender_disconnect_requested.load() ||
+        (include_telemetry && telemetry_disconnect_requested.load())) {
       break;
     }
   }
@@ -861,7 +893,10 @@ disconnect:
   fflush(stdout);
 
   telemetry_disconnect_requested.store(true);
+  video_sender_disconnect_requested.store(true);
+  video_queue_cv.notify_all();
   shutdown(client_fd, SHUT_RDWR);
+  if (video_sender_thread.joinable()) video_sender_thread.join();
   if (telemetry_thread.joinable()) telemetry_thread.join();
   active_counter.fetch_sub(1);
   close(client_fd);

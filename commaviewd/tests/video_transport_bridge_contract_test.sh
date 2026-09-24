@@ -29,6 +29,10 @@ bridge_required = {
     'encoded chunk send path': 'const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);',
     'chunked frame abandon accounting': 'frame_abandon_count',
     'video queue instance': 'commaview::video::VideoFrameQueue video_queue',
+    'per-client asynchronous video sender': 'std::thread video_sender_thread',
+    'bounded queue wakeup': 'video_queue_cv.notify_one()',
+    'sender shutdown wakeup': 'video_queue_cv.notify_all()',
+    'sender joined before client teardown': 'if (video_sender_thread.joinable()) video_sender_thread.join();',
     'HEVC IDR classification': 'commaview::video::contains_hevc_idr',
     'queue push before send': 'video_queue.push',
     'queue pop send path': 'video_queue.pop_next',
@@ -58,6 +62,20 @@ if not re.search(
     re.S,
 ):
     raise SystemExit('bridge video send path must plan chunks, encode each chunk payload, then send encoded payload bytes')
+
+if not re.search(
+    r'std::thread\s+video_sender_thread\s*\(\s*\[&\]\s*\{.*?video_queue\.pop_next\s*\(\s*\).*?send_frame_locked\s*\(\s*client_fd',
+    bridge,
+    re.S,
+):
+    raise SystemExit('each video client must drain its bounded queue from a dedicated sender thread')
+
+if not re.search(
+    r'video_queue\.push\s*\(\s*std::move\s*\(\s*pending\s*\)\s*\)\s*;.*?video_queue_cv\.notify_one\s*\(\s*\)',
+    bridge,
+    re.S,
+):
+    raise SystemExit('msgq ingestion must enqueue and wake the dedicated sender without sending inline')
 
 if not re.search(
     r'if\s*\(\s*send_result\.status\s*==\s*commaview::net::SendStatus::Backpressure\s*&&\s*send_result\.bytes_sent\s*==\s*0\s*\)\s*\{[^}]*video_queue\.note_backpressure_without_partial_send\s*\(',
