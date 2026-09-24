@@ -51,15 +51,18 @@ struct SupportLogFileSpec {
 };
 
 std::vector<SupportLogFileSpec> support_log_files() {
+  // Put the small structured snapshots first. Large rolling logs can consume the
+  // total response cap, but a support bundle must always retain the current
+  // bounded counters and effective configuration needed to diagnose the run.
   std::vector<SupportLogFileSpec> files = {
-      {"commaviewd-bridge.log", "/data/commaview/logs/commaviewd-bridge.log", true, false},
-      {"commaviewd-control.log", "/data/commaview/logs/commaviewd-control.log", true, false},
-      {"onroad-ui-export-startup.log", "/data/commaview/logs/onroad-ui-export-startup.log", true, false},
-      {"runtime-run-events.jsonl", "/data/commaview/logs/runtime-run-events.jsonl", true, false},
       {"telemetry-stats.json", "/data/commaview/run/telemetry-stats.json", true, false},
       {"runtime-debug-effective.json", "/data/commaview/run/runtime-debug-effective.json", true, false},
       {"onroad-ui-export-status.json", "/data/commaview/run/onroad-ui-export-status.json", true, false},
       {"last-restart-reason.txt", "/data/commaview/run/last-restart-reason.txt", true, false},
+      {"runtime-run-events.jsonl", "/data/commaview/logs/runtime-run-events.jsonl", true, false},
+      {"commaviewd-bridge.log", "/data/commaview/logs/commaviewd-bridge.log", true, false},
+      {"commaviewd-control.log", "/data/commaview/logs/commaviewd-control.log", true, false},
+      {"onroad-ui-export-startup.log", "/data/commaview/logs/onroad-ui-export-startup.log", true, false},
   };
   const std::array<std::string, 4> rotated = {{
       "commaviewd-bridge.log",

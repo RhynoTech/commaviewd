@@ -36,6 +36,12 @@ grep -Fq '/commaview/runtime-debug/defaults' "$CONTROL_CPP" || { echo "FAIL: mis
 grep -Fq '/commaview/runtime-debug/apply' "$CONTROL_CPP" || { echo "FAIL: missing /commaview/runtime-debug/apply route"; exit 1; }
 grep -Fq "runtime_debug_write_response" "$CONTROL_CPP" || { echo "FAIL: control mode missing runtime debug write handler"; exit 1; }
 grep -Fq "runtime_debug_apply_response" "$CONTROL_CPP" || { echo "FAIL: control mode missing runtime debug apply handler"; exit 1; }
+structured_stats_line="$(grep -nF '{"telemetry-stats.json"' "$CONTROL_CPP" | head -1 | cut -d: -f1)"
+rolling_log_line="$(grep -nF '{"runtime-run-events.jsonl"' "$CONTROL_CPP" | head -1 | cut -d: -f1)"
+[ -n "$structured_stats_line" ] && [ -n "$rolling_log_line" ] && [ "$structured_stats_line" -lt "$rolling_log_line" ] || {
+  echo "FAIL: support bundles must include bounded structured counters before capped rolling logs"
+  exit 1
+}
 grep -Fq "X-CommaView-Token" "$SERVER_CPP" || { echo "FAIL: missing auth token header handling"; exit 1; }
 ! grep -Fq "/tailscale/" "$CONTROL_CPP" || { echo "FAIL: control mode still exposes tailscale routes"; exit 1; }
 ! grep -Fq '"tailscale":' "$CONTROL_CPP" || { echo "FAIL: /commaview/status should not expose tailscale state anymore"; exit 1; }
