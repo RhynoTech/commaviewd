@@ -33,6 +33,8 @@ bridge_required = {
     'bounded queue wakeup': 'video_queue_cv.notify_one()',
     'sender shutdown wakeup': 'video_queue_cv.notify_all()',
     'sender joined before client teardown': 'if (video_sender_thread.joinable()) video_sender_thread.join();',
+    'isolated video partial recovery budget': 'VIDEO_PARTIAL_SEND_RECOVERY_BUDGET_MICROS',
+    'separate telemetry partial recovery budget': 'TELEMETRY_PARTIAL_SEND_RECOVERY_BUDGET_MICROS',
     'HEVC IDR classification': 'commaview::video::contains_hevc_idr',
     'queue push before send': 'video_queue.push',
     'queue pop send path': 'video_queue.pop_next',

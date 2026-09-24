@@ -39,7 +39,7 @@ void test_truncated_hevc_nal_header_is_not_keyframe() {
   assert(!commaview::video::contains_hevc_idr(payload.data(), payload.size()));
 }
 
-void test_queue_keeps_latest_when_full() {
+void test_queue_overflow_waits_for_next_keyframe() {
   commaview::video::VideoFrameQueue queue(2);
   queue.push(frame(1, true));
   queue.push(frame(2, false));
@@ -47,9 +47,14 @@ void test_queue_keeps_latest_when_full() {
 
   assert(queue.size() == 2);
   assert(queue.drop_count() == 1);
+  assert(!queue.pop_next().has_value());
+  assert(queue.keyframe_wait_drop_count() == 2);
+
+  queue.push(frame(4, true));
   const auto next = queue.pop_next();
   assert(next.has_value());
-  assert(next->sequence == 2);
+  assert(next->sequence == 4);
+  assert(next->is_keyframe);
 }
 
 void test_pressure_waits_for_keyframe_after_drops() {
@@ -96,7 +101,7 @@ int main() {
   test_detects_idr_n_lp();
   test_non_idr_is_not_keyframe();
   test_truncated_hevc_nal_header_is_not_keyframe();
-  test_queue_keeps_latest_when_full();
+  test_queue_overflow_waits_for_next_keyframe();
   test_pressure_waits_for_keyframe_after_drops();
   test_zero_byte_chunk_backpressure_abandons_frame_and_requires_keyframe_resume();
   return 0;

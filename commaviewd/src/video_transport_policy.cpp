@@ -43,10 +43,15 @@ VideoFrameQueue::VideoFrameQueue(size_t capacity)
     : capacity_(std::max<size_t>(capacity, 1)) {}
 
 void VideoFrameQueue::push(PendingVideoFrame frame) {
+  bool dropped_for_capacity = false;
   while (frames_.size() >= capacity_) {
     frames_.pop_front();
     drop_count_ += 1;
+    dropped_for_capacity = true;
   }
+  // HEVC frames after an omitted queued frame may depend on the missing frame. Keep the
+  // socket connected, but do not resume delivery until a self-contained keyframe arrives.
+  if (dropped_for_capacity) waiting_for_keyframe_ = true;
   frames_.push_back(std::move(frame));
   high_watermark_ = std::max(high_watermark_, frames_.size());
 }
