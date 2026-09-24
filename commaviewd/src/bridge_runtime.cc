@@ -119,14 +119,21 @@ static int g_telemetry_emit_ms = TELEMETRY_EMIT_MS_DEFAULT;
 static const char* VIDEO_SERVICES_PROD[] = {
   "narrowRoadEncodeData", "wideRoadEncodeData", "cabinEncodeData"
 };
+static const char* VIDEO_SERVICES_LIVESTREAM[] = {
+  "livestreamNarrowRoadEncodeData", "livestreamWideRoadEncodeData", "livestreamCabinEncodeData"
+};
 #else
 static const char* VIDEO_SERVICES_PROD[] = {
   "roadEncodeData", "wideRoadEncodeData", "driverEncodeData"
+};
+static const char* VIDEO_SERVICES_LIVESTREAM[] = {
+  "livestreamRoadEncodeData", "livestreamWideRoadEncodeData", "livestreamDriverEncodeData"
 };
 #endif
 
 
 static std::atomic<bool> g_running{true};
+static bool g_livestream_video_enabled = false;
 
 
 static std::atomic<int> g_active_road{0};
@@ -141,7 +148,7 @@ static std::atomic<int>& active_counter_for_port(int port) {
 }
 
 static cereal::Event::Which expected_video_which_for_port(int port) {
-  return commaview::video::expected_video_which_for_port(port, false);
+  return commaview::video::expected_video_which_for_port(port, g_livestream_video_enabled);
 }
 
 
@@ -150,9 +157,10 @@ static cereal::Event::Which expected_video_which_for_port(int port) {
 
 
 static const char* compiled_video_service_for_port(int port) {
-  if (port == PORT_ROAD) return VIDEO_SERVICES_PROD[0];
-  if (port == PORT_WIDE) return VIDEO_SERVICES_PROD[1];
-  return VIDEO_SERVICES_PROD[2];
+  const char** services = g_livestream_video_enabled ? VIDEO_SERVICES_LIVESTREAM : VIDEO_SERVICES_PROD;
+  if (port == PORT_ROAD) return services[0];
+  if (port == PORT_WIDE) return services[1];
+  return services[2];
 }
 
 static size_t queue_size_for_port(int port) {
@@ -608,7 +616,7 @@ static int create_server(int port) {
 }
 
 static cereal::EncodeData::Reader read_encode_data(cereal::Event::Reader event, int port) {
-  return commaview::video::read_encode_data(event, port, false);
+  return commaview::video::read_encode_data(event, port, g_livestream_video_enabled);
 }
 
 static void handle_video_client(int client_fd, const char* video_service, int port) {
@@ -839,9 +847,12 @@ static void handle_video_client(int client_fd, const char* video_service, int po
             continue;
           }
 
+          const auto contains_idr = g_livestream_video_enabled
+              ? commaview::video::contains_h264_idr
+              : commaview::video::contains_hevc_idr;
           const bool is_keyframe =
-              commaview::video::contains_hevc_idr(header.begin(), header_len) ||
-              commaview::video::contains_hevc_idr(data.begin(), data_len);
+              contains_idr(header.begin(), header_len) ||
+              contains_idr(data.begin(), data_len);
           commaview::video::PendingVideoFrame pending;
           pending.sequence = ++parsed_frame_count;
           pending.is_keyframe = is_keyframe;
@@ -1117,14 +1128,22 @@ int commaview_bridge_main(int argc, char* argv[]) {
 
   (void)argc;
   (void)argv;
+  const char* source = std::getenv("COMMAVIEW_VIDEO_SOURCE");
+  if (source != nullptr && source[0] != '\0' && std::strcmp(source, "full") != 0 &&
+      std::strcmp(source, "livestream") != 0) {
+    fprintf(stderr, "unsupported COMMAVIEW_VIDEO_SOURCE: expected full or livestream\n");
+    return 2;
+  }
+  g_livestream_video_enabled = source != nullptr && std::strcmp(source, "livestream") == 0;
   initialize_runtime_state_once();
   append_runtime_run_event("process_start");
 
   g_ui_export_socket = std::make_unique<commaview::ui_export::SocketServer>();
   const bool ui_export_socket_ready = g_ui_export_socket->start();
 
-  const char** video_services = VIDEO_SERVICES_PROD;
-  printf("CommaView Bridge v3.3.8-safe-bundle (C++) [VIDEO+TELEMETRY][RAW_ONLY_DEFAULT][DIRECT_V2_UI_EXPORT_DEFAULT][UI_SOCKET_PREFERRED=%s][META_MODE=raw-only][EMIT_MS=%d]\n",
+  const char** video_services = g_livestream_video_enabled ? VIDEO_SERVICES_LIVESTREAM : VIDEO_SERVICES_PROD;
+  printf("CommaView Bridge v3.3.8-safe-bundle (C++) [VIDEO+TELEMETRY][VIDEO_SOURCE=%s][RAW_ONLY_DEFAULT][DIRECT_V2_UI_EXPORT_DEFAULT][UI_SOCKET_PREFERRED=%s][META_MODE=raw-only][EMIT_MS=%d]\n",
+         g_livestream_video_enabled ? "livestream-h264" : "full-hevc",
          ui_export_socket_ready ? "on" : "off",
          g_telemetry_emit_ms);
   fflush(stdout);

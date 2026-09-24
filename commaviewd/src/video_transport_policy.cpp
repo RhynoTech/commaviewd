@@ -39,6 +39,21 @@ bool contains_hevc_idr(const uint8_t* data, size_t len) {
   return false;
 }
 
+bool contains_h264_idr(const uint8_t* data, size_t len) {
+  if (data == nullptr || len < 4) return false;
+
+  for (size_t pos = 0; pos + 4 <= len; ++pos) {
+    size_t start_code_len = 0;
+    if (!is_start_code(data, len, pos, &start_code_len)) continue;
+    const size_t nal_header = pos + start_code_len;
+    if (nal_header >= len) continue;
+    const uint8_t nal_type = static_cast<uint8_t>(data[nal_header] & 0x1f);
+    if (nal_type == 5) return true;
+  }
+
+  return false;
+}
+
 VideoFrameQueue::VideoFrameQueue(size_t capacity)
     : capacity_(std::max<size_t>(capacity, 1)) {}
 

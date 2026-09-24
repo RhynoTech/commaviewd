@@ -39,6 +39,28 @@ void test_truncated_hevc_nal_header_is_not_keyframe() {
   assert(!commaview::video::contains_hevc_idr(payload.data(), payload.size()));
 }
 
+void test_h264_idr_after_parameter_sets_is_keyframe() {
+  const std::vector<uint8_t> payload = {
+      0x00, 0x00, 0x00, 0x01, 0x67, 0xaa,
+      0x00, 0x00, 0x01, 0x68, 0xbb,
+      0x00, 0x00, 0x00, 0x01, 0x65, 0xcc,
+  };
+  assert(commaview::video::contains_h264_idr(payload.data(), payload.size()));
+}
+
+void test_h264_non_idr_is_not_keyframe() {
+  const std::vector<uint8_t> payload = {
+      0x00, 0x00, 0x01, 0x67, 0xaa,
+      0x00, 0x00, 0x01, 0x41, 0xbb,
+  };
+  assert(!commaview::video::contains_h264_idr(payload.data(), payload.size()));
+}
+
+void test_minimal_h264_idr_is_keyframe() {
+  const std::vector<uint8_t> payload = {0x00, 0x00, 0x01, 0x65};
+  assert(commaview::video::contains_h264_idr(payload.data(), payload.size()));
+}
+
 void test_queue_overflow_waits_for_next_keyframe() {
   commaview::video::VideoFrameQueue queue(2);
   queue.push(frame(1, true));
@@ -101,6 +123,9 @@ int main() {
   test_detects_idr_n_lp();
   test_non_idr_is_not_keyframe();
   test_truncated_hevc_nal_header_is_not_keyframe();
+  test_h264_idr_after_parameter_sets_is_keyframe();
+  test_h264_non_idr_is_not_keyframe();
+  test_minimal_h264_idr_is_keyframe();
   test_queue_overflow_waits_for_next_keyframe();
   test_pressure_waits_for_keyframe_after_drops();
   test_zero_byte_chunk_backpressure_abandons_frame_and_requires_keyframe_resume();

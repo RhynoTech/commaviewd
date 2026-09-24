@@ -151,6 +151,14 @@ Patch safety rules:
 | `commaviewd/scripts/run-unit-tests.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/run-unit-tests.sh` | Builds runtime and compiles/runs C++ unit tests. Env: `OP_ROOT`, compiler env inherited by build script. |
 | `scripts/verify-telemetry-hardening.sh` | `bash scripts/verify-telemetry-hardening.sh` | Grep-based guard that raw-only telemetry hardening remains in place and old dev/debug flags/env are absent. No flags. |
 
+Experimental video-source selection: the bridge defaults to the existing full
+HEVC encoded services. `COMMAVIEW_VIDEO_SOURCE=livestream` instead subscribes
+to the stock H.264 livestream encoded services on the same camera ports; it
+does **not** start `encoderd --stream` or change the archival encoder. This mode
+requires an H.264-capable client and a separately guarded stock livestream
+encoder, and is not compatible with the current HEVC-only Android preview.
+Unknown source values fail startup.
+
 ## Canary/upstream helper
 
 ```bash

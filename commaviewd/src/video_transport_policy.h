@@ -9,6 +9,7 @@
 namespace commaview::video {
 
 bool contains_hevc_idr(const uint8_t* data, size_t len);
+bool contains_h264_idr(const uint8_t* data, size_t len);
 
 struct PendingVideoFrame {
   uint64_t sequence = 0;
