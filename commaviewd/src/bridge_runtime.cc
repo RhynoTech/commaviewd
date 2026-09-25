@@ -302,9 +302,24 @@ static void note_runtime_loop(RuntimeLoopStats* loop, uint64_t elapsed_micros, i
 }
 
 static void write_text_file_best_effort(const std::string& path, const std::string& body) {
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) return;
-  out << body;
+  // Stats/config flushes can be requested by different runtime threads. Never
+  // expose a truncated or interleaved JSON document to the watchdog.
+  static std::mutex file_write_mutex;
+  std::lock_guard<std::mutex> lock(file_write_mutex);
+  const std::string temporary_path = path + ".tmp";
+  {
+    std::ofstream out(temporary_path, std::ios::trunc);
+    if (!out) return;
+    out << body;
+    out.close();
+    if (!out) {
+      unlink(temporary_path.c_str());
+      return;
+    }
+  }
+  if (std::rename(temporary_path.c_str(), path.c_str()) != 0) {
+    unlink(temporary_path.c_str());
+  }
 }
 
 static void append_runtime_run_event(const std::string& event,
