@@ -517,9 +517,9 @@ static void note_video_chunk_send_result(const char* /*stream*/,
       runtime_now_ms());
 }
 
-// Snapshot only after a partially written frame fails. Normal frames incur no
-// TCP_INFO/ioctl work, and the snapshot is persisted before the socket closes.
-static void note_video_tcp_failure_snapshot(int fd, const char* stream) {
+// Snapshot at the first sign of delivery pressure, while the socket is still
+// open. Call sites bound this to a few samples per client, not one per frame.
+static void note_video_tcp_pressure_snapshot(int fd, const char* stream, const char* reason) {
   struct tcp_info info {};
   socklen_t info_len = sizeof(info);
   const bool valid = getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &info_len) == 0;
@@ -532,6 +532,7 @@ static void note_video_tcp_failure_snapshot(int fd, const char* stream) {
     auto& stats = g_runtime_state.video_send;
     stats.last_tcp_snapshot_valid = valid;
     stats.last_tcp_stream = stream == nullptr ? "" : stream;
+    stats.last_tcp_reason = reason == nullptr ? "" : reason;
     stats.last_tcp_snapshot_at_ms = runtime_now_ms();
     stats.last_tcp_rtt_micros = valid ? info.tcpi_rtt : 0;
     stats.last_tcp_total_retrans = valid ? info.tcpi_total_retrans : 0;
@@ -540,6 +541,16 @@ static void note_video_tcp_failure_snapshot(int fd, const char* stream) {
     stats.last_tcp_send_queue_bytes = send_queue_bytes;
     stats.last_tcp_not_sent_bytes = not_sent_bytes;
   }
+  printf("[%s] tcp_pressure reason=%s rtt_us=%u retrans=%u unacked=%u cwnd=%u sendq=%d notsent=%d\n",
+         stream == nullptr ? "unknown" : stream,
+         reason == nullptr ? "unknown" : reason,
+         valid ? info.tcpi_rtt : 0,
+         valid ? info.tcpi_total_retrans : 0,
+         valid ? info.tcpi_unacked : 0,
+         valid ? info.tcpi_snd_cwnd : 0,
+         send_queue_bytes,
+         not_sent_bytes);
+  fflush(stdout);
   flush_runtime_state();
 }
 
@@ -711,6 +722,9 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   std::mutex video_queue_mutex;
   std::condition_variable video_queue_cv;
   std::atomic<bool> video_sender_disconnect_requested{false};
+  std::atomic<bool> queue_drop_tcp_snapshot_taken{false};
+  std::atomic<bool> slow_send_tcp_snapshot_taken{false};
+  std::atomic<bool> zero_byte_tcp_snapshot_taken{false};
   uint64_t last_queue_drop_count = 0;
   uint64_t last_keyframe_wait_drop_count = 0;
   auto t0 = std::chrono::steady_clock::now();
@@ -759,6 +773,16 @@ static void handle_video_client(int client_fd, const char* video_service, int po
         const auto payload = commaview::video::encode_video_chunk_payload(chunk);
         const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);
         note_video_chunk_send_result(video_service, chunk, send_result);
+        if (send_result.status == commaview::net::SendStatus::Ok &&
+            send_result.elapsed_micros >= 100000 &&
+            !slow_send_tcp_snapshot_taken.exchange(true)) {
+          note_video_tcp_pressure_snapshot(client_fd, video_service, "slow_send");
+        }
+        if (send_result.status == commaview::net::SendStatus::Backpressure &&
+            send_result.bytes_sent == 0 &&
+            !zero_byte_tcp_snapshot_taken.exchange(true)) {
+          note_video_tcp_pressure_snapshot(client_fd, video_service, "zero_byte_backpressure");
+        }
         if (send_result.status == commaview::net::SendStatus::Backpressure && send_result.bytes_sent == 0) {
           {
             std::lock_guard<std::mutex> queue_lock(video_queue_mutex);
@@ -771,7 +795,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
         }
         if (send_result.status != commaview::net::SendStatus::Ok) {
           if (send_result.bytes_sent > 0) {
-            note_video_tcp_failure_snapshot(client_fd, video_service);
+            note_video_tcp_pressure_snapshot(client_fd, video_service, "partial_send_failure");
           }
           note_runtime_peer_disconnect(video_service, "video_chunk_send", send_result);
           video_sender_disconnect_requested.store(true);
@@ -894,15 +918,20 @@ static void handle_video_client(int client_fd, const char* video_service, int po
           pending.height = video_height;
           pending.codec_header.assign(header.begin(), header.begin() + header_len);
           pending.data.assign(data.begin(), data.begin() + data_len);
+          uint64_t queue_drop_delta = 0;
           {
             std::lock_guard<std::mutex> queue_lock(video_queue_mutex);
             video_queue.push(std::move(pending));
+            queue_drop_delta = video_queue.drop_count() - last_queue_drop_count;
             note_video_queue_deltas(
-                video_queue.drop_count() - last_queue_drop_count,
+                queue_drop_delta,
                 video_queue.keyframe_wait_drop_count() - last_keyframe_wait_drop_count,
                 video_queue.high_watermark());
             last_queue_drop_count = video_queue.drop_count();
             last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
+          }
+          if (queue_drop_delta > 0 && !queue_drop_tcp_snapshot_taken.exchange(true)) {
+            note_video_tcp_pressure_snapshot(client_fd, video_service, "queue_drop");
           }
           video_queue_cv.notify_one();
         }

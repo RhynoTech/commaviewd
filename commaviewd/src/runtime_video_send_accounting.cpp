@@ -104,6 +104,7 @@ std::string video_send_stats_json(const RuntimeVideoSendStats& stats) {
   out << "\"lastAtMs\":" << stats.last_at_ms << ",";
   out << "\"lastTcpSnapshotValid\":" << (stats.last_tcp_snapshot_valid ? "true" : "false") << ",";
   out << "\"lastTcpStream\":\"" << commaview::runtime_debug::json_escape(stats.last_tcp_stream) << "\",";
+  out << "\"lastTcpReason\":\"" << commaview::runtime_debug::json_escape(stats.last_tcp_reason) << "\",";
   out << "\"lastTcpSnapshotAtMs\":" << stats.last_tcp_snapshot_at_ms << ",";
   out << "\"lastTcpRttMicros\":" << stats.last_tcp_rtt_micros << ",";
   out << "\"lastTcpTotalRetrans\":" << stats.last_tcp_total_retrans << ",";

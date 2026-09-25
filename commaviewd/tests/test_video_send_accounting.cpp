@@ -138,6 +138,7 @@ void test_serialized_video_send_json_includes_chunk_accounting() {
   stats.frame_abandon_count = 1;
   stats.last_tcp_snapshot_valid = true;
   stats.last_tcp_stream = "roadEncodeData";
+  stats.last_tcp_reason = "queue_drop";
   stats.last_tcp_rtt_micros = 12345;
   stats.last_tcp_total_retrans = 3;
   stats.last_tcp_send_queue_bytes = 65536;
@@ -152,6 +153,7 @@ void test_serialized_video_send_json_includes_chunk_accounting() {
   assert(json.find("\"partialChunkResetCount\":0") != std::string::npos);
   assert(json.find("\"lastStatus\":\"backpressure\"") != std::string::npos);
   assert(json.find("\"lastTcpSnapshotValid\":true") != std::string::npos);
+  assert(json.find("\"lastTcpReason\":\"queue_drop\"") != std::string::npos);
   assert(json.find("\"lastTcpRttMicros\":12345") != std::string::npos);
   assert(json.find("\"lastTcpTotalRetrans\":3") != std::string::npos);
   assert(json.find("\"lastTcpSendQueueBytes\":65536") != std::string::npos);
