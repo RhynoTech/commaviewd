@@ -34,8 +34,11 @@
 #include <memory>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <linux/sockios.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -514,6 +517,32 @@ static void note_video_chunk_send_result(const char* /*stream*/,
       runtime_now_ms());
 }
 
+// Snapshot only after a partially written frame fails. Normal frames incur no
+// TCP_INFO/ioctl work, and the snapshot is persisted before the socket closes.
+static void note_video_tcp_failure_snapshot(int fd, const char* stream) {
+  struct tcp_info info {};
+  socklen_t info_len = sizeof(info);
+  const bool valid = getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &info_len) == 0;
+  int send_queue_bytes = -1;
+  int not_sent_bytes = -1;
+  if (ioctl(fd, SIOCOUTQ, &send_queue_bytes) != 0) send_queue_bytes = -1;
+  if (ioctl(fd, SIOCOUTQNSD, &not_sent_bytes) != 0) not_sent_bytes = -1;
+  {
+    std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+    auto& stats = g_runtime_state.video_send;
+    stats.last_tcp_snapshot_valid = valid;
+    stats.last_tcp_stream = stream == nullptr ? "" : stream;
+    stats.last_tcp_snapshot_at_ms = runtime_now_ms();
+    stats.last_tcp_rtt_micros = valid ? info.tcpi_rtt : 0;
+    stats.last_tcp_total_retrans = valid ? info.tcpi_total_retrans : 0;
+    stats.last_tcp_unacked = valid ? info.tcpi_unacked : 0;
+    stats.last_tcp_cwnd = valid ? info.tcpi_snd_cwnd : 0;
+    stats.last_tcp_send_queue_bytes = send_queue_bytes;
+    stats.last_tcp_not_sent_bytes = not_sent_bytes;
+  }
+  flush_runtime_state();
+}
+
 static void note_video_frame_abandoned(const char* stream, uint64_t sequence, uint16_t chunk_index) {
   {
     std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
@@ -741,6 +770,9 @@ static void handle_video_client(int client_fd, const char* video_service, int po
           break;
         }
         if (send_result.status != commaview::net::SendStatus::Ok) {
+          if (send_result.bytes_sent > 0) {
+            note_video_tcp_failure_snapshot(client_fd, video_service);
+          }
           note_runtime_peer_disconnect(video_service, "video_chunk_send", send_result);
           video_sender_disconnect_requested.store(true);
           telemetry_disconnect_requested.store(true);

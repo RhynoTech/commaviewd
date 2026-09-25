@@ -35,6 +35,15 @@ struct RuntimeVideoSendStats {
   uint64_t last_bytes_sent = 0;
   uint64_t last_elapsed_micros = 0;
   uint64_t last_at_ms = 0;
+  bool last_tcp_snapshot_valid = false;
+  std::string last_tcp_stream;
+  uint64_t last_tcp_snapshot_at_ms = 0;
+  uint32_t last_tcp_rtt_micros = 0;
+  uint32_t last_tcp_total_retrans = 0;
+  uint32_t last_tcp_unacked = 0;
+  uint32_t last_tcp_cwnd = 0;
+  int64_t last_tcp_send_queue_bytes = -1;
+  int64_t last_tcp_not_sent_bytes = -1;
 };
 
 void note_video_send_result(RuntimeVideoSendStats& stats,

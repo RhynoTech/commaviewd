@@ -101,7 +101,16 @@ std::string video_send_stats_json(const RuntimeVideoSendStats& stats) {
   out << "\"lastErrorName\":\"" << commaview::runtime_debug::json_escape(stats.last_error_name) << "\",";
   out << "\"lastBytesSent\":" << stats.last_bytes_sent << ",";
   out << "\"lastElapsedMicros\":" << stats.last_elapsed_micros << ",";
-  out << "\"lastAtMs\":" << stats.last_at_ms;
+  out << "\"lastAtMs\":" << stats.last_at_ms << ",";
+  out << "\"lastTcpSnapshotValid\":" << (stats.last_tcp_snapshot_valid ? "true" : "false") << ",";
+  out << "\"lastTcpStream\":\"" << commaview::runtime_debug::json_escape(stats.last_tcp_stream) << "\",";
+  out << "\"lastTcpSnapshotAtMs\":" << stats.last_tcp_snapshot_at_ms << ",";
+  out << "\"lastTcpRttMicros\":" << stats.last_tcp_rtt_micros << ",";
+  out << "\"lastTcpTotalRetrans\":" << stats.last_tcp_total_retrans << ",";
+  out << "\"lastTcpUnacked\":" << stats.last_tcp_unacked << ",";
+  out << "\"lastTcpCwnd\":" << stats.last_tcp_cwnd << ",";
+  out << "\"lastTcpSendQueueBytes\":" << stats.last_tcp_send_queue_bytes << ",";
+  out << "\"lastTcpNotSentBytes\":" << stats.last_tcp_not_sent_bytes;
   out << "}";
   return out.str();
 }

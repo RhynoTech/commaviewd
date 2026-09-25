@@ -136,6 +136,12 @@ void test_serialized_video_send_json_includes_chunk_accounting() {
       result(commaview::net::SendStatus::Backpressure, 0),
       1006);
   stats.frame_abandon_count = 1;
+  stats.last_tcp_snapshot_valid = true;
+  stats.last_tcp_stream = "roadEncodeData";
+  stats.last_tcp_rtt_micros = 12345;
+  stats.last_tcp_total_retrans = 3;
+  stats.last_tcp_send_queue_bytes = 65536;
+  stats.last_tcp_not_sent_bytes = 32768;
 
   const std::string json = commaview::runtime::video_send_stats_json(stats);
   assert(json.find("\"okCount\":1") != std::string::npos);
@@ -145,6 +151,11 @@ void test_serialized_video_send_json_includes_chunk_accounting() {
   assert(json.find("\"zeroByteChunkBackpressureCount\":1") != std::string::npos);
   assert(json.find("\"partialChunkResetCount\":0") != std::string::npos);
   assert(json.find("\"lastStatus\":\"backpressure\"") != std::string::npos);
+  assert(json.find("\"lastTcpSnapshotValid\":true") != std::string::npos);
+  assert(json.find("\"lastTcpRttMicros\":12345") != std::string::npos);
+  assert(json.find("\"lastTcpTotalRetrans\":3") != std::string::npos);
+  assert(json.find("\"lastTcpSendQueueBytes\":65536") != std::string::npos);
+  assert(json.find("\"lastTcpNotSentBytes\":32768") != std::string::npos);
 }
 
 }  // namespace
