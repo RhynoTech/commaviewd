@@ -64,10 +64,6 @@ int main() {
   assert(commaview::ui_export::default_recipe_dir().empty());
   unsetenv("COMMAVIEW_SOURCE_RECIPE_MARKER");
   unlink(marker_file.c_str());
-  {
-    std::ofstream route(route_file);
-    route << "000004b4--75e1f0ba8f\n";
-  }
   assert(setenv("COMMAVIEWD_CURRENT_ROUTE_FILE", route_file.c_str(), 1) == 0);
 
   const std::string recipe_dir = std::string(dir) + "/recipes";
@@ -97,6 +93,19 @@ int main() {
   assert(frame.service_index == 0);
   assert(std::string(frame.payload.begin(), frame.payload.end()).find("\"speedMps\":12.3") != std::string::npos);
 
+  // UI can wake before loggerd writes CurrentRoute. Those initial events
+  // must not poison route-bound preflight for the rest of the drive.
+  assert(send_frame(client_fd, commaview::ui_export::kRecipeEventServiceIndex,
+                    R"({"sequence":1,"kind":"camera_switch","projection":{"camera":"road","logMonoTime":90,"roadTimestampEof":80}})"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(120));
+  assert(server.stats().recipe_events == 0);
+  assert(server.stats().recipe_missing_route == 0);
+  {
+    std::ofstream route(route_file);
+    route << "000004b4--75e1f0ba8f\n";
+  }
+  assert(send_frame(client_fd, 0, R"({"exportVersion":4,"speedMps":12.4,"logMonoTime":457})"));
+
   const auto stats = server.stats();
   assert(stats.running);
   assert(stats.connect_count >= 1);
@@ -110,9 +119,9 @@ int main() {
   // The live projection path is conflated; only explicit source UI events form
   // the recording timeline, even when camera changes arrive faster than 20 Hz.
   assert(send_frame(client_fd, commaview::ui_export::kRecipeEventServiceIndex,
-                    R"({"sequence":1,"kind":"camera_switch","projection":{"camera":"road","logMonoTime":100,"roadTimestampEof":90}})"));
+                    R"({"sequence":2,"kind":"camera_switch","projection":{"camera":"road","logMonoTime":100,"roadTimestampEof":90}})"));
   assert(send_frame(client_fd, commaview::ui_export::kRecipeEventServiceIndex,
-                    R"({"sequence":2,"kind":"camera_switch","projection":{"camera":"wideRoad","logMonoTime":102,"wideTimestampEof":92}})"));
+                    R"({"sequence":3,"kind":"camera_switch","projection":{"camera":"wideRoad","logMonoTime":102,"wideTimestampEof":92}})"));
   bool got_recipe = false;
   for (int i = 0; i < 100; ++i) {
     const auto current = server.stats();
@@ -126,10 +135,25 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   assert(got_recipe);
+  bool got_snapshots = false;
+  for (int i = 0; i < 100; ++i) {
+    const auto current = server.stats();
+    if (current.snapshot_events >= 2) {
+      assert(current.snapshot_active);
+      assert(current.snapshot_dropped == 0);
+      assert(current.snapshot_write_failures == 0);
+      assert(current.snapshot_events <= 4);  // 500 fast projection offers were sampled.
+      got_snapshots = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  assert(got_snapshots);
   const std::string recipe_path = server.recipe_file_path();
 
-  close(client_fd);
+  // Shutdown must also wake a still-connected UI producer blocked in recv().
   server.stop();
+  close(client_fd);
   std::ifstream recipe(recipe_path);
   std::string first;
   std::string second;
@@ -139,13 +163,30 @@ int main() {
   assert(!static_cast<bool>(std::getline(recipe, third)));
   assert(first.find("\"camera\":\"road\"") != std::string::npos);
   assert(second.find("\"camera\":\"wideRoad\"") != std::string::npos);
-  assert(first.find("\"sequence\":1") != std::string::npos);
-  assert(second.find("\"sequence\":2") != std::string::npos);
+  assert(first.find("\"sequence\":2") != std::string::npos);
+  assert(second.find("\"sequence\":3") != std::string::npos);
   assert(first.find("\"routeId\":\"000004b4--75e1f0ba8f\"") != std::string::npos);
   assert(second.find("\"routeId\":\"000004b4--75e1f0ba8f\"") != std::string::npos);
+  const std::string snapshot_path = recipe_dir + "/ui-snapshot-000004b4--75e1f0ba8f.jsonl";
+  std::ifstream snapshots(snapshot_path);
+  std::string snapshot_line;
+  bool has_ui = false;
+  bool has_projection = false;
+  uint64_t prior_snapshot_sequence = 0;
+  while (std::getline(snapshots, snapshot_line)) {
+    const size_t sequence_at = snapshot_line.find("\"sequence\":");
+    assert(sequence_at != std::string::npos);
+    const uint64_t sequence = std::stoull(snapshot_line.substr(sequence_at + 11));
+    if (prior_snapshot_sequence) assert(sequence == prior_snapshot_sequence + 1);
+    prior_snapshot_sequence = sequence;
+    has_ui |= snapshot_line.find("\"serviceIndex\":0") != std::string::npos;
+    has_projection |= snapshot_line.find("\"serviceIndex\":18") != std::string::npos;
+  }
+  assert(has_ui && has_projection);
   unsetenv("COMMAVIEWD_CURRENT_ROUTE_FILE");
   unlink(route_file.c_str());
   unlink(recipe_path.c_str());
+  unlink(snapshot_path.c_str());
   rmdir(recipe_dir.c_str());
   unlink(socket_path.c_str());
   rmdir(dir);

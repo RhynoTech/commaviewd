@@ -33,6 +33,7 @@ int main() {
     std::ofstream recipe(recipes + "/ui-source-1.jsonl");
     recipe << "{\"routeId\":\"" << route << "\",\"sequence\":1}\n";
     recipe << "{\"routeId\":\"other--route\",\"sequence\":2}\n";
+    std::ofstream(recipes + "/ui-snapshot-" + route + ".jsonl") << "snapshot\n";
   }
   const std::string range = "/commaview/source-recording/range?route=" + route +
       "&segment=0&kind=road&offset=2&length=4";
@@ -63,11 +64,15 @@ int main() {
       "/commaview/source-recording/range?route=" + route +
       "&segment=1&kind=road&offset=0&length=4").status == 404);
   assert(source_recording_archive_response(manifest_path).body.find("[0]") != std::string::npos);
+  assert(source_recording_archive_response(
+      "/commaview/source-recording/range?route=" + route +
+      "&segment=0&kind=snapshot&offset=0&length=8").body == "snapshot");
   unlink(link.c_str());
   unlink((segment + "/fcamera.hevc").c_str());
   unlink((segment + "/ecamera.hevc").c_str());
   unlink((segment + "/rlog.zst").c_str());
   unlink((recipes + "/ui-source-1.jsonl").c_str());
+  unlink((recipes + "/ui-snapshot-" + route + ".jsonl").c_str());
   rmdir(segment.c_str());
   rmdir(recipes.c_str());
   rmdir(root.c_str());

@@ -18,6 +18,9 @@ namespace {
 
 constexpr uint32_t kMaxFrameBytes = 512 * 1024;
 constexpr size_t kMaxRecipeQueue = 128;
+constexpr size_t kMaxSnapshotQueue = 256;
+constexpr size_t kMaxSnapshotPayload = 16 * 1024;
+constexpr uint64_t kMaxSnapshotFileBytes = 512ULL * 1024 * 1024;
 
 uint64_t now_ms() {
   struct timespec ts = {};
@@ -144,6 +147,7 @@ SocketServer::~SocketServer() {
 
 bool SocketServer::start() {
   if (running_.load()) return true;
+  route_bound_once_ = false;
   if (!ensure_parent_dirs(socket_path_)) {
     std::fprintf(stderr, "[ui-export] failed to create parent dirs for %s\n", socket_path_.c_str());
     return false;
@@ -216,6 +220,10 @@ void SocketServer::stop() {
     close(server_fd_);
     server_fd_ = -1;
   }
+  {
+    std::lock_guard<std::mutex> lock(client_mutex_);
+    if (client_fd_ >= 0) shutdown(client_fd_, SHUT_RDWR);
+  }
   if (accept_thread_.joinable()) accept_thread_.join();
   {
     std::lock_guard<std::mutex> lock(recipe_mutex_);
@@ -225,6 +233,13 @@ void SocketServer::stop() {
   if (recipe_thread_.joinable()) recipe_thread_.join();
   {
     std::lock_guard<std::mutex> lock(recipe_mutex_);
+    if (snapshot_file_ != nullptr) {
+      std::fflush(snapshot_file_);
+      fdatasync(fileno(snapshot_file_));
+      std::fclose(snapshot_file_);
+      snapshot_file_ = nullptr;
+      snapshot_active_ = false;
+    }
     if (recipe_file_ != nullptr) {
       std::fclose(recipe_file_);
       recipe_file_ = nullptr;
@@ -263,6 +278,11 @@ SocketStats SocketServer::stats() const {
     result.recipe_write_failures = recipe_write_failures_;
     result.recipe_missing_route = recipe_missing_route_;
     result.recipe_active = recipe_file_ != nullptr;
+    result.snapshot_events = snapshot_events_;
+    result.snapshot_dropped = snapshot_dropped_;
+    result.snapshot_write_failures = snapshot_write_failures_;
+    result.snapshot_missing_route = snapshot_missing_route_;
+    result.snapshot_active = snapshot_active_;
   }
   return result;
 }
@@ -299,17 +319,100 @@ void SocketServer::offer_recipe_event(const LatestFrame& frame) {
   recipe_condition_.notify_one();
 }
 
+void SocketServer::offer_snapshot(const LatestFrame& frame) {
+  // The comma UI has already serialized these two UI-only services. Capture
+  // at most 10 Hz each without touching the receive callback's disk path.
+  if (recipe_file_ == nullptr ||
+      (frame.service_index != 0 && frame.service_index != 18) ||
+      frame.payload.empty() || frame.payload.size() > kMaxSnapshotPayload) return;
+  const std::string json(frame.payload.begin(), frame.payload.end());
+  if (json.front() != '{' || json.back() != '}' ||
+      json.find_first_of("\r\n") != std::string::npos) return;
+  std::lock_guard<std::mutex> lock(recipe_mutex_);
+  const uint64_t previous = last_snapshot_offer_ms_[frame.service_index];
+  if (previous && frame.updated_at_ms >= previous && frame.updated_at_ms - previous < 100) return;
+  last_snapshot_offer_ms_[frame.service_index] = frame.updated_at_ms;
+  const uint64_t sequence = ++snapshot_sequence_;
+  if (snapshot_queue_.size() >= kMaxSnapshotQueue) {
+    ++snapshot_dropped_;
+    return;
+  }
+  snapshot_queue_.push_back({frame, sequence});
+  recipe_condition_.notify_one();
+}
+
 void SocketServer::recipe_writer_loop() {
   while (true) {
     std::string line;
+    SnapshotRecord snapshot;
+    bool has_snapshot = false;
     {
       std::unique_lock<std::mutex> lock(recipe_mutex_);
-      recipe_condition_.wait(lock, [this] { return recipe_stopping_ || !recipe_queue_.empty(); });
-      if (recipe_queue_.empty() && recipe_stopping_) break;
-      line = std::move(recipe_queue_.front());
-      recipe_queue_.pop_front();
+      recipe_condition_.wait(lock, [this] {
+        return recipe_stopping_ || !recipe_queue_.empty() || !snapshot_queue_.empty();
+      });
+      if (recipe_queue_.empty() && snapshot_queue_.empty() && recipe_stopping_) break;
+      if (!recipe_queue_.empty()) {
+        line = std::move(recipe_queue_.front());
+        recipe_queue_.pop_front();
+      } else {
+        snapshot = std::move(snapshot_queue_.front());
+        snapshot_queue_.pop_front();
+        has_snapshot = true;
+      }
     }
     const std::string route = current_route_id();
+    if (route.empty() && !route_bound_once_) continue;
+    if (!route.empty()) route_bound_once_ = true;
+    if (has_snapshot) {
+      if (route.empty()) {
+        std::lock_guard<std::mutex> lock(recipe_mutex_);
+        ++snapshot_missing_route_;
+        continue;
+      }
+      if (snapshot_route_ != route || snapshot_file_ == nullptr) {
+        if (snapshot_file_ != nullptr) {
+          std::fflush(snapshot_file_);
+          fdatasync(fileno(snapshot_file_));
+          std::fclose(snapshot_file_);
+        }
+        snapshot_route_ = route;
+        const std::string path = recipe_dir_ + "/ui-snapshot-" + route + ".jsonl";
+        snapshot_file_ = std::fopen(path.c_str(), "a");
+        if (snapshot_file_ != nullptr) {
+          fchmod(fileno(snapshot_file_), 0600);
+          struct stat info = {};
+          snapshot_bytes_ = fstat(fileno(snapshot_file_), &info) == 0 && info.st_size >= 0 ?
+              static_cast<uint64_t>(info.st_size) : kMaxSnapshotFileBytes;
+        }
+        {
+          std::lock_guard<std::mutex> lock(recipe_mutex_);
+          snapshot_active_ = snapshot_file_ != nullptr;
+        }
+      }
+      const std::string payload(snapshot.frame.payload.begin(), snapshot.frame.payload.end());
+      const std::string record = "{\"schemaVersion\":1,\"routeId\":\"" + route +
+          "\",\"sequence\":" + std::to_string(snapshot.sequence) +
+          ",\"serviceIndex\":" + std::to_string(snapshot.frame.service_index) +
+          ",\"capturedWallMs\":" + std::to_string(snapshot.frame.updated_at_ms) +
+          ",\"payload\":" + payload + "}\n";
+      if (snapshot_bytes_ > kMaxSnapshotFileBytes - record.size()) {
+        std::lock_guard<std::mutex> lock(recipe_mutex_);
+        ++snapshot_dropped_;
+        continue;
+      }
+      const bool written = snapshot_file_ != nullptr &&
+          std::fwrite(record.data(), 1, record.size(), snapshot_file_) == record.size() &&
+          std::fflush(snapshot_file_) == 0 &&
+          ((snapshot_events_ + 1) % 20 != 0 || fdatasync(fileno(snapshot_file_)) == 0);
+      std::lock_guard<std::mutex> lock(recipe_mutex_);
+      if (written) {
+        ++snapshot_events_;
+        snapshot_bytes_ += record.size();
+      }
+      else ++snapshot_write_failures_;
+      continue;
+    }
     if (route.empty()) {
       line.insert(1, "\"routeId\":null,");
     } else {
@@ -339,10 +442,18 @@ void SocketServer::accept_loop() {
       continue;
     }
 
+    {
+      std::lock_guard<std::mutex> lock(client_mutex_);
+      client_fd_ = client_fd;
+    }
     mark_client_connected(true);
     while (running_.load() && receive_one_frame(client_fd)) {
     }
-    close(client_fd);
+    {
+      std::lock_guard<std::mutex> lock(client_mutex_);
+      client_fd_ = -1;
+      close(client_fd);
+    }
     mark_client_connected(false);
   }
 }
@@ -385,6 +496,7 @@ bool SocketServer::receive_one_frame(int client_fd) {
     stats_.accepted_count += 1;
     stats_.last_receive_ms = frame.updated_at_ms;
   }
+  offer_snapshot(frame);
   return true;
 }
 

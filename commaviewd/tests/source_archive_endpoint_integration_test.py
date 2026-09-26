@@ -36,6 +36,7 @@ def main():
     recipes.mkdir()
     (recipes / "ui-source-1.jsonl").write_text(
         f'{{"routeId":"{route}","sequence":1}}\n', encoding="ascii")
+    (recipes / f"ui-snapshot-{route}.jsonl").write_bytes(b"snapshot\n")
     with socket.socket() as probe:
       probe.bind(("127.0.0.1", 0))
       port = probe.getsockname()[1]
@@ -68,6 +69,10 @@ def main():
       assert request(manifest)[0] == 401
       assert request(manifest, "source-test-token")[:2] == (
           200, ('{"routeId":"' + route + '","segments":[0]}').encode())
+      snapshot = (base + "/commaview/source-recording/range?route=" + route +
+                  "&segment=0&kind=snapshot&offset=0&length=8")
+      assert request(snapshot)[0] == 401
+      assert request(snapshot, "source-test-token")[:2] == (200, b"snapshot")
       assert request(media.replace("length=4", "length=262145"), "source-test-token")[0] == 400
       print("PASS: authenticated source archive HTTP range and recipe")
     finally:

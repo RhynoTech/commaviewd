@@ -90,16 +90,26 @@ commaview::api::HttpResponse range_response(const std::map<std::string, std::str
   const std::string kind = q.at("kind");
   const char* filename = kind == "road" ? "fcamera.hevc" :
                          kind == "wide" ? "ecamera.hevc" :
-                         kind == "rlog" ? "rlog.zst" : nullptr;
-  if (!filename) return error(400, "invalid kind");
-  const std::string segment_name = q.at("route") + "--" + std::to_string(segment);
-  const int root = ::open(archive_root(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-  if (root < 0) return error(404, "archive unavailable");
-  const int dir = ::openat(root, segment_name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-  ::close(root);
-  if (dir < 0) return error(404, "segment unavailable");
-  const int file = ::openat(dir, filename, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  ::close(dir);
+                         kind == "rlog" ? "rlog.zst" :
+                         kind == "snapshot" ? "" : nullptr;
+  if (!filename || (kind == "snapshot" && segment != 0)) return error(400, "invalid kind");
+  int file = -1;
+  if (kind == "snapshot") {
+    const int root = ::open(recipe_root(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (root < 0) return error(404, "snapshot unavailable");
+    const std::string name = "ui-snapshot-" + q.at("route") + ".jsonl";
+    file = ::openat(root, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    ::close(root);
+  } else {
+    const std::string segment_name = q.at("route") + "--" + std::to_string(segment);
+    const int root = ::open(archive_root(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (root < 0) return error(404, "archive unavailable");
+    const int dir = ::openat(root, segment_name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    ::close(root);
+    if (dir < 0) return error(404, "segment unavailable");
+    file = ::openat(dir, filename, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    ::close(dir);
+  }
   if (file < 0) return error(404, "media unavailable");
   struct stat info = {};
   if (::fstat(file, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 0) {
