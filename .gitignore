@@ -1,0 +1,9 @@
+# Local builds, device captures, and runtime state must never enter the public repo.
+/dist/
+/release/
+/device-results/
+/comma4/backups/
+/comma4/config/
+/comma4/run/
+__pycache__/
+*.pyc
