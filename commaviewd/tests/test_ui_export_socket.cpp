@@ -116,6 +116,8 @@ int main() {
     assert(send_frame(client_fd, 18, R"({"camera":"road","logMonoTime":101,"roadFrameId":2,"roadTimestampEof":91})"));
   }
   assert(send_frame(client_fd, 18, R"({"camera":"wideRoad","logMonoTime":102,"wideFrameId":3,"wideTimestampEof":92})"));
+  assert(send_frame(client_fd, 2, R"({"speed":12.4,"logMonoTime":103})"));
+  assert(send_frame(client_fd, 7, R"({"frameId":4,"logMonoTime":104})"));
   // The live projection path is conflated; only explicit source UI events form
   // the recording timeline, even when camera changes arrive faster than 20 Hz.
   assert(send_frame(client_fd, commaview::ui_export::kRecipeEventServiceIndex,
@@ -138,11 +140,11 @@ int main() {
   bool got_snapshots = false;
   for (int i = 0; i < 100; ++i) {
     const auto current = server.stats();
-    if (current.snapshot_events >= 2) {
+    if (current.snapshot_events >= 4) {
       assert(current.snapshot_active);
       assert(current.snapshot_dropped == 0);
       assert(current.snapshot_write_failures == 0);
-      assert(current.snapshot_events <= 4);  // 500 fast projection offers were sampled.
+      assert(current.snapshot_events <= 6);  // 500 fast projection offers were sampled.
       got_snapshots = true;
       break;
     }
@@ -172,6 +174,8 @@ int main() {
   std::string snapshot_line;
   bool has_ui = false;
   bool has_projection = false;
+  bool has_car = false;
+  bool has_model = false;
   uint64_t prior_snapshot_sequence = 0;
   while (std::getline(snapshots, snapshot_line)) {
     const size_t sequence_at = snapshot_line.find("\"sequence\":");
@@ -181,8 +185,10 @@ int main() {
     prior_snapshot_sequence = sequence;
     has_ui |= snapshot_line.find("\"serviceIndex\":0") != std::string::npos;
     has_projection |= snapshot_line.find("\"serviceIndex\":18") != std::string::npos;
+    has_car |= snapshot_line.find("\"serviceIndex\":2") != std::string::npos;
+    has_model |= snapshot_line.find("\"serviceIndex\":7") != std::string::npos;
   }
-  assert(has_ui && has_projection);
+  assert(has_ui && has_projection && has_car && has_model);
   unsetenv("COMMAVIEWD_CURRENT_ROUTE_FILE");
   unlink(route_file.c_str());
   unlink(recipe_path.c_str());

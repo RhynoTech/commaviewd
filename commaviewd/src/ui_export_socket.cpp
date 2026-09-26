@@ -19,7 +19,7 @@ namespace {
 constexpr uint32_t kMaxFrameBytes = 512 * 1024;
 constexpr size_t kMaxRecipeQueue = 128;
 constexpr size_t kMaxSnapshotQueue = 256;
-constexpr size_t kMaxSnapshotPayload = 16 * 1024;
+constexpr size_t kMaxSnapshotPayload = 64 * 1024;
 constexpr uint64_t kMaxSnapshotFileBytes = 512ULL * 1024 * 1024;
 
 uint64_t now_ms() {
@@ -320,14 +320,24 @@ void SocketServer::offer_recipe_event(const LatestFrame& frame) {
 }
 
 void SocketServer::offer_snapshot(const LatestFrame& frame) {
-  // The comma UI has already serialized these two UI-only services. Capture
-  // at most 10 Hz each without touching the receive callback's disk path.
-  if (recipe_file_ == nullptr ||
-      (frame.service_index != 0 && frame.service_index != 18) ||
-      frame.payload.empty() || frame.payload.size() > kMaxSnapshotPayload) return;
+  // These are copies of the comma UI's already-serialized telemetry. Capture
+  // at most 10 Hz per service without disk IO in the receive callback.
+  if (recipe_file_ == nullptr || frame.service_index >= kServiceCount ||
+      frame.payload.empty()) return;
+  if (frame.payload.size() > kMaxSnapshotPayload) {
+    std::lock_guard<std::mutex> lock(recipe_mutex_);
+    ++snapshot_sequence_;
+    ++snapshot_dropped_;
+    return;
+  }
   const std::string json(frame.payload.begin(), frame.payload.end());
   if (json.front() != '{' || json.back() != '}' ||
-      json.find_first_of("\r\n") != std::string::npos) return;
+      json.find_first_of("\r\n") != std::string::npos) {
+    std::lock_guard<std::mutex> lock(recipe_mutex_);
+    ++snapshot_sequence_;
+    ++snapshot_dropped_;
+    return;
+  }
   std::lock_guard<std::mutex> lock(recipe_mutex_);
   const uint64_t previous = last_snapshot_offer_ms_[frame.service_index];
   if (previous && frame.updated_at_ms >= previous && frame.updated_at_ms - previous < 100) return;
