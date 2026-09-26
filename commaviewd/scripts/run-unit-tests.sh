@@ -108,6 +108,11 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
   "$ROOT/src/ui_export_socket.cpp" \
   -o "$TMP/test_ui_export_socket"
 
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
+  "$ROOT/tests/test_source_recording_archive.cpp" \
+  "$ROOT/src/source_recording_archive.cpp" \
+  -o "$TMP/test_source_recording_archive"
+
 "$TMP/test_net_framing"
 "$TMP/test_runtime_mode"
 "$TMP/test_control_policy"
@@ -119,9 +124,11 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
 "$TMP/test_video_send_accounting"
 "$TMP/test_http_server_cloexec"
 "$TMP/test_ui_export_socket"
+"$TMP/test_source_recording_archive"
 
 "$ROOT/tests/control_mode_api_contract_test.sh"
 "$ROOT/tests/control_mode_pairing_integration_test.sh"
+python3 "$ROOT/tests/source_archive_endpoint_integration_test.py"
 "$ROOT/tests/local_discovery_contract_test.sh"
 "$ROOT/tests/upstream_interface_guard_transformer_test.sh"
 "$ROOT/tests/device_test_workflow_contract_test.sh"

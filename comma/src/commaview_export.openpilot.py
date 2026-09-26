@@ -249,7 +249,16 @@ class _CommaViewSocketExporter:
     self._latest_onroad_projection = None
     self._service_resolver = _ServiceResolver()
     self._pending = {}
-    self._recipe_enabled = os.environ.get("COMMAVIEW_SOURCE_RECIPE") == "1"
+    self._recipe_expires_at = 0
+    marker = os.environ.get("COMMAVIEW_SOURCE_RECIPE_MARKER") or "/data/commaview/run/source-recipe-enabled"
+    try:
+      with open(marker, encoding="ascii") as marker_file:
+        self._recipe_expires_at = int(marker_file.read(32).strip())
+    except (OSError, ValueError):
+      pass
+    if os.environ.get("COMMAVIEW_SOURCE_RECIPE") == "1":
+      self._recipe_expires_at = float("inf")
+    self._recipe_enabled = time.time() < self._recipe_expires_at
     self._recipe_pending = deque()
     self._recipe_sequence = 0
     self._recipe_camera = None
@@ -336,6 +345,8 @@ class _CommaViewSocketExporter:
     camera_offset: float = 0.0,
   ) -> None:
     now = time.monotonic()
+    if self._recipe_enabled and time.time() >= self._recipe_expires_at:
+      self._recipe_enabled = False
     camera = _safe_str(active_camera)
     camera = "wideRoad" if camera in ("wideRoad", "wide") else "road"
     source_switch = self._recipe_enabled and camera != self._recipe_camera

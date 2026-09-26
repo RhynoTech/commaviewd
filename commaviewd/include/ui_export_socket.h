@@ -36,6 +36,7 @@ struct SocketStats {
   uint64_t recipe_events = 0;
   uint64_t recipe_dropped = 0;
   uint64_t recipe_write_failures = 0;
+  uint64_t recipe_missing_route = 0;
   bool recipe_active = false;
 };
 
@@ -74,6 +75,7 @@ class SocketServer {
   uint64_t recipe_dropped_ = 0;
   uint64_t recipe_events_ = 0;
   uint64_t recipe_write_failures_ = 0;
+  uint64_t recipe_missing_route_ = 0;
   std::atomic<bool> running_{false};
   int server_fd_ = -1;
   std::thread accept_thread_;

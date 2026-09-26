@@ -44,6 +44,7 @@ std::string reason_phrase(int status) {
     case 204: return "No Content";
     case 400: return "Bad Request";
     case 401: return "Unauthorized";
+    case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 413: return "Payload Too Large";
@@ -190,6 +191,7 @@ void HttpServer::serve_forever() {
     tv.tv_sec = kReadTimeoutSec;
     tv.tv_usec = 0;
     setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     handle_client(client_fd);
     ::close(client_fd);

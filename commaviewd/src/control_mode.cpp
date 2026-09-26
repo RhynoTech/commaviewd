@@ -1,6 +1,7 @@
 #include "control_mode.h"
 #include "http_server.h"
 #include "runtime_debug_config.h"
+#include "source_recording_archive.h"
 
 #include <algorithm>
 #include <array>
@@ -877,6 +878,23 @@ int run_control_mode(int argc, char* argv[]) {
     }
 
     if (req.method == "GET") {
+      if (req.path.rfind("/commaview/source-recording/", 0) == 0) {
+        // Route archives and UI timelines are private, even on devices where
+        // ordinary control endpoints have not yet been paired.
+        if (api_token.empty() || !is_authorized(req, api_token)) {
+          return make_json(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
+        }
+        if (req.path == "/commaview/source-recording/current") {
+          if (!is_onroad()) {
+            return make_json(403, "{\"ok\":false,\"error\":\"onroad required\"}");
+          }
+          return source_recording_current_response(read_param("CurrentRoute"));
+        }
+        if (is_onroad()) {
+          return make_json(403, "{\"ok\":false,\"error\":\"offroad required\"}");
+        }
+        return source_recording_archive_response(req.path);
+      }
       if (req.path == "/commaview/version") {
         const std::string version = runtime_version();
         const std::string telemetryMode = telemetry_mode();

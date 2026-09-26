@@ -358,6 +358,18 @@ def test_repeated_disconnects_and_receiver_restart_do_not_kill_worker(template, 
 
 
 @pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_source_recipe_marker_expires_fail_closed(template, flavor, monkeypatch, tmp_path):
+  monkeypatch.delenv("COMMAVIEW_SOURCE_RECIPE", raising=False)
+  marker = tmp_path / "source-recipe-enabled"
+  monkeypatch.setenv("COMMAVIEW_SOURCE_RECIPE_MARKER", str(marker))
+  module = load_exporter(template)
+  marker.write_text(str(int(time.time()) + 3600))
+  assert module._CommaViewSocketExporter(flavor, start_worker=False)._recipe_enabled
+  marker.write_text(str(int(time.time()) - 1))
+  assert not module._CommaViewSocketExporter(flavor, start_worker=False)._recipe_enabled
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
 def test_source_recipe_keeps_rapid_camera_switches_despite_live_conflation(template, flavor, monkeypatch):
   monkeypatch.setenv("COMMAVIEW_SOURCE_RECIPE", "1")
   module = load_exporter(template)

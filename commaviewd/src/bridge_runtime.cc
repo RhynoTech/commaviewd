@@ -416,6 +416,7 @@ static std::string build_runtime_stats_json_locked() {
     out << "\"recipeActive\":" << (socket_stats.recipe_active ? "true" : "false") << ",";
     out << "\"recipeEvents\":" << socket_stats.recipe_events << ",";
     out << "\"recipeDropped\":" << socket_stats.recipe_dropped << ",";
+    out << "\"recipeMissingRoute\":" << socket_stats.recipe_missing_route << ",";
     out << "\"recipeWriteFailures\":" << socket_stats.recipe_write_failures;
     out << "}";
   }

@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cctype>
+#include <ctime>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -52,6 +53,28 @@ bool ensure_parent_dirs(const std::string& path) {
   return true;
 }
 
+std::string current_route_id() {
+  const char* override_path = std::getenv("COMMAVIEWD_CURRENT_ROUTE_FILE");
+  const char* path = override_path && override_path[0] ?
+      override_path : "/data/params/d/CurrentRoute";
+  FILE* file = std::fopen(path, "r");
+  if (file == nullptr) return {};
+  char buffer[128] = {};
+  const bool read = std::fgets(buffer, sizeof(buffer), file) != nullptr;
+  std::fclose(file);
+  if (!read) return {};
+  std::string route(buffer);
+  while (!route.empty() && std::isspace(static_cast<unsigned char>(route.back()))) {
+    route.pop_back();
+  }
+  if (route.empty() || route.size() > 96 || route.find("--") == std::string::npos) return {};
+  for (char c : route) {
+    if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
+        !(c >= '0' && c <= '9') && c != '-' && c != '_') return {};
+  }
+  return route;
+}
+
 std::string projection_camera(const std::string& json) {
   const size_t key = json.find("\"camera\"");
   if (key == std::string::npos) return {};
@@ -96,7 +119,19 @@ std::string default_socket_path() {
 std::string default_recipe_dir() {
   const char* env = std::getenv("COMMAVIEWD_RECIPE_DIR");
   if (env != nullptr && env[0] != '\0') return env;
-  // Bench opt-in until route identity, retention, and Android export are gated.
+  // Temporary bench marker is shared with the onroad UI exporter. A stale
+  // marker cannot silently turn recording back on after a future reboot.
+  const char* marker_env = std::getenv("COMMAVIEW_SOURCE_RECIPE_MARKER");
+  const char* marker = marker_env && marker_env[0] ?
+      marker_env : "/data/commaview/run/source-recipe-enabled";
+  FILE* file = std::fopen(marker, "r");
+  if (file == nullptr) return {};
+  long long expires_at = 0;
+  const bool valid = std::fscanf(file, "%lld", &expires_at) == 1;
+  std::fclose(file);
+  if (valid && expires_at > static_cast<long long>(std::time(nullptr))) {
+    return "/data/commaview/recording-recipes";
+  }
   return {};
 }
 
@@ -224,6 +259,7 @@ SocketStats SocketServer::stats() const {
     result.recipe_events = recipe_events_;
     result.recipe_dropped = recipe_dropped_;
     result.recipe_write_failures = recipe_write_failures_;
+    result.recipe_missing_route = recipe_missing_route_;
     result.recipe_active = recipe_file_ != nullptr;
   }
   return result;
@@ -271,10 +307,17 @@ void SocketServer::recipe_writer_loop() {
       line = std::move(recipe_queue_.front());
       recipe_queue_.pop_front();
     }
+    const std::string route = current_route_id();
+    if (route.empty()) {
+      line.insert(1, "\"routeId\":null,");
+    } else {
+      line.insert(1, "\"routeId\":\"" + route + "\",");
+    }
     const bool written = std::fwrite(line.data(), 1, line.size(), recipe_file_) == line.size() &&
                          std::fflush(recipe_file_) == 0 &&
                          fdatasync(fileno(recipe_file_)) == 0;
     std::lock_guard<std::mutex> lock(recipe_mutex_);
+    if (route.empty()) ++recipe_missing_route_;
     if (written) ++recipe_events_;
     else ++recipe_write_failures_;
   }

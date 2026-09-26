@@ -1,0 +1,67 @@
+#include "source_recording_archive.h"
+
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <string>
+#include <sys/stat.h>
+#include <unistd.h>
+
+using commaview::runtime::source_recording_archive_response;
+using commaview::runtime::source_recording_current_response;
+
+int main() {
+  char path_template[] = "/tmp/commaview-source-archive-XXXXXX";
+  char* base = mkdtemp(path_template);
+  assert(base != nullptr);
+  const std::string root = base;
+  const std::string route = "000004b4--75e1f0ba8f";
+  assert(source_recording_current_response(route).body.find(route) != std::string::npos);
+  assert(source_recording_current_response("../secret").status == 404);
+  const std::string segment = root + "/" + route + "--0";
+  const std::string recipes = root + "/recipes";
+  assert(mkdir(segment.c_str(), 0700) == 0);
+  assert(mkdir(recipes.c_str(), 0700) == 0);
+  assert(setenv("COMMAVIEWD_SOURCE_ARCHIVE_ROOT", root.c_str(), 1) == 0);
+  assert(setenv("COMMAVIEWD_RECIPE_DIR", recipes.c_str(), 1) == 0);
+  {
+    std::ofstream media(segment + "/fcamera.hevc", std::ios::binary);
+    media << "0123456789";
+    std::ofstream recipe(recipes + "/ui-source-1.jsonl");
+    recipe << "{\"routeId\":\"" << route << "\",\"sequence\":1}\n";
+    recipe << "{\"routeId\":\"other--route\",\"sequence\":2}\n";
+  }
+  const std::string range = "/commaview/source-recording/range?route=" + route +
+      "&segment=0&kind=road&offset=2&length=4";
+  const auto media = source_recording_archive_response(range);
+  assert(media.status == 200 && media.body == "2345");
+  assert(media.content_type == "application/octet-stream");
+  assert(media.headers.at("X-Source-Size") == "10");
+  assert(media.headers.at("X-Source-Offset") == "2");
+  assert(source_recording_archive_response(range + "&offset=4").status == 400);
+  assert(source_recording_archive_response(
+      "/commaview/source-recording/range?route=../etc&segment=0&kind=road&offset=0&length=4").status == 400);
+  assert(source_recording_archive_response(
+      "/commaview/source-recording/range?route=" + route +
+      "&segment=0&kind=road&offset=9&length=4").status == 400);
+  assert(source_recording_archive_response(
+      "/commaview/source-recording/range?route=" + route +
+      "&segment=0&kind=road&offset=0&length=262145").status == 400);
+  const auto recipe = source_recording_archive_response(
+      "/commaview/source-recording/recipe?route=" + route);
+  assert(recipe.status == 200 && recipe.body.find("\"sequence\":1") != std::string::npos);
+  assert(recipe.body.find("other--route") == std::string::npos);
+  const std::string link = root + "/" + route + "--1";
+  assert(symlink(segment.c_str(), link.c_str()) == 0);
+  assert(source_recording_archive_response(
+      "/commaview/source-recording/range?route=" + route +
+      "&segment=1&kind=road&offset=0&length=4").status == 404);
+  unlink(link.c_str());
+  unlink((segment + "/fcamera.hevc").c_str());
+  unlink((recipes + "/ui-source-1.jsonl").c_str());
+  rmdir(segment.c_str());
+  rmdir(recipes.c_str());
+  rmdir(root.c_str());
+  std::puts("PASS: source archive ranges, route filtering and traversal guards");
+}
