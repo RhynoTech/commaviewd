@@ -28,6 +28,8 @@ int main() {
   {
     std::ofstream media(segment + "/fcamera.hevc", std::ios::binary);
     media << "0123456789";
+    std::ofstream(segment + "/ecamera.hevc", std::ios::binary) << "wide";
+    std::ofstream(segment + "/rlog.zst", std::ios::binary) << "log";
     std::ofstream recipe(recipes + "/ui-source-1.jsonl");
     recipe << "{\"routeId\":\"" << route << "\",\"sequence\":1}\n";
     recipe << "{\"routeId\":\"other--route\",\"sequence\":2}\n";
@@ -52,13 +54,19 @@ int main() {
       "/commaview/source-recording/recipe?route=" + route);
   assert(recipe.status == 200 && recipe.body.find("\"sequence\":1") != std::string::npos);
   assert(recipe.body.find("other--route") == std::string::npos);
+  const std::string manifest_path = "/commaview/source-recording/manifest?route=" + route;
+  assert(source_recording_archive_response(manifest_path).body ==
+         "{\"routeId\":\"" + route + "\",\"segments\":[0]}");
   const std::string link = root + "/" + route + "--1";
   assert(symlink(segment.c_str(), link.c_str()) == 0);
   assert(source_recording_archive_response(
       "/commaview/source-recording/range?route=" + route +
       "&segment=1&kind=road&offset=0&length=4").status == 404);
+  assert(source_recording_archive_response(manifest_path).body.find("[0]") != std::string::npos);
   unlink(link.c_str());
   unlink((segment + "/fcamera.hevc").c_str());
+  unlink((segment + "/ecamera.hevc").c_str());
+  unlink((segment + "/rlog.zst").c_str());
   unlink((recipes + "/ui-source-1.jsonl").c_str());
   rmdir(segment.c_str());
   rmdir(recipes.c_str());

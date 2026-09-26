@@ -211,6 +211,8 @@ void SocketServer::stop() {
   if (!was_running) return;
 
   if (server_fd_ >= 0) {
+    // close() alone does not reliably wake a blocking accept() on Linux.
+    shutdown(server_fd_, SHUT_RDWR);
     close(server_fd_);
     server_fd_ = -1;
   }

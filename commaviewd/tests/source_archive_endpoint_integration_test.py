@@ -30,6 +30,8 @@ def main():
     segment = temp / "realdata" / f"{route}--0"
     segment.mkdir(parents=True)
     (segment / "fcamera.hevc").write_bytes(b"0123456789")
+    (segment / "ecamera.hevc").write_bytes(b"wide")
+    (segment / "rlog.zst").write_bytes(b"log")
     recipes = temp / "recipes"
     recipes.mkdir()
     (recipes / "ui-source-1.jsonl").write_text(
@@ -62,6 +64,10 @@ def main():
       status, body, _ = request(base + "/commaview/source-recording/recipe?route=" + route,
                                 "source-test-token")
       assert status == 200 and b'"sequence":1' in body
+      manifest = base + "/commaview/source-recording/manifest?route=" + route
+      assert request(manifest)[0] == 401
+      assert request(manifest, "source-test-token")[:2] == (
+          200, ('{"routeId":"' + route + '","segments":[0]}').encode())
       assert request(media.replace("length=4", "length=262145"), "source-test-token")[0] == 400
       print("PASS: authenticated source archive HTTP range and recipe")
     finally:

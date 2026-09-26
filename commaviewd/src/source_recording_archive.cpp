@@ -207,6 +207,57 @@ commaview::api::HttpResponse recipe_response(const std::map<std::string, std::st
   return response;
 }
 
+commaview::api::HttpResponse manifest_response(const std::map<std::string, std::string>& q) {
+  if (q.size() != 1 || !q.count("route") || !safe_route(q.at("route"))) {
+    return error(400, "invalid route");
+  }
+  const int root = ::open(archive_root(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (root < 0) return error(404, "archive unavailable");
+  DIR* listing = ::fdopendir(root);
+  if (!listing) {
+    ::close(root);
+    return error(404, "archive unavailable");
+  }
+  const std::string prefix = q.at("route") + "--";
+  std::vector<uint64_t> segments;
+  while (const dirent* entry = ::readdir(listing)) {
+    const std::string name = entry->d_name;
+    if (name.rfind(prefix, 0) != 0) continue;
+    uint64_t number = 0;
+    if (!decimal(name.substr(prefix.size()), &number) || number > 99999 ||
+        name != prefix + std::to_string(number)) continue;
+    const int dir = ::openat(root, name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dir < 0) continue;
+    bool complete = true;
+    for (const char* file_name : {"fcamera.hevc", "ecamera.hevc", "rlog.zst"}) {
+      const int file = ::openat(dir, file_name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+      struct stat info = {};
+      if (file < 0 || ::fstat(file, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size <= 0) {
+        complete = false;
+      }
+      if (file >= 0) ::close(file);
+      if (!complete) break;
+    }
+    ::close(dir);
+    if (complete) segments.push_back(number);
+    if (segments.size() > 1000) break;
+  }
+  ::closedir(listing);
+  if (segments.size() > 1000) return error(413, "route too large");
+  if (segments.empty()) return error(404, "route archive unavailable");
+  std::sort(segments.begin(), segments.end());
+  std::string body = "{\"routeId\":\"" + q.at("route") + "\",\"segments\":[";
+  for (size_t i = 0; i < segments.size(); ++i) {
+    if (i) body += ',';
+    body += std::to_string(segments[i]);
+  }
+  body += "]}";
+  commaview::api::HttpResponse response;
+  response.body = std::move(body);
+  response.headers["Cache-Control"] = "no-store";
+  return response;
+}
+
 }  // namespace
 
 commaview::api::HttpResponse source_recording_archive_response(const std::string& request_path) {
@@ -216,6 +267,7 @@ commaview::api::HttpResponse source_recording_archive_response(const std::string
   if (!parse_query(request_path, &query)) return error(400, "invalid query");
   if (endpoint == "/commaview/source-recording/range") return range_response(query);
   if (endpoint == "/commaview/source-recording/recipe") return recipe_response(query);
+  if (endpoint == "/commaview/source-recording/manifest") return manifest_response(query);
   return error(404, "not found");
 }
 
