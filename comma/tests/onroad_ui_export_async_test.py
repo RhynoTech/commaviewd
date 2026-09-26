@@ -358,6 +358,28 @@ def test_repeated_disconnects_and_receiver_restart_do_not_kill_worker(template, 
 
 
 @pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_source_recipe_keeps_rapid_camera_switches_despite_live_conflation(template, flavor, monkeypatch):
+  monkeypatch.setenv("COMMAVIEW_SOURCE_RECIPE", "1")
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  values = alias_values(current=True)
+  values.update({
+    "wideRoadCameraState": types.SimpleNamespace(frameId=5, timestampEof=9998),
+    "modelV2": types.SimpleNamespace(frameId=7, timestampEof=9997),
+  })
+  ui_state = FakeUiState(values)
+  for camera in ("road", "wideRoad", "road"):
+    exporter.set_onroad_projection(
+      ui_state, camera, types.SimpleNamespace(), [1.0] * 9, [1.0] * 9,
+    )
+  assert [event["projection"]["camera"] for event in exporter._recipe_pending] == [
+    "road", "wideRoad", "road",
+  ]
+  assert [event["sequence"] for event in exporter._recipe_pending] == [1, 2, 3]
+  assert exporter._pending_payload(module.COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX)["camera"] == "road"
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
 def test_projection_uses_one_latest_value_path_without_publish_duplication(template, flavor):
   module = load_exporter(template)
   exporter = module._CommaViewSocketExporter(flavor, start_worker=False)

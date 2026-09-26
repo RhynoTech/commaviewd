@@ -412,7 +412,11 @@ static std::string build_runtime_stats_json_locked() {
     out << "\"connectCount\":" << socket_stats.connect_count << ",";
     out << "\"acceptedCount\":" << socket_stats.accepted_count << ",";
     out << "\"malformedCount\":" << socket_stats.malformed_count << ",";
-    out << "\"lastReceiveMs\":" << socket_stats.last_receive_ms;
+    out << "\"lastReceiveMs\":" << socket_stats.last_receive_ms << ",";
+    out << "\"recipeActive\":" << (socket_stats.recipe_active ? "true" : "false") << ",";
+    out << "\"recipeEvents\":" << socket_stats.recipe_events << ",";
+    out << "\"recipeDropped\":" << socket_stats.recipe_dropped << ",";
+    out << "\"recipeWriteFailures\":" << socket_stats.recipe_write_failures;
     out << "}";
   }
   out << "}";

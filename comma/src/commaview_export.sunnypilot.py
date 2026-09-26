@@ -41,6 +41,7 @@ COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX = 16
 COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX = 17
 COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX = 18
 COMMAVIEW_WIDE_ROAD_CAMERA_STATE_SERVICE_INDEX = 19
+COMMAVIEW_RECIPE_EVENT_SERVICE_INDEX = 20
 COMMAVIEW_SOCKET_PATH_DEFAULT = "/data/commaview/run/ui-export.sock"
 COMMAVIEW_CONNECT_RETRY_SEC = 1.0
 COMMAVIEW_SOCKET_TIMEOUT_SEC = 0.01
@@ -301,6 +302,11 @@ class _CommaViewSocketExporter:
     self._latest_onroad_projection = None
     self._service_resolver = _ServiceResolver()
     self._pending = {}
+    self._recipe_enabled = os.environ.get("COMMAVIEW_SOURCE_RECIPE") == "1"
+    self._recipe_pending = deque()
+    self._recipe_sequence = 0
+    self._recipe_camera = None
+    self._last_recipe_anchor_time = 0.0
     self._condition = threading.Condition()
     self._stopping = False
     self._worker_busy = False
@@ -322,6 +328,8 @@ class _CommaViewSocketExporter:
       "sent": 0,
       "bytesSent": 0,
       "maxPending": 0,
+      "recipeOverflow": 0,
+      "recipeSendFailures": 0,
     }
     self._payload_builders = {
       COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX: self._ui_state_onroad_payload,
@@ -381,11 +389,12 @@ class _CommaViewSocketExporter:
     camera_offset: float = 0.0,
   ) -> None:
     now = time.monotonic()
-    if self._last_projection_offer_time and now - self._last_projection_offer_time < COMMAVIEW_MIN_EXPORT_INTERVAL_SEC:
-      self._stats["rateLimited"] += 1
-      return
     camera = _safe_str(active_camera)
     camera = "wideRoad" if camera in ("wideRoad", "wide") else "road"
+    source_switch = self._recipe_enabled and camera != self._recipe_camera
+    if not source_switch and self._last_projection_offer_time and now - self._last_projection_offer_time < COMMAVIEW_MIN_EXPORT_INTERVAL_SEC:
+      self._stats["rateLimited"] += 1
+      return
     road_service = self._service_resolver.resolve(ui_state, "road_camera")
     calibration_service = self._service_resolver.resolve(ui_state, "calibration")
     road_camera = self._service_msg(ui_state, road_service)
@@ -417,6 +426,12 @@ class _CommaViewSocketExporter:
       "logMonoTime": max(road_log_mono, wide_log_mono, model_log_mono, live_calib_log_mono),
     }
     self._last_projection_offer_time = now
+    if self._recipe_enabled:
+      kind = "camera_switch" if source_switch else "anchor"
+      if source_switch or now - self._last_recipe_anchor_time >= 5.0:
+        self._offer_recipe_event(kind, self._latest_onroad_projection)
+        self._recipe_camera = camera
+        self._last_recipe_anchor_time = now
     self._offer_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)
 
   def publish(self, ui_state) -> None:
@@ -482,6 +497,22 @@ class _CommaViewSocketExporter:
       self._stats["maxPending"] = max(self._stats["maxPending"], len(self._pending))
       self._condition.notify()
 
+  def _offer_recipe_event(self, kind: str, projection: dict) -> None:
+    # Preserve source camera changes separately from conflated live telemetry.
+    # The UI thread only queues a small object; socket/JSON work stays on the worker.
+    with self._condition:
+      self._recipe_sequence += 1
+      if len(self._recipe_pending) >= 128:
+        self._stats["recipeOverflow"] += 1
+        return
+      if self._worker_enabled and self._worker is None:
+        self._worker = threading.Thread(target=self._worker_main, name="commaview-export", daemon=True)
+        self._worker.start()
+      self._recipe_pending.append({
+        "sequence": self._recipe_sequence, "kind": kind, "projection": projection,
+      })
+      self._condition.notify()
+
   def _pending_payload(self, service_index: int):
     with self._condition:
       pending = self._pending.get(service_index)
@@ -490,13 +521,21 @@ class _CommaViewSocketExporter:
   def _worker_main(self) -> None:
     while True:
       with self._condition:
-        while not self._pending and not self._stopping:
+        while not self._pending and not self._recipe_pending and not self._stopping:
           self._condition.wait()
         if self._stopping:
           break
+        recipe_events = list(self._recipe_pending)
+        self._recipe_pending.clear()
         batch = self._pending
         self._pending = {}
         self._worker_busy = True
+      for event in recipe_events:
+        try:
+          if not self._send_json(COMMAVIEW_RECIPE_EVENT_SERVICE_INDEX, event):
+            self._stats["recipeSendFailures"] += 1
+        except Exception:
+          self._stats["recipeSendFailures"] += 1
       for service_index, pending in batch.items():
         with self._condition:
           pending = self._pending.pop(service_index, pending)
@@ -519,7 +558,7 @@ class _CommaViewSocketExporter:
   def wait_for_idle(self, timeout: float = 1.0) -> bool:
     deadline = time.monotonic() + timeout
     with self._condition:
-      while self._pending or self._worker_busy:
+      while self._pending or self._recipe_pending or self._worker_busy:
         remaining = deadline - time.monotonic()
         if remaining <= 0.0:
           return False
@@ -532,6 +571,7 @@ class _CommaViewSocketExporter:
     with self._condition:
       self._stopping = True
       self._pending.clear()
+      self._recipe_pending.clear()
       self._condition.notify_all()
     self._worker.join(timeout)
 
@@ -546,6 +586,7 @@ class _CommaViewSocketExporter:
     with self._condition:
       result = dict(self._stats)
       result["pending"] = len(self._pending)
+      result["recipePending"] = len(self._recipe_pending)
     result.update({
       "snapshotP50Ms": percentile_ms(self._snapshot_durations_ns, 0.50),
       "snapshotP95Ms": percentile_ms(self._snapshot_durations_ns, 0.95),
@@ -585,9 +626,9 @@ class _CommaViewSocketExporter:
         pass
     self._sock = None
 
-  def _send_json(self, service_index: int, payload: dict) -> None:
+  def _send_json(self, service_index: int, payload: dict) -> bool:
     if not self._connect():
-      return
+      return False
     raw = _encode_json(payload)
     frame = bytes((COMMAVIEW_FRAME_VERSION, service_index)) + raw
     packet = struct.pack(">I", len(frame)) + frame
@@ -595,6 +636,7 @@ class _CommaViewSocketExporter:
       self._sock.sendall(packet)
       self._stats["sent"] += 1
       self._stats["bytesSent"] += len(packet)
+      return True
     except OSError:
       self._close()
       raise

@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +16,7 @@ namespace commaview::ui_export {
 namespace {
 
 constexpr uint32_t kMaxFrameBytes = 512 * 1024;
+constexpr size_t kMaxRecipeQueue = 128;
 
 uint64_t now_ms() {
   struct timespec ts = {};
@@ -50,6 +52,39 @@ bool ensure_parent_dirs(const std::string& path) {
   return true;
 }
 
+std::string projection_camera(const std::string& json) {
+  const size_t key = json.find("\"camera\"");
+  if (key == std::string::npos) return {};
+  size_t pos = json.find(':', key + 8);
+  if (pos == std::string::npos) return {};
+  ++pos;
+  while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+  if (pos >= json.size() || json[pos++] != '"') return {};
+  const size_t end = json.find('"', pos);
+  if (end == std::string::npos) return {};
+  const std::string camera = json.substr(pos, end - pos);
+  return camera == "road" || camera == "wideRoad" ? camera : std::string{};
+}
+
+uint64_t projection_uint(const std::string& json, const char* name) {
+  const std::string key = std::string("\"") + name + "\"";
+  const size_t found = json.find(key);
+  if (found == std::string::npos) return 0;
+  size_t pos = json.find(':', found + key.size());
+  if (pos == std::string::npos) return 0;
+  ++pos;
+  while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+  if (pos >= json.size() || !std::isdigit(static_cast<unsigned char>(json[pos]))) return 0;
+  uint64_t value = 0;
+  while (pos < json.size() && std::isdigit(static_cast<unsigned char>(json[pos]))) {
+    const uint64_t digit = static_cast<unsigned char>(json[pos]) - '0';
+    if (value > (UINT64_MAX - digit) / 10) return 0;
+    value = value * 10 + digit;
+    ++pos;
+  }
+  return value;
+}
+
 }  // namespace
 
 std::string default_socket_path() {
@@ -58,8 +93,15 @@ std::string default_socket_path() {
   return "/data/commaview/run/ui-export.sock";
 }
 
-SocketServer::SocketServer(std::string socket_path)
-    : socket_path_(std::move(socket_path)) {}
+std::string default_recipe_dir() {
+  const char* env = std::getenv("COMMAVIEWD_RECIPE_DIR");
+  if (env != nullptr && env[0] != '\0') return env;
+  // Bench opt-in until route identity, retention, and Android export are gated.
+  return {};
+}
+
+SocketServer::SocketServer(std::string socket_path, std::string recipe_dir)
+    : socket_path_(std::move(socket_path)), recipe_dir_(std::move(recipe_dir)) {}
 
 SocketServer::~SocketServer() {
   stop();
@@ -103,6 +145,23 @@ bool SocketServer::start() {
   }
 
   server_fd_ = fd;
+  if (!recipe_dir_.empty()) {
+    recipe_file_path_ = recipe_dir_ + "/ui-source-" + std::to_string(now_ms()) +
+                        "-" + std::to_string(getpid()) + ".jsonl";
+    if (ensure_parent_dirs(recipe_file_path_)) {
+      chmod(recipe_dir_.c_str(), 0700);
+      recipe_file_ = std::fopen(recipe_file_path_.c_str(), "a");
+      if (recipe_file_ != nullptr) fchmod(fileno(recipe_file_), 0600);
+    }
+    if (recipe_file_ == nullptr) {
+      std::fprintf(stderr, "[ui-export] source recipe disabled: cannot open %s\n",
+                   recipe_file_path_.c_str());
+      recipe_file_path_.clear();
+    } else {
+      recipe_stopping_ = false;
+      recipe_thread_ = std::thread(&SocketServer::recipe_writer_loop, this);
+    }
+  }
   running_.store(true);
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -121,6 +180,19 @@ void SocketServer::stop() {
     server_fd_ = -1;
   }
   if (accept_thread_.joinable()) accept_thread_.join();
+  {
+    std::lock_guard<std::mutex> lock(recipe_mutex_);
+    recipe_stopping_ = true;
+  }
+  recipe_condition_.notify_all();
+  if (recipe_thread_.joinable()) recipe_thread_.join();
+  {
+    std::lock_guard<std::mutex> lock(recipe_mutex_);
+    if (recipe_file_ != nullptr) {
+      std::fclose(recipe_file_);
+      recipe_file_ = nullptr;
+    }
+  }
   unlink(socket_path_.c_str());
 
   std::lock_guard<std::mutex> lock(mutex_);
@@ -142,8 +214,70 @@ bool SocketServer::latest_frame(uint8_t service_index, uint64_t fresh_within_ms,
 }
 
 SocketStats SocketServer::stats() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return stats_;
+  SocketStats result;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    result = stats_;
+  }
+  {
+    std::lock_guard<std::mutex> lock(recipe_mutex_);
+    result.recipe_events = recipe_events_;
+    result.recipe_dropped = recipe_dropped_;
+    result.recipe_write_failures = recipe_write_failures_;
+    result.recipe_active = recipe_file_ != nullptr;
+  }
+  return result;
+}
+
+std::string SocketServer::recipe_file_path() const {
+  std::lock_guard<std::mutex> lock(recipe_mutex_);
+  return recipe_file_path_;
+}
+
+void SocketServer::offer_recipe_event(const LatestFrame& frame) {
+  if (frame.service_index != kRecipeEventServiceIndex || recipe_file_ == nullptr ||
+      frame.payload.size() > 4096) return;
+  const std::string json(frame.payload.begin(), frame.payload.end());
+  if (json.size() < 2 || json.front() != '{' || json.back() != '}' ||
+      json.find_first_of("\r\n") != std::string::npos) return;
+  const bool switched = json.find("\"kind\":\"camera_switch\"") != std::string::npos;
+  const bool anchor = json.find("\"kind\":\"anchor\"") != std::string::npos;
+  if (!switched && !anchor) return;
+  if (projection_uint(json, "sequence") == 0) return;
+  const std::string camera = projection_camera(json);
+  if (camera.empty()) return;
+  if (projection_uint(json, "logMonoTime") == 0 ||
+      projection_uint(json, camera == "road" ? "roadTimestampEof" : "wideTimestampEof") == 0) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(recipe_mutex_);
+  if (recipe_queue_.size() >= kMaxRecipeQueue) {
+    ++recipe_dropped_;
+    return;
+  }
+  recipe_queue_.push_back("{\"schemaVersion\":1,\"capturedWallMs\":" +
+                          std::to_string(frame.updated_at_ms) + "," + json.substr(1) + "\n");
+  recipe_condition_.notify_one();
+}
+
+void SocketServer::recipe_writer_loop() {
+  while (true) {
+    std::string line;
+    {
+      std::unique_lock<std::mutex> lock(recipe_mutex_);
+      recipe_condition_.wait(lock, [this] { return recipe_stopping_ || !recipe_queue_.empty(); });
+      if (recipe_queue_.empty() && recipe_stopping_) break;
+      line = std::move(recipe_queue_.front());
+      recipe_queue_.pop_front();
+    }
+    const bool written = std::fwrite(line.data(), 1, line.size(), recipe_file_) == line.size() &&
+                         std::fflush(recipe_file_) == 0 &&
+                         fdatasync(fileno(recipe_file_)) == 0;
+    std::lock_guard<std::mutex> lock(recipe_mutex_);
+    if (written) ++recipe_events_;
+    else ++recipe_write_failures_;
+  }
 }
 
 void SocketServer::mark_client_connected(bool connected) {
@@ -184,7 +318,7 @@ bool SocketServer::receive_one_frame(int client_fd) {
 
   const uint8_t version = payload[0];
   const uint8_t service_index = payload[1];
-  if (version != kFrameVersion || service_index >= kServiceCount) {
+  if (version != kFrameVersion || service_index > kRecipeEventServiceIndex) {
     std::lock_guard<std::mutex> lock(mutex_);
     stats_.malformed_count += 1;
     return false;
@@ -196,10 +330,16 @@ bool SocketServer::receive_one_frame(int client_fd) {
   frame.updated_at_ms = now_ms();
   frame.payload.assign(payload.begin() + 2, payload.end());
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  latest_[service_index] = frame;
-  stats_.accepted_count += 1;
-  stats_.last_receive_ms = frame.updated_at_ms;
+  if (service_index == kRecipeEventServiceIndex) {
+    offer_recipe_event(frame);
+    return true;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_[service_index] = frame;
+    stats_.accepted_count += 1;
+    stats_.last_receive_ms = frame.updated_at_ms;
+  }
   return true;
 }
 

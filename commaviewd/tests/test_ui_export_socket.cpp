@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -47,7 +48,8 @@ int main() {
   assert(dir != nullptr);
   const std::string socket_path = std::string(dir) + "/ui-export.sock";
 
-  commaview::ui_export::SocketServer server(socket_path);
+  const std::string recipe_dir = std::string(dir) + "/recipes";
+  commaview::ui_export::SocketServer server(socket_path, recipe_dir);
   assert(server.start());
 
   int client_fd = -1;
@@ -78,8 +80,46 @@ int main() {
   assert(stats.connect_count >= 1);
   assert(stats.accepted_count >= 1);
 
+  assert(send_frame(client_fd, 18, R"({"camera":"road","logMonoTime":100,"roadFrameId":1,"roadTimestampEof":90})"));
+  for (int i = 0; i < 500; ++i) {
+    assert(send_frame(client_fd, 18, R"({"camera":"road","logMonoTime":101,"roadFrameId":2,"roadTimestampEof":91})"));
+  }
+  assert(send_frame(client_fd, 18, R"({"camera":"wideRoad","logMonoTime":102,"wideFrameId":3,"wideTimestampEof":92})"));
+  // The live projection path is conflated; only explicit source UI events form
+  // the recording timeline, even when camera changes arrive faster than 20 Hz.
+  assert(send_frame(client_fd, commaview::ui_export::kRecipeEventServiceIndex,
+                    R"({"sequence":1,"kind":"camera_switch","projection":{"camera":"road","logMonoTime":100,"roadTimestampEof":90}})"));
+  assert(send_frame(client_fd, commaview::ui_export::kRecipeEventServiceIndex,
+                    R"({"sequence":2,"kind":"camera_switch","projection":{"camera":"wideRoad","logMonoTime":102,"wideTimestampEof":92}})"));
+  bool got_recipe = false;
+  for (int i = 0; i < 100; ++i) {
+    const auto current = server.stats();
+    if (current.recipe_events == 2) {
+      assert(current.recipe_dropped == 0);
+      assert(current.recipe_write_failures == 0);
+      got_recipe = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  assert(got_recipe);
+  const std::string recipe_path = server.recipe_file_path();
+
   close(client_fd);
   server.stop();
+  std::ifstream recipe(recipe_path);
+  std::string first;
+  std::string second;
+  std::string third;
+  assert(static_cast<bool>(std::getline(recipe, first)));
+  assert(static_cast<bool>(std::getline(recipe, second)));
+  assert(!static_cast<bool>(std::getline(recipe, third)));
+  assert(first.find("\"camera\":\"road\"") != std::string::npos);
+  assert(second.find("\"camera\":\"wideRoad\"") != std::string::npos);
+  assert(first.find("\"sequence\":1") != std::string::npos);
+  assert(second.find("\"sequence\":2") != std::string::npos);
+  unlink(recipe_path.c_str());
+  rmdir(recipe_dir.c_str());
   unlink(socket_path.c_str());
   rmdir(dir);
   return 0;
