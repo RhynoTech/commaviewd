@@ -945,6 +945,14 @@ int run_control_mode(int argc, char* argv[]) {
         return make_json(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
       }
 
+      if (req.path == "/commaview/source-recording/arm" ||
+          req.path == "/commaview/source-recording/disarm") {
+        if (is_onroad()) return make_json(403, "{\"ok\":false,\"error\":\"offroad required\"}");
+        return req.path == "/commaview/source-recording/arm"
+            ? source_recording_arm_response()
+            : source_recording_disarm_response();
+      }
+
       if (req.path == "/pairing/create") {
         return make_json(200, pairing_create(api_token));
       }

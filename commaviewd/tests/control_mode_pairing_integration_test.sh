@@ -35,7 +35,8 @@ PY
 )"
 fi
 
-COMMAVIEWD_API_TOKEN="$TOKEN" "$BIN" control --port "$PORT" >"$TMP/server.log" 2>&1 &
+COMMAVIEWD_API_TOKEN="$TOKEN" COMMAVIEW_SOURCE_RECIPE_MARKER="$TMP/source-recipe-enabled" \
+  "$BIN" control --port "$PORT" >"$TMP/server.log" 2>&1 &
 PID="$!"
 
 for _ in {1..100}; do
@@ -57,6 +58,12 @@ grep -q "commaviewd control: listening" "$TMP/server.log" || {
 }
 
 BASE="http://127.0.0.1:$PORT"
+UNAUTH_ARM_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -d '{}' "$BASE/commaview/source-recording/arm")"
+[[ "$UNAUTH_ARM_STATUS" == "401" && ! -e "$TMP/source-recipe-enabled" ]]
+ARM_STATUS="$(curl -sS -o "$TMP/armed.json" -w '%{http_code}' -X POST -H "X-CommaView-Token: $TOKEN" -d '{}' "$BASE/commaview/source-recording/arm")"
+[[ "$ARM_STATUS" == "200" && -s "$TMP/source-recipe-enabled" ]]
+DISARM_STATUS="$(curl -sS -o "$TMP/disarmed.json" -w '%{http_code}' -X POST -H "X-CommaView-Token: $TOKEN" -d '{}' "$BASE/commaview/source-recording/disarm")"
+[[ "$DISARM_STATUS" == "200" && ! -e "$TMP/source-recipe-enabled" ]]
 VERSION="$TMP/version.json"
 UNAUTH="$TMP/create-unauthorized.json"
 WRONG_AUTH="$TMP/create-wrong-auth.json"

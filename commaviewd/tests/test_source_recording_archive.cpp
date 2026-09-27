@@ -1,6 +1,7 @@
 #include "source_recording_archive.h"
 
 #include <cassert>
+#include <ctime>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -10,6 +11,8 @@
 
 using commaview::runtime::source_recording_archive_response;
 using commaview::runtime::source_recording_current_response;
+using commaview::runtime::source_recording_arm_response;
+using commaview::runtime::source_recording_disarm_response;
 
 int main() {
   char path_template[] = "/tmp/commaview-source-archive-XXXXXX";
@@ -17,6 +20,17 @@ int main() {
   assert(base != nullptr);
   const std::string root = base;
   const std::string route = "000004b4--75e1f0ba8f";
+  const std::string marker = root + "/source-recipe-enabled";
+  assert(setenv("COMMAVIEW_SOURCE_RECIPE_MARKER", marker.c_str(), 1) == 0);
+  const auto arm = source_recording_arm_response();
+  assert(arm.status == 200 && arm.body.find("\"ok\":true") != std::string::npos);
+  std::ifstream marker_file(marker);
+  long long expires = 0;
+  marker_file >> expires;
+  assert(expires > std::time(nullptr) && expires <= std::time(nullptr) + 7200);
+  assert(source_recording_disarm_response().status == 200);
+  assert(access(marker.c_str(), F_OK) != 0);
+  unsetenv("COMMAVIEW_SOURCE_RECIPE_MARKER");
   assert(source_recording_current_response(route).body.find(route) != std::string::npos);
   assert(source_recording_current_response("../secret").status == 404);
   const std::string segment = root + "/" + route + "--0";
