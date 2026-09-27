@@ -37,7 +37,7 @@ fi
 
 mkdir -p "$TMP/params"
 printf '1' > "$TMP/params/IsOffroad"
-COMMAVIEWD_TEST_PARAMS_DIR="$TMP/params" COMMAVIEWD_API_TOKEN="$TOKEN" COMMAVIEW_SOURCE_RECIPE_MARKER="$TMP/source-recipe-enabled" \
+COMMAVIEWD_TEST_PARAMS_DIR="$TMP/params" COMMAVIEWD_API_TOKEN="$TOKEN" \
   "$BIN" control --port "$PORT" >"$TMP/server.log" 2>&1 &
 PID="$!"
 
@@ -60,12 +60,8 @@ grep -q "commaviewd control: listening" "$TMP/server.log" || {
 }
 
 BASE="http://127.0.0.1:$PORT"
-UNAUTH_ARM_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -d '{}' "$BASE/commaview/source-recording/arm")"
-[[ "$UNAUTH_ARM_STATUS" == "401" && ! -e "$TMP/source-recipe-enabled" ]]
-ARM_STATUS="$(curl -sS -o "$TMP/armed.json" -w '%{http_code}' -X POST -H "X-CommaView-Token: $TOKEN" -d '{}' "$BASE/commaview/source-recording/arm")"
-[[ "$ARM_STATUS" == "200" && -s "$TMP/source-recipe-enabled" ]]
-DISARM_STATUS="$(curl -sS -o "$TMP/disarmed.json" -w '%{http_code}' -X POST -H "X-CommaView-Token: $TOKEN" -d '{}' "$BASE/commaview/source-recording/disarm")"
-[[ "$DISARM_STATUS" == "200" && ! -e "$TMP/source-recipe-enabled" ]]
+ARM_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "X-CommaView-Token: $TOKEN" -d '{}' "$BASE/commaview/source-recording/arm")"
+[[ "$ARM_STATUS" == "404" ]]
 printf '0' > "$TMP/params/IsOffroad"
 ONROAD_STATUS="$(curl -sS -o "$TMP/onroad.json" -w '%{http_code}' -H "X-CommaView-Token: $TOKEN" "$BASE/commaview/status")"
 [[ "$ONROAD_STATUS" == "200" ]]
@@ -73,8 +69,6 @@ python3 - "$TMP/onroad.json" <<'PY'
 import json, sys
 assert json.load(open(sys.argv[1]))["isOnroad"] is True
 PY
-ONROAD_ARM_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "X-CommaView-Token: $TOKEN" -d '{}' "$BASE/commaview/source-recording/arm")"
-[[ "$ONROAD_ARM_STATUS" == "403" && ! -e "$TMP/source-recipe-enabled" ]]
 printf '1' > "$TMP/params/IsOffroad"
 VERSION="$TMP/version.json"
 UNAUTH="$TMP/create-unauthorized.json"

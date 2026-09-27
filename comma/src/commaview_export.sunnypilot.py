@@ -302,18 +302,7 @@ class _CommaViewSocketExporter:
     self._latest_onroad_projection = None
     self._service_resolver = _ServiceResolver()
     self._pending = {}
-    self._recipe_expires_at = 0
-    marker = os.environ.get("COMMAVIEW_SOURCE_RECIPE_MARKER") or "/data/commaview/run/source-recipe-enabled"
-    self._recipe_marker = marker
-    self._recipe_next_check = 0.0
-    try:
-      with open(marker, encoding="ascii") as marker_file:
-        self._recipe_expires_at = int(marker_file.read(32).strip())
-    except (OSError, ValueError):
-      pass
-    if os.environ.get("COMMAVIEW_SOURCE_RECIPE") == "1":
-      self._recipe_expires_at = float("inf")
-    self._recipe_enabled = time.time() < self._recipe_expires_at
+    self._recipe_enabled = True
     self._recipe_pending = deque()
     self._recipe_sequence = 0
     self._recipe_camera = None
@@ -390,20 +379,6 @@ class _CommaViewSocketExporter:
     self._active_camera_override = "wideRoad" if camera in ("wideRoad", "wide") else "road"
     self._wide_camera_available_override = bool(wide_camera_available)
 
-  def _refresh_recipe_marker(self, now: float) -> None:
-    if now < self._recipe_next_check or os.environ.get("COMMAVIEW_SOURCE_RECIPE") == "1":
-      return
-    self._recipe_next_check = now + 1.0
-    try:
-      with open(self._recipe_marker, encoding="ascii") as marker_file:
-        self._recipe_expires_at = int(marker_file.read(32).strip())
-    except (OSError, ValueError):
-      self._recipe_expires_at = 0
-    was_enabled = self._recipe_enabled
-    self._recipe_enabled = time.time() < self._recipe_expires_at
-    if was_enabled and not self._recipe_enabled:
-      self._recipe_camera = None
-
   def set_onroad_projection(
     self,
     ui_state,
@@ -414,7 +389,6 @@ class _CommaViewSocketExporter:
     camera_offset: float = 0.0,
   ) -> None:
     now = time.monotonic()
-    self._refresh_recipe_marker(now)
     camera = _safe_str(active_camera)
     camera = "wideRoad" if camera in ("wideRoad", "wide") else "road"
     source_switch = self._recipe_enabled and camera != self._recipe_camera

@@ -122,20 +122,9 @@ std::string default_socket_path() {
 std::string default_recipe_dir() {
   const char* env = std::getenv("COMMAVIEWD_RECIPE_DIR");
   if (env != nullptr && env[0] != '\0') return env;
-  // Temporary bench marker is shared with the onroad UI exporter. A stale
-  // marker cannot silently turn recording back on after a future reboot.
-  const char* marker_env = std::getenv("COMMAVIEW_SOURCE_RECIPE_MARKER");
-  const char* marker = marker_env && marker_env[0] ?
-      marker_env : "/data/commaview/run/source-recipe-enabled";
-  FILE* file = std::fopen(marker, "r");
-  if (file == nullptr) return {};
-  long long expires_at = 0;
-  const bool valid = std::fscanf(file, "%lld", &expires_at) == 1;
-  std::fclose(file);
-  if (valid && expires_at > static_cast<long long>(std::time(nullptr))) {
-    return "/data/commaview/recording-recipes";
-  }
-  return {};
+  // Source metadata is prepared automatically while a stock route exists.
+  // The writer is route-bound and capped; stock camera video is never copied.
+  return "/data/commaview/recording-recipes";
 }
 
 SocketServer::SocketServer(std::string socket_path, std::string recipe_dir)
@@ -147,7 +136,8 @@ SocketServer::~SocketServer() {
 
 bool SocketServer::start() {
   if (running_.load()) return true;
-  route_bound_once_ = false;
+  active_route_.clear();
+  recipe_route_.clear();
   if (!ensure_parent_dirs(socket_path_)) {
     std::fprintf(stderr, "[ui-export] failed to create parent dirs for %s\n", socket_path_.c_str());
     return false;
@@ -278,11 +268,13 @@ SocketStats SocketServer::stats() const {
     result.recipe_write_failures = recipe_write_failures_;
     result.recipe_missing_route = recipe_missing_route_;
     result.recipe_active = recipe_file_ != nullptr;
+    result.recipe_route = recipe_route_;
     result.snapshot_events = snapshot_events_;
     result.snapshot_dropped = snapshot_dropped_;
     result.snapshot_write_failures = snapshot_write_failures_;
     result.snapshot_missing_route = snapshot_missing_route_;
     result.snapshot_active = snapshot_active_;
+    result.snapshot_route = snapshot_route_;
   }
   return result;
 }
@@ -372,14 +364,16 @@ void SocketServer::recipe_writer_loop() {
       }
     }
     const std::string route = current_route_id();
-    if (route.empty() && !route_bound_once_) continue;
-    if (!route.empty()) route_bound_once_ = true;
+    if (route.empty()) continue;
+    if (route != active_route_) {
+      std::lock_guard<std::mutex> lock(recipe_mutex_);
+      active_route_ = route;
+      recipe_route_.clear();
+      recipe_events_ = recipe_dropped_ = recipe_write_failures_ = recipe_missing_route_ = 0;
+      snapshot_events_ = snapshot_dropped_ = snapshot_write_failures_ = snapshot_missing_route_ = 0;
+      snapshot_active_ = false;
+    }
     if (has_snapshot) {
-      if (route.empty()) {
-        std::lock_guard<std::mutex> lock(recipe_mutex_);
-        ++snapshot_missing_route_;
-        continue;
-      }
       if (snapshot_route_ != route || snapshot_file_ == nullptr) {
         if (snapshot_file_ != nullptr) {
           std::fflush(snapshot_file_);
@@ -423,17 +417,15 @@ void SocketServer::recipe_writer_loop() {
       else ++snapshot_write_failures_;
       continue;
     }
-    if (route.empty()) {
-      line.insert(1, "\"routeId\":null,");
-    } else {
-      line.insert(1, "\"routeId\":\"" + route + "\",");
-    }
+    line.insert(1, "\"routeId\":\"" + route + "\",");
     const bool written = std::fwrite(line.data(), 1, line.size(), recipe_file_) == line.size() &&
                          std::fflush(recipe_file_) == 0 &&
                          fdatasync(fileno(recipe_file_)) == 0;
     std::lock_guard<std::mutex> lock(recipe_mutex_);
-    if (route.empty()) ++recipe_missing_route_;
-    if (written) ++recipe_events_;
+    if (written) {
+      ++recipe_events_;
+      recipe_route_ = route;
+    }
     else ++recipe_write_failures_;
   }
 }

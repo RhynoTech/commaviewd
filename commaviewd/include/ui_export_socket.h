@@ -38,11 +38,13 @@ struct SocketStats {
   uint64_t recipe_write_failures = 0;
   uint64_t recipe_missing_route = 0;
   bool recipe_active = false;
+  std::string recipe_route;
   uint64_t snapshot_events = 0;
   uint64_t snapshot_dropped = 0;
   uint64_t snapshot_write_failures = 0;
   uint64_t snapshot_missing_route = 0;
   bool snapshot_active = false;
+  std::string snapshot_route;
 };
 
 std::string default_socket_path();
@@ -88,7 +90,8 @@ class SocketServer {
   bool snapshot_active_ = false;
   std::string snapshot_route_;
   uint64_t snapshot_bytes_ = 0;
-  bool route_bound_once_ = false;
+  std::string active_route_;
+  std::string recipe_route_;
   bool recipe_stopping_ = false;
   uint64_t recipe_dropped_ = 0;
   uint64_t recipe_events_ = 0;

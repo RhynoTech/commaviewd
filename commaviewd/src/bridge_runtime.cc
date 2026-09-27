@@ -414,11 +414,13 @@ static std::string build_runtime_stats_json_locked() {
     out << "\"malformedCount\":" << socket_stats.malformed_count << ",";
     out << "\"lastReceiveMs\":" << socket_stats.last_receive_ms << ",";
     out << "\"recipeActive\":" << (socket_stats.recipe_active ? "true" : "false") << ",";
+    out << "\"recipeRoute\":\"" << socket_stats.recipe_route << "\",";
     out << "\"recipeEvents\":" << socket_stats.recipe_events << ",";
     out << "\"recipeDropped\":" << socket_stats.recipe_dropped << ",";
     out << "\"recipeMissingRoute\":" << socket_stats.recipe_missing_route << ",";
     out << "\"recipeWriteFailures\":" << socket_stats.recipe_write_failures;
     out << ",\"snapshotActive\":" << (socket_stats.snapshot_active ? "true" : "false");
+    out << ",\"snapshotRoute\":\"" << socket_stats.snapshot_route << "\"";
     out << ",\"snapshotEvents\":" << socket_stats.snapshot_events;
     out << ",\"snapshotDropped\":" << socket_stats.snapshot_dropped;
     out << ",\"snapshotWriteFailures\":" << socket_stats.snapshot_write_failures;

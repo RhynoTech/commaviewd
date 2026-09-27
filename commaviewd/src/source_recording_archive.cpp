@@ -78,11 +78,6 @@ const char* recipe_root() {
   return override_root && override_root[0] ? override_root : "/data/commaview/recording-recipes";
 }
 
-std::string source_recipe_marker_path() {
-  const char* override_path = std::getenv("COMMAVIEW_SOURCE_RECIPE_MARKER");
-  return override_path && override_path[0] ? override_path : "/data/commaview/run/source-recipe-enabled";
-}
-
 commaview::api::HttpResponse range_response(const std::map<std::string, std::string>& q) {
   if (q.size() != 5 || !q.count("route") || !q.count("segment") ||
       !q.count("kind") || !q.count("offset") || !q.count("length") ||
@@ -291,40 +286,6 @@ commaview::api::HttpResponse source_recording_current_response(const std::string
   if (!safe_route(route_id)) return error(404, "route unavailable");
   commaview::api::HttpResponse response;
   response.body = "{\"routeId\":\"" + route_id + "\"}";
-  response.headers["Cache-Control"] = "no-store";
-  return response;
-}
-
-commaview::api::HttpResponse source_recording_arm_response() {
-  constexpr std::time_t kDurationSeconds = 2 * 60 * 60;
-  const std::time_t now = std::time(nullptr);
-  if (now <= 0) return error(500, "clock unavailable");
-  const std::time_t expires = now + kDurationSeconds;
-  const std::string marker = source_recipe_marker_path();
-  const std::string temporary = marker + ".tmp." + std::to_string(getpid());
-  const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-  if (fd < 0) return error(500, "unable to arm source recorder");
-  const std::string value = std::to_string(expires) + "\n";
-  const bool written = ::write(fd, value.data(), value.size()) == static_cast<ssize_t>(value.size());
-  const bool synced = written && ::fsync(fd) == 0;
-  const bool closed = ::close(fd) == 0;
-  if (!synced || !closed || ::rename(temporary.c_str(), marker.c_str()) != 0) {
-    ::unlink(temporary.c_str());
-    return error(500, "unable to arm source recorder");
-  }
-  commaview::api::HttpResponse response;
-  response.body = "{\"ok\":true,\"expiresAtUnixSec\":" + std::to_string(expires) + "}";
-  response.headers["Cache-Control"] = "no-store";
-  return response;
-}
-
-commaview::api::HttpResponse source_recording_disarm_response() {
-  const std::string marker = source_recipe_marker_path();
-  if (::unlink(marker.c_str()) != 0 && errno != ENOENT) {
-    return error(500, "unable to disarm source recorder");
-  }
-  commaview::api::HttpResponse response;
-  response.body = "{\"ok\":true}";
   response.headers["Cache-Control"] = "no-store";
   return response;
 }

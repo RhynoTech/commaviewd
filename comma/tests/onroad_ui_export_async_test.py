@@ -358,33 +358,10 @@ def test_repeated_disconnects_and_receiver_restart_do_not_kill_worker(template, 
 
 
 @pytest.mark.parametrize("template,flavor", TEMPLATES)
-def test_source_recipe_marker_expires_fail_closed(template, flavor, monkeypatch, tmp_path):
-  monkeypatch.delenv("COMMAVIEW_SOURCE_RECIPE", raising=False)
-  marker = tmp_path / "source-recipe-enabled"
-  monkeypatch.setenv("COMMAVIEW_SOURCE_RECIPE_MARKER", str(marker))
-  module = load_exporter(template)
-  marker.write_text(str(int(time.time()) + 3600))
-  assert module._CommaViewSocketExporter(flavor, start_worker=False)._recipe_enabled
-  marker.write_text(str(int(time.time()) - 1))
-  assert not module._CommaViewSocketExporter(flavor, start_worker=False)._recipe_enabled
-
-
-@pytest.mark.parametrize("template,flavor", TEMPLATES)
-def test_source_recipe_can_be_armed_and_disarmed_without_ui_restart(template, flavor, monkeypatch, tmp_path):
-  monkeypatch.delenv("COMMAVIEW_SOURCE_RECIPE", raising=False)
-  marker = tmp_path / "source-recipe-enabled"
-  monkeypatch.setenv("COMMAVIEW_SOURCE_RECIPE_MARKER", str(marker))
+def test_source_recipe_is_always_enabled_for_onroad_export(template, flavor):
   module = load_exporter(template)
   exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
-  assert not exporter._recipe_enabled
-  marker.write_text(str(int(time.time()) + 3600))
-  exporter._refresh_recipe_marker(1.0)
   assert exporter._recipe_enabled
-  marker.unlink()
-  exporter._recipe_camera = "road"
-  exporter._refresh_recipe_marker(2.1)
-  assert not exporter._recipe_enabled
-  assert exporter._recipe_camera is None
 
 
 @pytest.mark.parametrize("template,flavor", TEMPLATES)

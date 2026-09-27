@@ -50,20 +50,7 @@ int main() {
   assert(dir != nullptr);
   const std::string socket_path = std::string(dir) + "/ui-export.sock";
   const std::string route_file = std::string(dir) + "/CurrentRoute";
-  const std::string marker_file = std::string(dir) + "/source-recipe-enabled";
-  assert(setenv("COMMAVIEW_SOURCE_RECIPE_MARKER", marker_file.c_str(), 1) == 0);
-  {
-    std::ofstream marker(marker_file);
-    marker << static_cast<long long>(std::time(nullptr)) + 3600 << "\n";
-  }
   assert(commaview::ui_export::default_recipe_dir() == "/data/commaview/recording-recipes");
-  {
-    std::ofstream marker(marker_file);
-    marker << static_cast<long long>(std::time(nullptr)) - 1 << "\n";
-  }
-  assert(commaview::ui_export::default_recipe_dir().empty());
-  unsetenv("COMMAVIEW_SOURCE_RECIPE_MARKER");
-  unlink(marker_file.c_str());
   assert(setenv("COMMAVIEWD_CURRENT_ROUTE_FILE", route_file.c_str(), 1) == 0);
 
   const std::string recipe_dir = std::string(dir) + "/recipes";
@@ -128,6 +115,7 @@ int main() {
   for (int i = 0; i < 100; ++i) {
     const auto current = server.stats();
     if (current.recipe_events == 2) {
+      assert(current.recipe_route == "000004b4--75e1f0ba8f");
       assert(current.recipe_dropped == 0);
       assert(current.recipe_write_failures == 0);
       assert(current.recipe_missing_route == 0);
@@ -142,6 +130,7 @@ int main() {
     const auto current = server.stats();
     if (current.snapshot_events >= 4) {
       assert(current.snapshot_active);
+      assert(current.snapshot_route == "000004b4--75e1f0ba8f");
       assert(current.snapshot_dropped == 0);
       assert(current.snapshot_write_failures == 0);
       assert(current.snapshot_events <= 6);  // 500 fast projection offers were sampled.
