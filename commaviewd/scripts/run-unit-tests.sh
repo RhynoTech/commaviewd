@@ -19,16 +19,27 @@ else
 fi
 TMP="$(mktemp -d)"
 trap "rm -rf \"$TMP\"" EXIT
+DIST_DIR="${DIST_DIR:-$REPO_ROOT/dist}"
+export COMMAVIEWD_HOST_BIN="$DIST_DIR/commaviewd-host"
 
-if [[ -f "$OP_ROOT/cereal/deprecated.capnp" ]]; then
-  DEPRECATED_SCHEMA_NAME="deprecated"
-elif [[ -f "$OP_ROOT/cereal/legacy.capnp" ]]; then
-  DEPRECATED_SCHEMA_NAME="legacy"
+if [[ -f "$OP_ROOT/cereal/log.capnp" ]]; then
+  OP_SOURCE_ROOT="$OP_ROOT"
+elif [[ -f "$OP_ROOT/openpilot/cereal/log.capnp" ]]; then
+  OP_SOURCE_ROOT="$OP_ROOT/openpilot"
 else
-  echo "[ERR] Missing required file: expected $OP_ROOT/cereal/deprecated.capnp or $OP_ROOT/cereal/legacy.capnp" >&2
+  echo "[ERR] Missing upstream cereal tree below $OP_ROOT" >&2
   exit 2
 fi
-DEPRECATED_SCHEMA_CPP="$OP_ROOT/cereal/gen/cpp/${DEPRECATED_SCHEMA_NAME}.capnp.c++"
+
+if [[ -f "$OP_SOURCE_ROOT/cereal/deprecated.capnp" ]]; then
+  DEPRECATED_SCHEMA_NAME="deprecated"
+elif [[ -f "$OP_SOURCE_ROOT/cereal/legacy.capnp" ]]; then
+  DEPRECATED_SCHEMA_NAME="legacy"
+else
+  echo "[ERR] Missing required deprecated or legacy cereal schema below $OP_SOURCE_ROOT" >&2
+  exit 2
+fi
+DEPRECATED_SCHEMA_CPP="$OP_SOURCE_ROOT/cereal/gen/cpp/${DEPRECATED_SCHEMA_NAME}.capnp.c++"
 
 OP_ROOT="$OP_ROOT" "$ROOT/scripts/build-ubuntu.sh" >/dev/null
 
@@ -39,7 +50,7 @@ elif command -v clang++ >/dev/null 2>&1; then
 else
   CXX_BIN="c++"
 fi
-INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/msgq_repo" )
+INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_SOURCE_ROOT" -I"$OP_SOURCE_ROOT/cereal/gen/cpp" -I"$OP_SOURCE_ROOT/cereal/messaging" -I"$OP_ROOT/msgq_repo" )
 
 "$CXX_BIN" --version >/dev/null 2>&1 || {
   echo "[ERR] C++ compiler not found: $CXX_BIN" >&2
@@ -63,15 +74,19 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
   "$ROOT/src/framing.cpp" \
   -o "$TMP/test_control_policy"
 
-"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
-  "$ROOT/tests/test_telemetry_json.cpp" \
-  "$ROOT/src/json_builder.cpp" \
-  "$OP_ROOT/cereal/gen/cpp/log.capnp.c++" \
-  "$OP_ROOT/cereal/gen/cpp/car.capnp.c++" \
-  "$DEPRECATED_SCHEMA_CPP" \
-  "$OP_ROOT/cereal/gen/cpp/custom.capnp.c++" \
-  -lcapnp -lkj -lpthread \
-  -o "$TMP/test_telemetry_json"
+# The old JSON bridge is not linked into commaviewd. Its legacy cereal test
+# targets commaai's pre-rename schema, not the current sunnypilot raw stream.
+if ! grep -q 'narrowRoadEncodeData' "$OP_SOURCE_ROOT/cereal/services.py"; then
+  "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
+    "$ROOT/tests/test_telemetry_json.cpp" \
+    "$ROOT/src/json_builder.cpp" \
+    "$OP_SOURCE_ROOT/cereal/gen/cpp/log.capnp.c++" \
+    "$OP_SOURCE_ROOT/cereal/gen/cpp/car.capnp.c++" \
+    "$DEPRECATED_SCHEMA_CPP" \
+    "$OP_SOURCE_ROOT/cereal/gen/cpp/custom.capnp.c++" \
+    -lcapnp -lkj -lpthread \
+    -o "$TMP/test_telemetry_json"
+fi
 
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_telemetry_stats.cpp" \
@@ -113,10 +128,15 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
   "$ROOT/src/source_recording_archive.cpp" \
   -o "$TMP/test_source_recording_archive"
 
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
+  "$ROOT/tests/test_msgq_header_recovery.cpp" \
+  "$DIST_DIR/msgq-commaviewd.cc" \
+  -lpthread -o "$TMP/test_msgq_header_recovery"
+
 "$TMP/test_net_framing"
 "$TMP/test_runtime_mode"
 "$TMP/test_control_policy"
-"$TMP/test_telemetry_json"
+if [[ -x "$TMP/test_telemetry_json" ]]; then "$TMP/test_telemetry_json"; fi
 "$TMP/test_telemetry_stats"
 "$TMP/test_telemetry_policy"
 "$TMP/test_video_transport_policy"
@@ -125,6 +145,7 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_ROOT/cereal/messaging" -I"$OP_ROOT/m
 "$TMP/test_http_server_cloexec"
 "$TMP/test_ui_export_socket"
 "$TMP/test_source_recording_archive"
+"$TMP/test_msgq_header_recovery"
 
 "$ROOT/tests/control_mode_api_contract_test.sh"
 "$ROOT/tests/control_mode_pairing_integration_test.sh"

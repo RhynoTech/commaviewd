@@ -21,6 +21,8 @@ assert_contains() {
 assert_file "$WORKFLOW"
 assert_file "$BUILD_BUNDLE"
 assert_file "$FIREBASE_UPDATE"
+assert_contains "repository: sunnypilot/openpilot" "$WORKFLOW" "release binary must use the comma's sunnypilot interface"
+assert_contains "COMMAVIEWD_RELEASE_SUNNYPILOT_REF" "$WORKFLOW" "release source must be pinned to sunnypilot"
 assert_contains "Onroad UI export transformer apply/verify" "$WORKFLOW" "release workflow should apply/verify transformer before packaging"
 assert_contains "apply_onroad_ui_export_patch.sh" "$WORKFLOW" "release workflow should apply transformer"
 assert_contains "verify_onroad_ui_export_patch.sh --json" "$WORKFLOW" "release workflow should verify transformer"

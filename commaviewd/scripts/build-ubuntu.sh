@@ -72,7 +72,7 @@ UI_EXPORT_SOCKET_SRC="$ROOT/src/ui_export_socket.cpp"
 HOST_OUT="$DIST_DIR/commaviewd-host"
 ARM_OUT="$DIST_DIR/commaviewd-aarch64"
 BUNDLE_LIB_DIR="$DIST_DIR/lib"
-PATCHED_MSGQ_LOCAL="${PATCHED_MSGQ_LOCAL:-$ROOT/msgq_patched.cc}"
+PATCHED_MSGQ_LOCAL="${PATCHED_MSGQ_LOCAL:-$DIST_DIR/msgq-commaviewd.cc}"
 
 detect_arm_lib() {
   local pattern="$1"
@@ -91,9 +91,9 @@ ARM_CAPNP_NAME="$(basename "$ARM_CAPNP_SO")"
 ARM_KJ_NAME="$(basename "$ARM_KJ_SO")"
 
 MSGQ_SOURCE="$MSGQ_ROOT/msgq/msgq.cc"
-if [[ -f "$PATCHED_MSGQ_LOCAL" ]]; then
-  MSGQ_SOURCE="$PATCHED_MSGQ_LOCAL"
-fi
+mkdir -p "$DIST_DIR"
+python3 "$ROOT/scripts/patch-msgq-recv.py" "$MSGQ_SOURCE" "$PATCHED_MSGQ_LOCAL"
+MSGQ_SOURCE="$PATCHED_MSGQ_LOCAL"
 
 DEPRECATED_SCHEMA_NAME=""
 if [[ -f "$OP_SOURCE_ROOT/cereal/deprecated.capnp" ]]; then

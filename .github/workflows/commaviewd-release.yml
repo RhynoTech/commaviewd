@@ -99,24 +99,24 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091
           . ci/upstream-refs.env
-          [[ -n "${COMMAVIEWD_RELEASE_OPENPILOT_REF:-}" ]] || {
-            echo "Missing COMMAVIEWD_RELEASE_OPENPILOT_REF in ci/upstream-refs.env" >&2
+          [[ -n "${COMMAVIEWD_RELEASE_SUNNYPILOT_REF:-}" ]] || {
+            echo "Missing COMMAVIEWD_RELEASE_SUNNYPILOT_REF in ci/upstream-refs.env" >&2
             exit 1
           }
-          echo "openpilot_ref=${COMMAVIEWD_RELEASE_OPENPILOT_REF}" >> "$GITHUB_OUTPUT"
+          echo "openpilot_ref=${COMMAVIEWD_RELEASE_SUNNYPILOT_REF}" >> "$GITHUB_OUTPUT"
 
       - name: Restore upstream source cache
         id: upstream-cache
         uses: actions/cache@v5
         with:
           path: openpilot-src
-          key: upstream-src-${{ runner.os }}-commaai-openpilot-${{ steps.release-upstream.outputs.openpilot_ref }}
+          key: upstream-src-${{ runner.os }}-sunnypilot-openpilot-${{ steps.release-upstream.outputs.openpilot_ref }}
 
       - name: Checkout openpilot source
         if: steps.upstream-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v6
         with:
-          repository: commaai/openpilot
+          repository: sunnypilot/openpilot
           ref: ${{ steps.release-upstream.outputs.openpilot_ref }}
           path: openpilot-src
           submodules: recursive
