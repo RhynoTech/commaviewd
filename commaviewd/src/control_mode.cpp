@@ -640,7 +640,15 @@ std::string runtime_debug_apply_response() {
   return out.str();
 }
 std::string read_param(const char* key) {
-  return read_file_trimmed(std::string(kParamsDir) + "/" + key);
+  std::string root = kParamsDir;
+#if !defined(__aarch64__)
+  // Host integration tests need an isolated params tree; device builds never
+  // permit overriding the vehicle road-state source.
+  if (const char* test_root = std::getenv("COMMAVIEWD_TEST_PARAMS_DIR")) {
+    if (*test_root) root = test_root;
+  }
+#endif
+  return read_file_trimmed(root + "/" + key);
 }
 
 bool write_param(const char* key, const char* value) {
@@ -650,7 +658,16 @@ bool write_param(const char* key, const char* value) {
 }
 
 bool is_onroad() {
-  return read_param("IsOnroad") == "1";
+  // Sunnypilot publishes IsOffroad, not IsOnroad. Prefer the actual device
+  // state so the status API and offroad-only mutations agree with the car.
+  const std::string offroad = read_param("IsOffroad");
+  if (offroad == "0") return true;
+  if (offroad == "1") return false;
+  const std::string onroad = read_param("IsOnroad");
+  if (onroad == "1") return true;
+  if (onroad == "0") return false;
+  // An unknown state must not authorize offroad-only changes.
+  return true;
 }
 
 bool extract_string_field(const std::string& body, const char* key, std::string* value_out) {

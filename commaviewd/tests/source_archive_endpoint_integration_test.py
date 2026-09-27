@@ -41,7 +41,11 @@ def main():
       probe.bind(("127.0.0.1", 0))
       port = probe.getsockname()[1]
     env = os.environ.copy()
+    params = temp / "params"
+    params.mkdir()
+    (params / "IsOffroad").write_text("1", encoding="ascii")
     env.update(COMMAVIEWD_API_TOKEN="source-test-token",
+               COMMAVIEWD_TEST_PARAMS_DIR=str(params),
                COMMAVIEWD_SOURCE_ARCHIVE_ROOT=str(temp / "realdata"),
                COMMAVIEWD_RECIPE_DIR=str(recipes))
     process = subprocess.Popen([str(binary), "control", "--port", str(port)], env=env,
