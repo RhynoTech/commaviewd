@@ -10,12 +10,12 @@ INTERFACE_GUARD_CONTRACT="$ROOT/tests/upstream_interface_guard_transformer_test.
 DEVICE_TEST_WORKFLOW_CONTRACT="$ROOT/tests/device_test_workflow_contract_test.sh"
 CI_WORKFLOW_CONTRACT="$ROOT/tests/ci_workflow_contract_test.sh"
 BINARY_CONTRACT="$ROOT/scripts/binary-contract-check.sh"
-HUD_LITE_CI_CONTRACT="$ROOT/tests/onroad_ui_export_ci_contract_test.sh"
-HUD_LITE_PATCH_CONTRACT="$REPO_ROOT/comma/tests/onroad_ui_export_patch_contract_test.sh"
+ONROAD_UI_EXPORT_CI_CONTRACT="$ROOT/tests/onroad_ui_export_ci_contract_test.sh"
+ONROAD_UI_EXPORT_PATCH_CONTRACT="$REPO_ROOT/comma/tests/onroad_ui_export_patch_contract_test.sh"
 LOCAL_DISCOVERY_CONTRACT="$ROOT/tests/local_discovery_contract_test.sh"
 BUNDLE="$REPO_ROOT/tools/release/comma-build-bundle.sh"
 
-for script in "$RUNNER" "$PIPELINE" "$INTERFACE_GUARD" "$INTERFACE_GUARD_CONTRACT" "$BINARY_CONTRACT" "$HUD_LITE_CI_CONTRACT" "$HUD_LITE_PATCH_CONTRACT" "$LOCAL_DISCOVERY_CONTRACT" "$BUNDLE" "$DEVICE_TEST_WORKFLOW_CONTRACT" "$CI_WORKFLOW_CONTRACT"; do
+for script in "$RUNNER" "$PIPELINE" "$INTERFACE_GUARD" "$INTERFACE_GUARD_CONTRACT" "$BINARY_CONTRACT" "$ONROAD_UI_EXPORT_CI_CONTRACT" "$ONROAD_UI_EXPORT_PATCH_CONTRACT" "$LOCAL_DISCOVERY_CONTRACT" "$BUNDLE" "$DEVICE_TEST_WORKFLOW_CONTRACT" "$CI_WORKFLOW_CONTRACT"; do
   [ -x "$script" ] || { echo "FAIL: missing executable $script"; exit 1; }
 done
 
@@ -26,8 +26,8 @@ done
 "$DEVICE_TEST_WORKFLOW_CONTRACT" >/dev/null
 "$CI_WORKFLOW_CONTRACT" >/dev/null
 "$BINARY_CONTRACT" --help >/dev/null
-"$HUD_LITE_CI_CONTRACT" >/dev/null
-"$HUD_LITE_PATCH_CONTRACT" >/dev/null
+"$ONROAD_UI_EXPORT_CI_CONTRACT" >/dev/null
+"$ONROAD_UI_EXPORT_PATCH_CONTRACT" >/dev/null
 "$LOCAL_DISCOVERY_CONTRACT" >/dev/null
 "$BUNDLE" --help >/dev/null
 

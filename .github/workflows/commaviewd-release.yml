@@ -35,8 +35,6 @@ jobs:
   bundle-and-publish:
     name: Build comma-device release bundle + publish assets
     runs-on: ubuntu-24.04
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     timeout-minutes: 90
 
     steps:

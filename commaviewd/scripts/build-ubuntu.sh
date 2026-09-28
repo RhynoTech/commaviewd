@@ -88,12 +88,10 @@ ARM_KJ_SO="${ARM_KJ_SO:-$(detect_arm_lib /usr/lib/aarch64-linux-gnu/libkj-*.so |
 ARM_CAPNP_NAME="$(basename "$ARM_CAPNP_SO")"
 ARM_KJ_NAME="$(basename "$ARM_KJ_SO")"
 
-MSGQ_SOURCE="$MSGQ_ROOT/msgq/msgq.cc"
 mkdir -p "$DIST_DIR"
-python3 "$ROOT/scripts/patch-msgq-recv.py" "$MSGQ_SOURCE" "$PATCHED_MSGQ_LOCAL"
+python3 "$ROOT/scripts/patch-msgq-recv.py" "$MSGQ_ROOT/msgq/msgq.cc" "$PATCHED_MSGQ_LOCAL"
 MSGQ_SOURCE="$PATCHED_MSGQ_LOCAL"
 
-DEPRECATED_SCHEMA_NAME=""
 if [[ -f "$OP_SOURCE_ROOT/cereal/deprecated.capnp" ]]; then
   DEPRECATED_SCHEMA_NAME="deprecated"
 elif [[ -f "$OP_SOURCE_ROOT/cereal/legacy.capnp" ]]; then
@@ -128,7 +126,7 @@ if [[ "$SKIP_ARM" != "1" ]]; then
   done
 fi
 
-mkdir -p "$OP_SOURCE_ROOT/cereal/gen/cpp" "$DIST_DIR" "$BUNDLE_LIB_DIR"
+mkdir -p "$OP_SOURCE_ROOT/cereal/gen/cpp" "$BUNDLE_LIB_DIR"
 
 VIDEO_SCHEMA_FLAGS=()
 if grep -Eq 'narrowRoadEncodeData|cabinEncodeData' "$OP_SOURCE_ROOT/cereal/services.py"; then
@@ -194,4 +192,4 @@ install -m 755 "$ARM_KJ_SO" "$BUNDLE_LIB_DIR/$ARM_KJ_NAME"
 echo "[5/5] Done"
 ls -lh "$HOST_OUT" "$ARM_OUT" "$BUNDLE_LIB_DIR/$ARM_CAPNP_NAME" "$BUNDLE_LIB_DIR/$ARM_KJ_NAME"
 file "$HOST_OUT" "$ARM_OUT"
-aarch64-linux-gnu-readelf -d "$ARM_OUT" | egrep "NEEDED|RPATH|RUNPATH" || true
+aarch64-linux-gnu-readelf -d "$ARM_OUT" | grep -E "NEEDED|RPATH|RUNPATH" || true

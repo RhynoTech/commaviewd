@@ -5,5 +5,8 @@
 /comma4/backups/
 /comma4/config/
 /comma4/run/
+/comma/backups/
+/comma/config/
+/comma/run/
 __pycache__/
 *.pyc

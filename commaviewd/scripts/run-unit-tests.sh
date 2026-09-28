@@ -4,7 +4,8 @@ set -euo pipefail
 if [[ "${1:-}" == "--help" ]]; then
   cat <<USAGE
 Usage: OP_ROOT=/path/to/openpilot-src commaviewd/scripts/run-unit-tests.sh
-Compiles and runs commaviewd unit tests (framing, runtime mode, control policy, telemetry).
+Builds commaviewd (via build-ubuntu.sh), then runs the C++ unit tests, the contract and
+integration test scripts, and pytest over comma/tests. Run it from the repository root.
 USAGE
   exit 0
 fi
@@ -18,7 +19,7 @@ else
   OP_ROOT="${OP_ROOT:-$HOME/openpilot-src}"
 fi
 TMP="$(mktemp -d)"
-trap "rm -rf \"$TMP\"" EXIT
+trap 'rm -rf "$TMP"' EXIT
 DIST_DIR="${DIST_DIR:-$REPO_ROOT/dist}"
 export COMMAVIEWD_HOST_BIN="$DIST_DIR/commaviewd-host"
 
@@ -30,16 +31,6 @@ else
   echo "[ERR] Missing upstream cereal tree below $OP_ROOT" >&2
   exit 2
 fi
-
-if [[ -f "$OP_SOURCE_ROOT/cereal/deprecated.capnp" ]]; then
-  DEPRECATED_SCHEMA_NAME="deprecated"
-elif [[ -f "$OP_SOURCE_ROOT/cereal/legacy.capnp" ]]; then
-  DEPRECATED_SCHEMA_NAME="legacy"
-else
-  echo "[ERR] Missing required deprecated or legacy cereal schema below $OP_SOURCE_ROOT" >&2
-  exit 2
-fi
-DEPRECATED_SCHEMA_CPP="$OP_SOURCE_ROOT/cereal/gen/cpp/${DEPRECATED_SCHEMA_NAME}.capnp.c++"
 
 OP_ROOT="$OP_ROOT" "$ROOT/scripts/build-ubuntu.sh" >/dev/null
 
@@ -129,6 +120,7 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_SOURCE_ROOT" -I"$OP_SOURCE_ROOT/cere
 "$ROOT/tests/control_mode_api_contract_test.sh"
 "$ROOT/tests/control_mode_pairing_integration_test.sh"
 python3 "$ROOT/tests/source_archive_endpoint_integration_test.py"
+python3 "$ROOT/tests/wifi_power_save_api_integration_test.py"
 "$ROOT/tests/local_discovery_contract_test.sh"
 "$ROOT/tests/upstream_interface_guard_transformer_test.sh"
 "$ROOT/tests/device_test_workflow_contract_test.sh"
@@ -139,5 +131,13 @@ python3 "$ROOT/tests/source_archive_endpoint_integration_test.py"
 "$ROOT/tests/video_transport_bridge_contract_test.sh"
 "$ROOT/tests/runtime_split_transport_contract_test.sh"
 "$ROOT/tests/build_video_schema_contract_test.sh"
+"$ROOT/tests/runtime_debug_policy_contract_test.sh"
+"$ROOT/tests/timestamped_video_runtime_contract_test.sh"
+"$ROOT/tests/onroad_ui_export_ci_contract_test.sh"
+"$REPO_ROOT/comma/tests/onroad_ui_export_patch_contract_test.sh"
+"$REPO_ROOT/comma/tests/runtime_lifecycle_log_contract_test.sh"
+"$REPO_ROOT/comma/tests/runtime_log_rotation_contract_test.sh"
+"$REPO_ROOT/comma/tests/runtime_process_supervisor_contract_test.sh"
+"$REPO_ROOT/comma/tests/runtime_support_logs_contract_test.sh"
 python3 -m pytest "$REPO_ROOT/comma/tests" -q
 echo "PASS: commaviewd unit tests passed"
