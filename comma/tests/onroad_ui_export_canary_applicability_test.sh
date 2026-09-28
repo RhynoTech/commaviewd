@@ -124,7 +124,11 @@ run_ref() {
     git -C "$checkout" fetch --depth 1 origin "$ref"
     git -C "$checkout" checkout -q FETCH_HEAD
   else
-    git clone --depth 1 --branch "$ref" "$repo" "$checkout"
+    # Blobless and sparse: the driving models are most of a release tree (1.8 of 2.0 GB on
+    # release-chestnut) and nothing here reads them. Later fetches keep the blobless filter.
+    git clone --depth 1 --filter=blob:none --no-checkout --branch "$ref" "$repo" "$checkout"
+    git -C "$checkout" sparse-checkout set --no-cone '/*' '!/selfdrive/modeld/models/' '!/openpilot/selfdrive/modeld/models/'
+    git -C "$checkout" checkout -q "$ref"
   fi
 
   git -C "$checkout" reset --hard -q HEAD
