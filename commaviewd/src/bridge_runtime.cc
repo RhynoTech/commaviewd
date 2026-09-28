@@ -11,7 +11,10 @@
 /**
  * CommaView Unified Bridge (C++)
  *
- * Streams HEVC video and raw telemetry on legacy road+wide ports, plus a telemetry-only stream.
+ * Streams encoded camera video (HEVC, or H.264 in livestream mode) and raw UI-export telemetry.
+ * The telemetry-only port always carries telemetry. The road/wide video ports also carry it unless
+ * the client's control frame turns it off: telemetryOnVideo defaults to on for transportVersion 1
+ * (legacy) clients and to off for transportVersion >= 2 clients.
  *
  * Ports:
  *   8200 road, 8201 wide, 8202 driver, 8203 telemetry
@@ -19,9 +22,9 @@
  * Framing:
  *   [4-byte big-endian length][payload]
  *   payload[0] = 0x06 (video chunk): chunked timestamp/geometry/header-length envelope + bytes
- *   payload[0] = 0x02 (meta):  [type][json bytes]
  *   payload[0] = 0x03 (control inbound): [type][json bytes]
  *   payload[0] = 0x04 (meta-raw): [type][version][service_idx][raw_len_be32][raw_event]
+ * The legacy 0x02 JSON meta frame is no longer sent.
  */
 #include <arpa/inet.h>
 #include <cerrno>
@@ -32,6 +35,7 @@
 #include <cstring>
 #include <ctime>
 #include <memory>
+#include <optional>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <linux/sockios.h>
@@ -66,15 +70,13 @@ using commaview::runtime_debug::render_config_json;
 using commaview::runtime_debug::runtime_debug_effective_path;
 using commaview::runtime_debug::runtime_debug_stats_path;
 using commaview::runtime_debug::service_mode_to_string;
-using commaview::telemetry::default_service_policy_for_name;
-using commaview::telemetry::service_policy_subscribes;
 using commaview::telemetry::telemetry_policy_allows_emit;
 using commaview::telemetry::telemetry_policy_fetches_latest;
 
-
 static constexpr uint8_t MSG_CONTROL = 0x03;
 static constexpr uint8_t MSG_META_RAW = 0x04;
-static constexpr uint8_t RAW_META_ENVELOPE_V4 = 0x04;
+// Retired capnp envelope; the app accepts only V5. Kept because raw_only_runtime_contract_test.sh pins it.
+[[maybe_unused]] static constexpr uint8_t RAW_META_ENVELOPE_V4 = 0x04;
 static constexpr uint8_t RAW_META_ENVELOPE_V5 = 0x05;
 static_assert(commaview::video::MSG_VIDEO_CHUNK == 0x06,
               "bridge runtime must send chunked video payloads");
@@ -91,7 +93,9 @@ static constexpr uint64_t TELEMETRY_PARTIAL_SEND_RECOVERY_BUDGET_MICROS = 250000
 static constexpr uint64_t VIDEO_PARTIAL_SEND_RECOVERY_BUDGET_MICROS = 2000000ULL;
 static constexpr size_t VIDEO_FRAME_QUEUE_CAPACITY = 3;
 
-// Runtime policy defaults favor the upstream-organized onroad domains we export over the UI socket.
+// Wire protocol: the index of each name is the service_idx byte in 0x04 meta-raw frames and the
+// UI export socket service id. Keep the order identical to telemetry::kDefaultServicePolicies,
+// the Python exporters' *_SERVICE_INDEX constants, and the app's TELEMETRY_SERVICE_TYPES.
 static constexpr std::array<const char*, 20> kTelemetryServices = {
   "uiStateOnroad",
   "selfdriveState",
@@ -115,8 +119,25 @@ static constexpr std::array<const char*, 20> kTelemetryServices = {
   "wideRoadCameraState",
 };
 static constexpr int NUM_TELEM = static_cast<int>(kTelemetryServices.size());
-static constexpr int TELEMETRY_EMIT_MS_DEFAULT = 50;  // 20 Hz base poll for PASS and future SAMPLE modes
-static int g_telemetry_emit_ms = TELEMETRY_EMIT_MS_DEFAULT;
+static constexpr int TELEMETRY_EMIT_MS = 50;  // 20 Hz base poll for PASS and SAMPLE modes
+
+static constexpr bool telemetry_service_tables_match() {
+  if (kTelemetryServices.size() != commaview::telemetry::kDefaultServicePolicyCount) return false;
+  for (size_t i = 0; i < kTelemetryServices.size(); ++i) {
+    const char* a = kTelemetryServices[i];
+    const char* b = commaview::telemetry::kDefaultServicePolicies[i].service;
+    while (*a != '\0' && *a == *b) {
+      ++a;
+      ++b;
+    }
+    if (*a != *b) return false;
+  }
+  return true;
+}
+static_assert(telemetry_service_tables_match(),
+              "kTelemetryServices must list telemetry::kDefaultServicePolicies in the same order");
+static_assert(NUM_TELEM == commaview::ui_export::kServiceCount,
+              "UI export socket service ids must cover kTelemetryServices");
 
 #if defined(COMMAVIEW_CURRENT_VIDEO_SCHEMA)
 static const char* VIDEO_SERVICES_PROD[] = {
@@ -134,10 +155,8 @@ static const char* VIDEO_SERVICES_LIVESTREAM[] = {
 };
 #endif
 
-
 static std::atomic<bool> g_running{true};
 static bool g_livestream_video_enabled = false;
-
 
 static std::atomic<int> g_active_road{0};
 static std::atomic<int> g_active_wide{0};
@@ -150,30 +169,10 @@ static std::atomic<int>& active_counter_for_port(int port) {
   return g_active_driver;
 }
 
-static cereal::Event::Which expected_video_which_for_port(int port) {
-  return commaview::video::expected_video_which_for_port(port, g_livestream_video_enabled);
-}
-
-
-
-
-
-
-static const char* compiled_video_service_for_port(int port) {
-  const char** services = g_livestream_video_enabled ? VIDEO_SERVICES_LIVESTREAM : VIDEO_SERVICES_PROD;
-  if (port == PORT_ROAD) return services[0];
-  if (port == PORT_WIDE) return services[1];
-  return services[2];
-}
-
-static size_t queue_size_for_port(int port) {
-  auto it = services.find(std::string(compiled_video_service_for_port(port)));
+static size_t queue_size_for_service(const char* video_service) {
+  auto it = services.find(std::string(video_service));
   if (it == services.end()) return 0;
   return it->second.queue_size;
-}
-
-static void put_be32(uint8_t* buf, uint32_t val) {
-  commaview::net::put_be32(buf, val);
 }
 
 static void telemetry_loop(int client_fd,
@@ -181,6 +180,27 @@ static void telemetry_loop(int client_fd,
                            std::atomic<bool>* disconnect_requested,
                            std::mutex* send_mutex,
                            std::atomic<bool>* telemetry_enabled);
+
+// Video chunks and telemetry frames share one client socket; send_mutex serializes whole frames.
+// The send deadline starts only after the lock is held.
+static commaview::net::SendResult send_frame_locked(
+    int fd,
+    const uint8_t* payload,
+    size_t payload_len,
+    std::mutex* send_mutex,
+    uint64_t partial_recovery_budget_micros = VIDEO_PARTIAL_SEND_RECOVERY_BUDGET_MICROS) {
+  const auto send = [&] {
+    return commaview::net::send_frame_with_partial_recovery(
+        fd,
+        payload,
+        payload_len,
+        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS),
+        partial_recovery_budget_micros);
+  };
+  if (send_mutex == nullptr) return send();
+  std::lock_guard<std::mutex> send_lock(*send_mutex);
+  return send();
+}
 
 static commaview::net::SendResult send_meta_bytes_bounded(int fd,
                                                            const uint8_t* bytes,
@@ -192,21 +212,11 @@ static commaview::net::SendResult send_meta_bytes_bounded(int fd,
   std::vector<uint8_t> framed_payload(1 + bytes_len);
   framed_payload[0] = msg_type;
   memcpy(&framed_payload[1], bytes, bytes_len);
-  if (send_mutex != nullptr) {
-    std::lock_guard<std::mutex> send_lock(*send_mutex);
-    return commaview::net::send_frame_with_partial_recovery(
-        fd,
-        framed_payload.data(),
-        framed_payload.size(),
-        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS),
-        TELEMETRY_PARTIAL_SEND_RECOVERY_BUDGET_MICROS);
-  }
-  return commaview::net::send_frame_with_partial_recovery(
-      fd,
-      framed_payload.data(),
-      framed_payload.size(),
-      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS),
-      TELEMETRY_PARTIAL_SEND_RECOVERY_BUDGET_MICROS);
+  return send_frame_locked(fd,
+                           framed_payload.data(),
+                           framed_payload.size(),
+                           send_mutex,
+                           TELEMETRY_PARTIAL_SEND_RECOVERY_BUDGET_MICROS);
 }
 
 static commaview::net::SendResult send_meta_raw_frame(int fd,
@@ -221,7 +231,7 @@ static commaview::net::SendResult send_meta_raw_frame(int fd,
   std::vector<uint8_t> payload(1 + 1 + 4 + raw_len);
   payload[0] = envelope_version;
   payload[1] = service_index;
-  put_be32(&payload[2], raw_len);
+  commaview::net::put_be32(&payload[2], raw_len);
   memcpy(&payload[6], raw_data, raw_len);
   return send_meta_bytes_bounded(fd, payload.data(), payload.size(), MSG_META_RAW, send_mutex);
 }
@@ -336,9 +346,9 @@ static void append_runtime_run_event(const std::string& event,
   }
   out << "{"
       << "\"tsMs\":" << runtime_now_ms() << ","
-      << "\"event\":\"" << runtime_json_escape(event) << "\"," 
+      << "\"event\":\"" << runtime_json_escape(event) << "\","
       << "\"pid\":" << getpid() << ","
-      << "\"mode\":\"bridge\"," 
+      << "\"mode\":\"bridge\","
       << "\"restartReason\":\"" << runtime_json_escape(restart_reason) << "\"";
   if (!stream.empty()) out << ",\"stream\":\"" << runtime_json_escape(stream) << "\"";
   if (!peer.empty()) out << ",\"peer\":\"" << runtime_json_escape(peer) << "\"";
@@ -503,7 +513,7 @@ static void note_runtime_emit(int idx, size_t bytes, bool sampled, bool ok, uint
 static void note_runtime_loop_sample(bool telemetry_loop, uint64_t elapsed_micros) {
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
   if (telemetry_loop) {
-    note_runtime_loop(&g_runtime_state.telemetry_loop, elapsed_micros, g_telemetry_emit_ms);
+    note_runtime_loop(&g_runtime_state.telemetry_loop, elapsed_micros, TELEMETRY_EMIT_MS);
   } else {
     note_runtime_loop(&g_runtime_state.video_loop, elapsed_micros, 20);
   }
@@ -533,8 +543,7 @@ static void note_video_queued_frame_age(uint64_t age_ms) {
       age_ms);
 }
 
-static void note_video_chunk_send_result(const char* /*stream*/,
-                                         const commaview::video::VideoChunk& chunk,
+static void note_video_chunk_send_result(const commaview::video::VideoChunk& chunk,
                                          const commaview::net::SendResult& result) {
   std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
   commaview::runtime::note_video_chunk_send_result(
@@ -637,53 +646,12 @@ static void note_runtime_peer_disconnect(const char* stream,
   flush_runtime_state();
 }
 
-static void set_session_policy(const std::string& session_id, bool suppress_video) {
-  commaview::control::set_session_policy(session_id, suppress_video);
-}
-
-static bool get_session_policy(const std::string& session_id, bool* suppress_video) {
-  return commaview::control::get_session_policy(session_id, suppress_video);
-}
-
 using ClientControlState = commaview::control::ClientControlState;
 
 static void consume_client_control_frames(int client_fd,
                                           ClientControlState* state,
                                           const char* video_service) {
   commaview::control::consume_client_control_frames(client_fd, state, video_service, MSG_CONTROL);
-}
-
-static commaview::net::SendResult send_frame_locked(int fd,
-                                                    const uint8_t* payload,
-                                                    size_t payload_len,
-                                                    std::mutex* send_mutex) {
-  if (send_mutex != nullptr) {
-    std::lock_guard<std::mutex> send_lock(*send_mutex);
-    return commaview::net::send_frame_with_partial_recovery(
-        fd,
-        payload,
-        payload_len,
-        commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS),
-        VIDEO_PARTIAL_SEND_RECOVERY_BUDGET_MICROS);
-  }
-  return commaview::net::send_frame_with_partial_recovery(
-      fd,
-      payload,
-      payload_len,
-      commaview::net::SendDeadline::after_micros(VIDEO_SEND_BUDGET_MICROS),
-      VIDEO_PARTIAL_SEND_RECOVERY_BUDGET_MICROS);
-}
-
-static bool client_socket_alive(int fd) {
-  return commaview::net::client_socket_alive(fd);
-}
-
-static int create_server(int port) {
-  return commaview::net::create_server(port);
-}
-
-static cereal::EncodeData::Reader read_encode_data(cereal::Event::Reader event, int port) {
-  return commaview::video::read_encode_data(event, port, g_livestream_video_enabled);
 }
 
 static void handle_video_client(int client_fd, const char* video_service, int port) {
@@ -715,12 +683,8 @@ static void handle_video_client(int client_fd, const char* video_service, int po
 
   Context* ctx = Context::create();
 
-  const bool enable_video = true;
-  SubSocket* video_sock = nullptr;
-  if (enable_video) {
-    const size_t video_segment_size = queue_size_for_port(port);
-    video_sock = SubSocket::create(ctx, video_service, "127.0.0.1", true, true, video_segment_size);
-  }
+  const size_t video_segment_size = queue_size_for_service(video_service);
+  SubSocket* video_sock = SubSocket::create(ctx, video_service, "127.0.0.1", true, true, video_segment_size);
 
   const bool include_telemetry = (port == PORT_ROAD || port == PORT_WIDE);
 
@@ -799,7 +763,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
       for (const auto& chunk : chunks) {
         const auto payload = commaview::video::encode_video_chunk_payload(chunk);
         const auto send_result = send_frame_locked(client_fd, payload.data(), payload.size(), &send_mutex);
-        note_video_chunk_send_result(video_service, chunk, send_result);
+        note_video_chunk_send_result(chunk, send_result);
         if (send_result.status == commaview::net::SendStatus::Ok &&
             send_result.elapsed_micros >= 100000 &&
             !slow_send_tcp_snapshot_taken.exchange(true)) {
@@ -854,7 +818,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
 
   while (g_running) {
     const auto loop_started = std::chrono::steady_clock::now();
-    if (!client_socket_alive(client_fd)) {
+    if (!commaview::net::client_socket_alive(client_fd)) {
       note_runtime_peer_disconnect(video_service, "client_socket_alive", peer_closed_result());
       break;
     }
@@ -884,7 +848,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
 
         if (video_sock != nullptr && sock == video_sock) {
           const auto which = event.which();
-          const auto expected = expected_video_which_for_port(port);
+          const auto expected = commaview::video::expected_video_which_for_port(port, g_livestream_video_enabled);
           if (which != expected) {
             wrong_union_count++;
             if (wrong_union_count <= 20 || (wrong_union_count % 100) == 0) {
@@ -899,7 +863,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
             continue;
           }
 
-          auto ed = read_encode_data(event, port);
+          auto ed = commaview::video::read_encode_data(event, port, g_livestream_video_enabled);
           auto header = ed.getHeader();
           auto data = ed.getData();
 
@@ -912,7 +876,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
 
           bool suppress_video = false;
           bool session_policy = false;
-          if (!suppress_video && get_session_policy(control_state.bound_session_id, &session_policy)) {
+          if (commaview::control::get_session_policy(control_state.bound_session_id, &session_policy)) {
             suppress_video = session_policy;
           }
 
@@ -990,7 +954,6 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     }
   }
 
-disconnect:
   append_runtime_run_event("client_disconnected", video_service, addr_str);
   printf("[%s] client disconnected: %s\n", video_service, addr_str);
   fflush(stdout);
@@ -1008,6 +971,7 @@ disconnect:
   if (video_sock != nullptr) delete video_sock;
   delete ctx;
 }
+
 static void telemetry_loop(int client_fd,
                            const char* stream_name,
                            std::atomic<bool>* disconnect_requested,
@@ -1021,14 +985,14 @@ static void telemetry_loop(int client_fd,
   std::array<uint64_t, static_cast<size_t>(NUM_TELEM)> last_ui_emit_wall_ms = {};
 
   while (g_running && !disconnect_requested->load()) {
-    if (!client_socket_alive(client_fd)) {
+    if (!commaview::net::client_socket_alive(client_fd)) {
       note_runtime_peer_disconnect(stream_name, "telemetry_socket_alive", peer_closed_result());
       disconnect_requested->store(true);
       break;
     }
 
     if (telemetry_enabled != nullptr && !telemetry_enabled->load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(g_telemetry_emit_ms));
+      std::this_thread::sleep_for(std::chrono::milliseconds(TELEMETRY_EMIT_MS));
       continue;
     }
 
@@ -1044,10 +1008,9 @@ static void telemetry_loop(int client_fd,
     }
 
     do {
-      next_telem_poll += std::chrono::milliseconds(g_telemetry_emit_ms);
+      next_telem_poll += std::chrono::milliseconds(TELEMETRY_EMIT_MS);
     } while (next_telem_poll <= now);
 
-    std::array<bool, static_cast<size_t>(NUM_TELEM)> ui_fresh = {};
     if (g_ui_export_socket != nullptr) {
       for (int i = 0; i < NUM_TELEM; ++i) {
         const char* service_name = kTelemetryServices[static_cast<size_t>(i)];
@@ -1062,7 +1025,6 @@ static void telemetry_loop(int client_fd,
                                               &frame)) {
           continue;
         }
-        ui_fresh[static_cast<size_t>(i)] = true;
         const uint64_t now_ms = runtime_now_ms();
         if (!telemetry_policy_allows_emit(policy,
                                           frame.updated_at_ms,
@@ -1118,7 +1080,7 @@ static void telemetry_loop(int client_fd,
       printf("[%s] telem_raw=%llu [DIRECT_UI_SOCKET_ONLY] (read+send throttled %dms)\n",
              stream_name,
              static_cast<unsigned long long>(telem_raw_count),
-             g_telemetry_emit_ms);
+             TELEMETRY_EMIT_MS);
       fflush(stdout);
     }
 
@@ -1155,23 +1117,21 @@ static void handle_telemetry_client(int client_fd) {
   note_runtime_connect();
 
   std::atomic<bool> disconnect_requested{false};
-  std::atomic<bool> telemetry_enabled_for_client{true};
   std::mutex send_mutex;
   std::thread telemetry_thread(telemetry_loop,
                                client_fd,
                                stream_name,
                                &disconnect_requested,
                                &send_mutex,
-                               &telemetry_enabled_for_client);
+                               nullptr);  // telemetry-only port: always enabled
   ClientControlState control_state;
 
   while (g_running && !disconnect_requested.load()) {
-    if (!client_socket_alive(client_fd)) {
+    if (!commaview::net::client_socket_alive(client_fd)) {
       note_runtime_peer_disconnect(stream_name, "client_socket_alive", peer_closed_result());
       break;
     }
     consume_client_control_frames(client_fd, &control_state, stream_name);
-    telemetry_enabled_for_client.store(true);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
 
@@ -1212,8 +1172,6 @@ int commaview_bridge_main(int argc, char* argv[]) {
   signal(SIGTERM, sig_handler);
   signal(SIGPIPE, SIG_IGN);
 
-
-
   (void)argc;
   (void)argv;
   const char* source = std::getenv("COMMAVIEW_VIDEO_SOURCE");
@@ -1233,7 +1191,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
   printf("CommaView Bridge v3.3.8-safe-bundle (C++) [VIDEO+TELEMETRY][VIDEO_SOURCE=%s][RAW_ONLY_DEFAULT][DIRECT_V2_UI_EXPORT_DEFAULT][UI_SOCKET_PREFERRED=%s][META_MODE=raw-only][EMIT_MS=%d]\n",
          g_livestream_video_enabled ? "livestream-h264" : "full-hevc",
          ui_export_socket_ready ? "on" : "off",
-         g_telemetry_emit_ms);
+         TELEMETRY_EMIT_MS);
   fflush(stdout);
 
   std::vector<std::pair<int, const char*>> streams;
@@ -1246,7 +1204,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
   std::vector<int> server_fds;
 
   for (auto& s : streams) {
-    int fd = create_server(s.first);
+    int fd = commaview::net::create_server(s.first);
     if (fd < 0) {
       fprintf(stderr, "failed on port %d\n", s.first);
       return 1;

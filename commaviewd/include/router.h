@@ -4,7 +4,7 @@
 
 namespace commaview::video {
 
-cereal::Event::Which expected_video_which_for_port(int port, bool dev_mode);
-cereal::EncodeData::Reader read_encode_data(cereal::Event::Reader event, int port, bool dev_mode);
+cereal::Event::Which expected_video_which_for_port(int port, bool livestream);
+cereal::EncodeData::Reader read_encode_data(cereal::Event::Reader event, int port, bool livestream);
 
 }  // namespace commaview::video

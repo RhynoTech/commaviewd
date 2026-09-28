@@ -74,25 +74,6 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_SOURCE_ROOT" -I"$OP_SOURCE_ROOT/cere
   "$ROOT/src/framing.cpp" \
   -o "$TMP/test_control_policy"
 
-# The old JSON bridge is not linked into commaviewd. Its legacy cereal test
-# targets commaai's pre-rename schema, not the current sunnypilot raw stream.
-if ! grep -q 'narrowRoadEncodeData' "$OP_SOURCE_ROOT/cereal/services.py"; then
-  "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
-    "$ROOT/tests/test_telemetry_json.cpp" \
-    "$ROOT/src/json_builder.cpp" \
-    "$OP_SOURCE_ROOT/cereal/gen/cpp/log.capnp.c++" \
-    "$OP_SOURCE_ROOT/cereal/gen/cpp/car.capnp.c++" \
-    "$DEPRECATED_SCHEMA_CPP" \
-    "$OP_SOURCE_ROOT/cereal/gen/cpp/custom.capnp.c++" \
-    -lcapnp -lkj -lpthread \
-    -o "$TMP/test_telemetry_json"
-fi
-
-"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
-  "$ROOT/tests/test_telemetry_stats.cpp" \
-  "$ROOT/src/telemetry_stats.cpp" \
-  -o "$TMP/test_telemetry_stats"
-
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
   "$ROOT/tests/test_telemetry_policy.cpp" \
   -o "$TMP/test_telemetry_policy"
@@ -136,8 +117,6 @@ fi
 "$TMP/test_net_framing"
 "$TMP/test_runtime_mode"
 "$TMP/test_control_policy"
-if [[ -x "$TMP/test_telemetry_json" ]]; then "$TMP/test_telemetry_json"; fi
-"$TMP/test_telemetry_stats"
 "$TMP/test_telemetry_policy"
 "$TMP/test_video_transport_policy"
 "$TMP/test_video_chunk_protocol"

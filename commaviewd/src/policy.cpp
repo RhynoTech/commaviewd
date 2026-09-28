@@ -19,21 +19,29 @@ constexpr uint32_t MAX_INBOUND_FRAME_BYTES = 64 * 1024;
 std::mutex g_session_policy_mu;
 std::unordered_map<std::string, bool> g_session_policy;
 
+// Minimal scanner for the app's flat set_policy object: finds the first "key", the next ':' after
+// it, and returns the index of the first non-space character after that (json.size() if none), or
+// npos when the key or ':' is missing.
+size_t find_json_value(const std::string& json, const char* key) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t pos = json.find(needle);
+  if (pos == std::string::npos) return std::string::npos;
+
+  pos = json.find(':', pos + needle.size());
+  if (pos == std::string::npos) return std::string::npos;
+  pos++;
+
+  while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+  return pos;
+}
+
 bool extract_json_string_field(const std::string& json,
                                const char* key,
                                std::string* out) {
   if (out == nullptr || key == nullptr) return false;
 
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t pos = json.find(needle);
-  if (pos == std::string::npos) return false;
-
-  pos = json.find(':', pos + needle.size());
-  if (pos == std::string::npos) return false;
-  pos++;
-
-  while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
-  if (pos >= json.size() || json[pos] != '"') return false;
+  size_t pos = find_json_value(json, key);
+  if (pos == std::string::npos || pos >= json.size() || json[pos] != '"') return false;
   pos++;
 
   size_t end = json.find('"', pos);
@@ -48,16 +56,8 @@ bool extract_json_bool_field(const std::string& json,
                              bool* out) {
   if (out == nullptr || key == nullptr) return false;
 
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t pos = json.find(needle);
-  if (pos == std::string::npos) return false;
-
-  pos = json.find(':', pos + needle.size());
-  if (pos == std::string::npos) return false;
-  pos++;
-
-  while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
-  if (pos >= json.size()) return false;
+  const size_t pos = find_json_value(json, key);
+  if (pos == std::string::npos || pos >= json.size()) return false;
 
   if (json.compare(pos, 4, "true") == 0) {
     *out = true;
@@ -75,16 +75,8 @@ bool extract_json_int_field(const std::string& json,
                             int* out) {
   if (out == nullptr || key == nullptr) return false;
 
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t pos = json.find(needle);
-  if (pos == std::string::npos) return false;
-
-  pos = json.find(':', pos + needle.size());
-  if (pos == std::string::npos) return false;
-  pos++;
-
-  while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
-  if (pos >= json.size()) return false;
+  size_t pos = find_json_value(json, key);
+  if (pos == std::string::npos || pos >= json.size()) return false;
 
   int sign = 1;
   if (json[pos] == '-') {
@@ -116,10 +108,9 @@ bool parse_set_policy_control(const std::string& json,
 
   int transport_version = 1;
   std::string client_role = "legacy";
-  bool telemetry_on_video = true;
   extract_json_int_field(json, "transportVersion", &transport_version);
   extract_json_string_field(json, "clientRole", &client_role);
-  telemetry_on_video = transport_version < 2;
+  bool telemetry_on_video = transport_version < 2;
   extract_json_bool_field(json, "telemetryOnVideo", &telemetry_on_video);
 
   if (session_id != nullptr) *session_id = sid;
@@ -133,7 +124,6 @@ bool parse_set_policy_control(const std::string& json,
 }
 
 }  // namespace
-
 
 void set_session_policy(const std::string& session_id, bool suppress_video) {
   std::lock_guard<std::mutex> lock(g_session_policy_mu);
@@ -151,7 +141,7 @@ bool get_session_policy(const std::string& session_id, bool* suppress_video) {
 
 void consume_client_control_frames(int client_fd,
                                    ClientControlState* state,
-                                   const char* video_service,
+                                   const char* stream_name,
                                    uint8_t msg_control_type) {
   if (state == nullptr) return;
 
@@ -177,7 +167,7 @@ void consume_client_control_frames(int client_fd,
       state->parse_error_count++;
       if (state->parse_error_count <= 3 || (state->parse_error_count % 20) == 0) {
         printf("[%s] invalid inbound frame len=%u; dropping buffered input\n",
-               video_service,
+               stream_name,
                frame_len);
         fflush(stdout);
       }
@@ -204,7 +194,7 @@ void consume_client_control_frames(int client_fd,
         state->control_update_count++;
         if (state->control_update_count <= 3 || (state->control_update_count % 100) == 0) {
           printf("[%s] control update session=%s suppress=%s transportVersion=%d clientRole=%s telemetryOnVideo=%s\n",
-                 video_service,
+                 stream_name,
                  session_id.c_str(),
                  suppress_video ? "true" : "false",
                  state->transport_version,
@@ -215,7 +205,7 @@ void consume_client_control_frames(int client_fd,
       } else {
         state->parse_error_count++;
         if (state->parse_error_count <= 3 || (state->parse_error_count % 20) == 0) {
-          printf("[%s] invalid control payload ignored\n", video_service);
+          printf("[%s] invalid control payload ignored\n", stream_name);
           fflush(stdout);
         }
       }
