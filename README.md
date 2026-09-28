@@ -179,8 +179,8 @@ scripts/sync-canary-upstream.sh <openpilot|sunnypilot> <ref> [dest-root]
 
 Supported refs:
 
-- `openpilot`: `nightly`, `nightly-dev`, `release-mici-staging`, `release-tizi-staging`
-- `sunnypilot`: `dev`, `staging`, `release-mici-staging`, `release-tizi-staging`
+- `openpilot`: `nightly`, `nightly-dev`, `master`, `release-mici-staging`, `release-tizi-staging`, `release-chestnut-staging`
+- `sunnypilot`: `dev`, `master`, `staging`, `release-mici-staging`, `release-tizi-staging`
 
 Default destination is `~/.cache/commaviewd-canary/<upstream>-<ref>/openpilot-src`. The script resolves the current ref SHA, force-checks out that SHA, initializes submodules, and writes `source.env` metadata.
 
@@ -250,16 +250,19 @@ commaviewd/scripts/run-verification.sh
 
 ## CI targets
 
-Main CI matrix:
+Main CI matrix (each target builds and runs the full verification pipeline unless noted):
 
 - `commaai/openpilot@release-mici` (`--platform mici`)
+- `commaai/openpilot@release-tizi` (`--platform tizi`)
+- `commaai/openpilot@release-chestnut` (`--platform mici` and `--platform tizi`; openpilot for devices with the chestnut external GPU)
 - `commaai/openpilot@release-tici` (`--platform tici`, backwards-compatible legacy hook-applicability check only)
 - `sunnypilot/sunnypilot@release-mici` (`--platform mici`)
 - `sunnypilot/sunnypilot@release-tizi` (`--platform tizi`)
+- `sunnypilot/openpilot@<COMMAVIEWD_RELEASE_SUNNYPILOT_REF>` (`--platform mici`): the pinned source the release workflow builds from, read from `ci/upstream-refs.env`
 
 Canaries (Mondays and Thursdays, 07:23/07:53 UTC):
 
-- openpilot: `nightly`, `nightly-dev`, `master`, `release-mici-staging`, `release-tizi-staging` (`nightly`, `nightly-dev` and `master` run the applicability check and telemetry-only guard only)
+- openpilot: `nightly`, `nightly-dev`, `master`, `release-mici-staging`, `release-tizi-staging`, `release-chestnut-staging` (`nightly`, `nightly-dev` and `master` run the applicability check and telemetry-only guard only)
 - sunnypilot: `dev`, `master`, `staging`, `release-mici-staging`, `release-tizi-staging`
 
 ## Program plans and telemetry references

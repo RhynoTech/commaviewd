@@ -34,6 +34,8 @@ jobs:
             ui_platform: mici
           - upstream_ref: release-tizi-staging
             ui_platform: tizi
+          - upstream_ref: release-chestnut-staging
+            ui_platform: mici
 
 
     steps:
@@ -94,7 +96,9 @@ jobs:
 
 
       - name: Run commaviewd verification pipeline
-        if: ${{ matrix.target.run_verification != false }}
+        # toJSON keeps an unset run_verification ("null") running; a bare != false comparison
+        # coerces null to false and silently skipped verification for every target.
+        if: ${{ toJSON(matrix.target.run_verification) != 'false' }}
         env:
           OP_ROOT: ${{ github.workspace }}/openpilot-src
           ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}

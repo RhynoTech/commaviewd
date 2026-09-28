@@ -138,7 +138,11 @@ path, label = sys.argv[1:]
 with open(path) as f:
     manifest = json.load(f)
 resolved = manifest.get("resolvedServices", {})
-if set(resolved) != {"calibration", "roadCamera", "vehicleParameters"} or not all(resolved.values()):
+expected = {
+    "calibration", "roadCamera", "vehicleParameters",
+    "roadEncode", "cabinEncode", "livestreamRoadEncode", "livestreamCabinEncode",
+}
+if set(resolved) != expected or not all(resolved.values()):
     raise SystemExit(f"bad semantic service mapping for {label}: {manifest}")
 PY
 
@@ -226,10 +230,14 @@ PY
 
 run_ref 'openpilot release-tici' "$OPENPILOT_REPO" 'release-tici' "$CACHE_ROOT/openpilot-release-tici" 'OPENPILOT' 'tizi'
 run_ref 'openpilot release-mici' "$OPENPILOT_REPO" 'release-mici' "$CACHE_ROOT/openpilot-release-mici" 'OPENPILOT' 'mici'
+run_ref 'openpilot release-tizi' "$OPENPILOT_REPO" 'release-tizi' "$CACHE_ROOT/openpilot-release-tizi" 'OPENPILOT' 'tizi'
+run_ref 'openpilot release-chestnut (mici)' "$OPENPILOT_REPO" 'release-chestnut' "$CACHE_ROOT/openpilot-release-chestnut" 'OPENPILOT' 'mici'
+run_ref 'openpilot release-chestnut (tizi)' "$OPENPILOT_REPO" 'release-chestnut' "$CACHE_ROOT/openpilot-release-chestnut" 'OPENPILOT' 'tizi'
 run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-nightly" 'OPENPILOT' 'tizi'
 run_ref 'openpilot nightly-dev' "$OPENPILOT_REPO" 'nightly-dev' "$CACHE_ROOT/openpilot-nightly-dev" 'OPENPILOT' 'tizi'
 run_ref 'openpilot release-tizi-staging' "$OPENPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/openpilot-release-tizi-staging" 'OPENPILOT' 'tizi'
 run_ref 'openpilot release-mici-staging' "$OPENPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/openpilot-release-mici-staging" 'OPENPILOT' 'mici'
+run_ref 'openpilot release-chestnut-staging' "$OPENPILOT_REPO" 'release-chestnut-staging' "$CACHE_ROOT/openpilot-release-chestnut-staging" 'OPENPILOT' 'mici'
 run_ref 'openpilot master' "$OPENPILOT_REPO" 'master' "$CACHE_ROOT/openpilot-master" 'OPENPILOT' 'mici'
 
 run_ref 'sunnypilot release-tizi' "$SUNNYPILOT_REPO" 'release-tizi' "$CACHE_ROOT/sunnypilot-release-tizi" 'SUNNYPILOT' 'tizi'

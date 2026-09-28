@@ -16,8 +16,8 @@ Defaults:
 - checkout path: <dest-root>/openpilot-src
 
 Supported refs mirror current canary workflows:
-- openpilot: nightly, nightly-dev, release-mici-staging, release-tizi-staging
-- sunnypilot: dev, staging, release-mici-staging, release-tizi-staging
+- openpilot: nightly, nightly-dev, master, release-mici-staging, release-tizi-staging, release-chestnut-staging
+- sunnypilot: dev, master, staging, release-mici-staging, release-tizi-staging
 USAGE
 }
 
@@ -36,15 +36,15 @@ case "$upstream" in
   openpilot)
     repo="https://github.com/commaai/openpilot.git"
     case "$ref" in
-      nightly|nightly-dev|release-mici-staging|release-tizi-staging) ;;
-      *) echo "ERROR: unsupported openpilot ref '$ref' (expected nightly, nightly-dev, release-mici-staging, or release-tizi-staging)" >&2; exit 2 ;;
+      nightly|nightly-dev|master|release-mici-staging|release-tizi-staging|release-chestnut-staging) ;;
+      *) echo "ERROR: unsupported openpilot ref '$ref' (expected nightly, nightly-dev, master, release-mici-staging, release-tizi-staging, or release-chestnut-staging)" >&2; exit 2 ;;
     esac
     ;;
   sunnypilot)
     repo="https://github.com/sunnypilot/sunnypilot.git"
     case "$ref" in
-      dev|staging|release-mici-staging|release-tizi-staging) ;;
-      *) echo "ERROR: unsupported sunnypilot ref '$ref' (expected dev, staging, release-mici-staging, or release-tizi-staging)" >&2; exit 2 ;;
+      dev|master|staging|release-mici-staging|release-tizi-staging) ;;
+      *) echo "ERROR: unsupported sunnypilot ref '$ref' (expected dev, master, staging, release-mici-staging, or release-tizi-staging)" >&2; exit 2 ;;
     esac
     ;;
   *)

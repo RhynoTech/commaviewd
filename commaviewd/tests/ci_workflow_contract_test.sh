@@ -32,5 +32,16 @@ assert_contains '--platform "${{ matrix.target.ui_platform }}"' "$WORKFLOW" "com
 assert_contains "Resolve upstream SHA" "$WORKFLOW" "commaviewd CI should resolve upstream SHA before cache/checkout"
 assert_contains "id: upstream" "$WORKFLOW" "commaviewd CI resolved upstream SHA step should use id upstream"
 assert_contains 'ref: ${{ steps.upstream.outputs.sha }}' "$WORKFLOW" "commaviewd CI upstream checkout should be pinned to resolved SHA"
+assert_contains "name: openpilot-release-tizi" "$WORKFLOW" "commaviewd CI should validate openpilot release-tizi"
+assert_contains "name: openpilot-release-chestnut-mici" "$WORKFLOW" "commaviewd CI should validate openpilot release-chestnut on MICI"
+assert_contains "name: openpilot-release-chestnut-tizi" "$WORKFLOW" "commaviewd CI should validate openpilot release-chestnut on TIZI"
+assert_contains "upstream_ref: release-chestnut" "$WORKFLOW" "commaviewd CI should include the openpilot chestnut release ref"
+assert_contains "name: sunnypilot-release-pin" "$WORKFLOW" "commaviewd CI should build the pinned sunnypilot release source"
+assert_contains ". ci/upstream-refs.env" "$WORKFLOW" "commaviewd CI should resolve the release pin from ci/upstream-refs.env"
+assert_contains "if: \${{ toJSON(matrix.target.run_verification) != 'false' }}" "$WORKFLOW" "commaviewd CI should run verification unless a target opts out"
+if grep -Fq 'run_verification != false }}' "$WORKFLOW"; then
+  echo "FAIL: 'run_verification != false' treats an unset key as false and skips verification" >&2
+  exit 1
+fi
 
 printf 'PASS: CI workflow contract validates pinned upstream checkout\n'
