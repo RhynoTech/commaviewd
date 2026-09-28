@@ -31,6 +31,8 @@ jobs:
             ui_platform: mici
           - upstream_ref: release-tizi-staging
             ui_platform: tizi
+          - upstream_ref: staging-chestnut
+            ui_platform: mici
 
 
     steps:

@@ -245,6 +245,7 @@ run_ref 'sunnypilot release-mici' "$SUNNYPILOT_REPO" 'release-mici' "$CACHE_ROOT
 run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" 'SUNNYPILOT' 'tizi'
 run_ref 'sunnypilot release-tizi-staging' "$SUNNYPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/sunnypilot-release-tizi-staging" 'SUNNYPILOT' 'tizi'
 run_ref 'sunnypilot release-mici-staging' "$SUNNYPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/sunnypilot-release-mici-staging" 'SUNNYPILOT' 'mici'
+run_ref 'sunnypilot staging-chestnut' "$SUNNYPILOT_REPO" 'staging-chestnut' "$CACHE_ROOT/sunnypilot-staging-chestnut" 'SUNNYPILOT' 'mici'
 run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" 'SUNNYPILOT' 'mici'
 run_ref 'sunnypilot master' "$SUNNYPILOT_REPO" 'master' "$CACHE_ROOT/sunnypilot-master" 'SUNNYPILOT' 'mici'
 

@@ -180,7 +180,7 @@ scripts/sync-canary-upstream.sh <openpilot|sunnypilot> <ref> [dest-root]
 Supported refs:
 
 - `openpilot`: `nightly`, `nightly-dev`, `master`, `release-mici-staging`, `release-tizi-staging`, `release-chestnut-staging`
-- `sunnypilot`: `dev`, `master`, `staging`, `release-mici-staging`, `release-tizi-staging`
+- `sunnypilot`: `dev`, `master`, `staging`, `release-mici-staging`, `release-tizi-staging`, `staging-chestnut`
 
 Default destination is `~/.cache/commaviewd-canary/<upstream>-<ref>/openpilot-src`. The script resolves the current ref SHA, force-checks out that SHA, initializes submodules, and writes `source.env` metadata.
 
@@ -263,7 +263,7 @@ Main CI matrix (each target builds and runs the full verification pipeline unles
 Canaries (Mondays and Thursdays, 07:23/07:53 UTC):
 
 - openpilot: `nightly`, `nightly-dev`, `master`, `release-mici-staging`, `release-tizi-staging`, `release-chestnut-staging` (`nightly`, `nightly-dev` and `master` run the applicability check and telemetry-only guard only)
-- sunnypilot: `dev`, `master`, `staging`, `release-mici-staging`, `release-tizi-staging`
+- sunnypilot: `dev`, `master`, `staging`, `release-mici-staging`, `release-tizi-staging`, `staging-chestnut` (sunnypilot has no chestnut release branch yet)
 
 ## Program plans and telemetry references
 

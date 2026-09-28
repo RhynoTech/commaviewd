@@ -62,6 +62,7 @@ assert_contains_fixed "upstream_ref: master" "$CANARY_SUNNYPILOT" "sunnypilot ca
 assert_contains_fixed "upstream_ref: staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover aggregate staging drift"
 assert_contains_fixed "upstream_ref: release-mici-staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover MICI staging drift"
 assert_contains_fixed "upstream_ref: release-tizi-staging" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover TIZI staging drift"
+assert_contains_fixed "upstream_ref: staging-chestnut" "$CANARY_SUNNYPILOT" "sunnypilot canary should cover chestnut staging drift"
 assert_contains_fixed "./commaviewd/scripts/upstream-interface-guard.sh" "$CANARY_OPENPILOT" "openpilot canary should run semantic interface guard even when runtime verification is skipped"
 assert_contains_fixed "./commaviewd/scripts/upstream-interface-guard.sh" "$CANARY_SUNNYPILOT" "sunnypilot canary should run semantic interface guard"
 

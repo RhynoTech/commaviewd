@@ -17,7 +17,7 @@ Defaults:
 
 Supported refs mirror current canary workflows:
 - openpilot: nightly, nightly-dev, master, release-mici-staging, release-tizi-staging, release-chestnut-staging
-- sunnypilot: dev, master, staging, release-mici-staging, release-tizi-staging
+- sunnypilot: dev, master, staging, release-mici-staging, release-tizi-staging, staging-chestnut
 USAGE
 }
 
@@ -43,8 +43,8 @@ case "$upstream" in
   sunnypilot)
     repo="https://github.com/sunnypilot/sunnypilot.git"
     case "$ref" in
-      dev|master|staging|release-mici-staging|release-tizi-staging) ;;
-      *) echo "ERROR: unsupported sunnypilot ref '$ref' (expected dev, master, staging, release-mici-staging, or release-tizi-staging)" >&2; exit 2 ;;
+      dev|master|staging|release-mici-staging|release-tizi-staging|staging-chestnut) ;;
+      *) echo "ERROR: unsupported sunnypilot ref '$ref' (expected dev, master, staging, release-mici-staging, release-tizi-staging, or staging-chestnut)" >&2; exit 2 ;;
     esac
     ;;
   *)
