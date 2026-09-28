@@ -18,8 +18,6 @@ SUNNYPILOT_PATCH = REPO_ROOT / "comma" / "patches" / "sunnypilot" / "0001-commav
 CONTROL_CPP = REPO_ROOT / "commaviewd" / "src" / "control_mode.cpp"
 
 
-
-
 def test_legacy_comma4_install_shim_forwards_to_generic_comma_installer():
     text = OLD_INSTALL_SHIM.read_text()
     assert '/comma4/install.sh' in text

@@ -145,7 +145,7 @@ for template in "$OPENPILOT_TEMPLATE" "$SUNNYPILOT_TEMPLATE"; do
   grep -Fq 'self._offer_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)' "$template" || fail "$template missing latest-value onroad projection offer"
   grep -Fq 'from opendbc.car import ACCELERATION_DUE_TO_GRAVITY' "$template" || fail "$template missing torque helper import"
   grep -Fq 'def _torque_bar_value(ui_state, service_resolver=None) -> float:' "$template" || fail "$template missing torque bar helper"
-  grep -Fq 'def _publish_json(self, service_index: int, payload_fn, ui_state) -> None:' "$template" || fail "$template missing per-service publish wrapper"
+  grep -Fq 'payload_fn = self._payload_builders[service_index]' "$template" || fail "$template missing per-service payload isolation in publish()"
   grep -Fq 'def _worker_main(self) -> None:' "$template" || fail "$template missing isolated export worker"
   grep -Fq 'UPSTREAM_SERVICE_ALIASES = {' "$template" || fail "$template missing semantic service aliases"
   grep -Fq 'except Exception:' "$template" || fail "$template missing per-service payload isolation"

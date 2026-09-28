@@ -13,7 +13,6 @@ import struct
 import subprocess
 import threading
 import time
-from pathlib import Path
 
 from opendbc.car.honda.values import CruiseButtons
 from openpilot.cereal import log, messaging

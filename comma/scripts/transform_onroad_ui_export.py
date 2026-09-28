@@ -24,7 +24,6 @@ PLATFORM_CHOICES = ("auto", "mici", "tizi", "tici")
 NORMALIZED_PLATFORMS = {"mici": "mici", "tizi": "tizi", "tici": "tizi"}
 
 
-
 def fail(message: str) -> None:
     print(f"ERROR: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -49,6 +48,14 @@ def block_end(lines: list[str], start: int, indent: int) -> int:
         if line_indent(lines[idx]) <= indent:
             return idx
     return len(lines)
+
+
+def write_lines_if_changed(path: Path, original: str, lines: list[str]) -> bool:
+    new_text = "\n".join(lines) + ("\n" if original.endswith("\n") else "")
+    if new_text == original:
+        return False
+    path.write_text(new_text)
+    return True
 
 
 def ensure_export_import(lines: list[str]) -> bool:
@@ -124,7 +131,7 @@ def transform_ui_state(ui_state_path: Path) -> bool:
 
     original = ui_state_path.read_text()
     lines = original.splitlines()
-    changed = ensure_export_import(lines)
+    ensure_export_import(lines)
 
     class_idx = find_single(
         lines,
@@ -155,31 +162,21 @@ def transform_ui_state(ui_state_path: Path) -> bool:
     if len(device_matches) != 1:
         fail(f"expected exactly one device.update() in UIState.update, found {len(device_matches)}")
 
-    if any(EXPORT_PUBLISH in line for line in update_body):
-        new_text = "\n".join(lines) + ("\n" if original.endswith("\n") else "")
-        if new_text != original:
-            ui_state_path.write_text(new_text)
-            return True
-        return changed
+    if not any(EXPORT_PUBLISH in line for line in update_body):
+        device_idx = device_matches[0]
+        body_indent = lines[device_idx][: line_indent(lines[device_idx])]
+        inner_indent = body_indent + "  "
+        export_block = [
+            f'{body_indent}if not hasattr(self, "_commaview_exporter"):',
+            f"{inner_indent}{EXPORT_INSTALL}",
+            f"{body_indent}try:",
+            f"{inner_indent}{EXPORT_PUBLISH}",
+            f"{body_indent}except Exception:",
+            f'{inner_indent}cloudlog.exception("commaview ui export publish failed")',
+        ]
+        lines[device_idx + 1 : device_idx + 1] = export_block
 
-    device_idx = device_matches[0]
-    body_indent = lines[device_idx][: line_indent(lines[device_idx])]
-    inner_indent = body_indent + "  "
-    export_block = [
-        f'{body_indent}if not hasattr(self, "_commaview_exporter"):',
-        f"{inner_indent}{EXPORT_INSTALL}",
-        f"{body_indent}try:",
-        f"{inner_indent}{EXPORT_PUBLISH}",
-        f"{body_indent}except Exception:",
-        f'{inner_indent}cloudlog.exception("commaview ui export publish failed")',
-    ]
-    lines[device_idx + 1 : device_idx + 1] = export_block
-    changed = True
-
-    new_text = "\n".join(lines) + ("\n" if original.endswith("\n") else "")
-    if new_text != original:
-        ui_state_path.write_text(new_text)
-    return changed
+    return write_lines_if_changed(ui_state_path, original, lines)
 
 
 def transform_augmented_road_view(augmented_path: Path) -> bool:
@@ -190,7 +187,6 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
 
     original = augmented_path.read_text()
     lines = original.splitlines()
-    changed = False
 
     render_matches = [
         idx
@@ -207,7 +203,6 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
     if camera_call_count == 0:
         render_indent = lines[render_idx][: line_indent(lines[render_idx])]
         lines.insert(render_idx + 1, f"{render_indent}{CAMERA_EXPORT_CALL}")
-        changed = True
     elif camera_call_count != 1:
         fail(f"expected at most one {CAMERA_EXPORT_CALL}, found {camera_call_count}")
 
@@ -221,7 +216,7 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
         method_indent = lines[calibration_idx][: line_indent(lines[calibration_idx])]
         body_indent = method_indent + "  "
         helper_block = [
-            f"{method_indent}def _update_commaview_camera_export(self):",
+            f"{method_indent}{CAMERA_EXPORT_HELPER}",
             f'{body_indent}exporter = getattr(ui_state, "_commaview_exporter", None)',
             f'{body_indent}if exporter is None or not hasattr(exporter, "set_onroad_camera"):',
             f"{body_indent}  return",
@@ -235,7 +230,6 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
             "",
         ]
         lines[calibration_idx:calibration_idx] = helper_block
-        changed = True
     elif helper_count != 1:
         fail(f"expected at most one {CAMERA_EXPORT_HELPER}, found {helper_count}")
 
@@ -264,7 +258,7 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
             f'{transform_indent}exporter = getattr(ui_state, "_commaview_exporter", None)',
             f'{transform_indent}if exporter is not None and hasattr(exporter, "set_onroad_projection"):',
             f"{transform_indent}  try:",
-            f"{transform_indent}    exporter.set_onroad_projection(",
+            f"{transform_indent}    {PROJECTION_EXPORT_CALL}",
             f"{transform_indent}      ui_state=ui_state,",
             f'{transform_indent}      active_camera="wideRoad" if is_wide_camera else "road",',
             f"{transform_indent}      content_rect=self._content_rect,",
@@ -276,13 +270,8 @@ def transform_augmented_road_view(augmented_path: Path) -> bool:
             f"{transform_indent}    pass",
         ]
         lines[transform_idx : transform_idx + 1] = projection_block
-        changed = True
 
-    new_text = "\n".join(lines) + ("\n" if original.endswith("\n") else "")
-    if new_text != original:
-        augmented_path.write_text(new_text)
-        return True
-    return changed
+    return write_lines_if_changed(augmented_path, original, lines)
 
 
 def transform(op_root: Path, flavor: str, platform: str = "auto") -> None:

@@ -361,12 +361,17 @@ def test_repeated_disconnects_and_receiver_restart_do_not_kill_worker(template, 
 def test_source_recipe_is_always_enabled_for_onroad_export(template, flavor):
   module = load_exporter(template)
   exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
-  assert exporter._recipe_enabled
+  values = alias_values(current=True)
+  values.update({
+    "wideRoadCameraState": types.SimpleNamespace(frameId=5, timestampEof=6),
+    "modelV2": types.SimpleNamespace(frameId=7, timestampEof=8),
+  })
+  exporter.set_onroad_projection(FakeUiState(values), "road", types.SimpleNamespace(), [1.0] * 9, [1.0] * 9)
+  assert [event["kind"] for event in exporter._recipe_pending] == ["camera_switch"]
 
 
 @pytest.mark.parametrize("template,flavor", TEMPLATES)
-def test_source_recipe_keeps_rapid_camera_switches_despite_live_conflation(template, flavor, monkeypatch):
-  monkeypatch.setenv("COMMAVIEW_SOURCE_RECIPE", "1")
+def test_source_recipe_keeps_rapid_camera_switches_despite_live_conflation(template, flavor):
   module = load_exporter(template)
   exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
   values = alias_values(current=True)
