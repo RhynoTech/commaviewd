@@ -16,10 +16,12 @@
 ## Repository layout
 
 - `commaviewd/` — runtime source, tests, and verification scripts.
-- `comma/` — comma-device install/start/stop/uninstall scripts, runtime defaults, patch helpers, and version pin.
-- `tools/release/` — release bundle builder.
-- `scripts/` — host setup and upstream-canary helper scripts.
-- `.github/workflows/` — CI, release, and canary workflows.
+- `comma/` — comma-device install/start/stop/uninstall scripts, runtime defaults, the onroad UI exporter and its transformer/patch scripts, and version pin.
+- `comma4/install.sh` — back-compat installer shim that older app versions fetch; keep it.
+- `tools/release/` — release bundle builder. `tools/bench/` — on-device benchmarks. `tools/contribute/` — route sanitizer for donated drives.
+- `scripts/` — host toolchain setup, upstream-canary helper, telemetry-hardening guard, and release promotion script.
+- `ci/` — pinned upstream refs. `docs/` — plans, reports, and per-release notes (`docs/release/<tag>-user-facing.md` becomes the GitHub release body).
+- `.github/workflows/` — CI, release, canary, and device-test workflows.
 
 ## Runtime CLI
 
@@ -39,15 +41,18 @@ Runtime env used by installed scripts:
 
 | Env | Default | Purpose |
 | --- | --- | --- |
-| `COMMAVIEWD_RUNTIME_DEBUG_DEFAULTS` | `/data/commaview/runtime-debug.defaults.json` | Default runtime-debug policy source. |
+| `COMMAVIEWD_RUNTIME_DEBUG_DEFAULTS` | `/data/commaview/runtime-debug.defaults.json` | Seed file `start.sh` copies into the config when that is missing or empty. The binary itself does not read it. |
 | `COMMAVIEWD_RUNTIME_DEBUG_CONFIG` | `/data/commaview/config/runtime-debug.json` | Persisted editable runtime-debug config. |
 | `COMMAVIEWD_RUNTIME_DEBUG_EFFECTIVE` | `/data/commaview/run/runtime-debug-effective.json` | Effective config emitted by runtime. |
 | `COMMAVIEWD_RUNTIME_STATS` | `/data/commaview/run/telemetry-stats.json` | Telemetry stats output. |
 | `COMMAVIEWD_RESTART_REASON` | `startup` | Written into runtime status/logs. |
 | `COMMAVIEWD_API_TOKEN` | unset | Direct control API bearer token override. |
 | `COMMAVIEWD_API_TOKEN_FILE` | `/data/commaview/api/auth.token` when launched by `start.sh` | Control API token file. |
-| `COMMAVIEWD_UI_EXPORT_SOCKET` | `/data/commaview/run/ui-export.sock` in patch helper code | UI export Unix socket path override. |
-| `COMMAVIEW_PARAMS_DIR` | platform default | Params directory override used by runtime JSON helpers. |
+| `COMMAVIEWD_UI_EXPORT_SOCKET` | `/data/commaview/run/ui-export.sock` | UI export Unix socket path override, read by both the bridge and the exporter. |
+| `COMMAVIEWD_RECIPE_DIR` | `/data/commaview/recording-recipes` | Where the bridge writes and control mode serves recording recipes/snapshots. |
+| `COMMAVIEWD_SOURCE_ARCHIVE_ROOT` | `/data/media/0/realdata` | Route segment archive served by the source-recording endpoints. |
+| `COMMAVIEWD_CURRENT_ROUTE_FILE` | `/data/params/d/CurrentRoute` | Current route id used to name recordings. |
+| `COMMAVIEW_VIDEO_SOURCE` | `full` | `full` (HEVC) or `livestream` (H.264); see below. |
 
 ## Install/update on comma-device
 
@@ -88,7 +93,7 @@ ssh comma@<comma-ip> 'bash /data/commaview/install.sh --force-offroad'
 | `COMMAVIEWD_RELEASE_REPO` | Override release repo; default `RhynoTech/commaviewd`. |
 | `COMMAVIEWD_RELEASE_TAG` | Override resolved release tag. |
 | `COMMAVIEWD_DEFAULT_TAG` | Fallback default tag before querying latest. |
-| `COMMAVIEWD_INSTALLER_REF` | Pin companion scripts/patches to a ref; defaults to resolved release tag. |
+| `COMMAVIEWD_INSTALLER_REF` | Pin companion scripts to a ref; defaults to resolved release tag. |
 | `COMMAVIEWD_ASSET_NAME` | Override release asset filename. |
 | `COMMAVIEWD_BASE_URL` | Override release asset base URL. |
 | `COMMAVIEWD_INSTALLER_RAW_BASE` | Override raw companion file base URL. |
@@ -97,7 +102,7 @@ ssh comma@<comma-ip> 'bash /data/commaview/install.sh --force-offroad'
 Installer safety behavior:
 
 - Stages and validates the release bundle before stopping the live runtime.
-- Refreshes companion scripts/patches from the resolved release instead of trusting stale installed files.
+- Refreshes companion scripts from the resolved release instead of trusting stale installed files.
 - Backs up managed install files before mutating `/data/commaview` and restores them if install fails mid-update.
 - Clears stale runtime/patch state during install.
 - Applies the onroad UI export patch through the patch helper; unsafe patch repair is not automatic.
@@ -108,7 +113,7 @@ Installer safety behavior:
 | --- | --- | --- |
 | `comma/start.sh` | `bash /data/commaview/start.sh` | Verifies/repairs the UI export patch when safe, consumes deferred UI restart marker, stops stale processes, then starts `commaviewd bridge` and `commaviewd control`. No CLI flags. Uses runtime env listed above. |
 | `comma/stop.sh` | `bash /data/commaview/stop.sh` | Stops pidfile-tracked bridge/control processes and cleans stray `/data/commaview/commaviewd` processes. No flags. |
-| `comma/uninstall.sh` | `bash /data/commaview/uninstall.sh` | Stops runtime, removes `/data/continue.sh` boot hook, deletes `/data/commaview`. No flags. |
+| `comma/uninstall.sh` | `bash /data/commaview/uninstall.sh [--force-offroad]` | Reverts the onroad UI export transformer first and stops without changing anything else if that fails; then stops the runtime, removes the `/data/continue.sh` boot hook, and deletes `/data/commaview`. `--force-offroad` is passed to the revert helper (the app uses it). |
 
 Uninstall from workstation:
 
@@ -116,20 +121,27 @@ Uninstall from workstation:
 ssh comma@<comma-ip> 'bash /data/commaview/uninstall.sh'
 ```
 
+Without `--force-offroad`, uninstall refuses while onroad (exit 42). To force the device offroad first:
+
+```bash
+ssh comma@<comma-ip> 'bash /data/commaview/uninstall.sh --force-offroad'
+```
+
 ## Onroad UI export patch scripts
 
-These scripts manage the direct v2 socket export patch in upstream openpilot/sunnypilot. The patch is additive, but it touches live upstream files, so default repair behavior is conservative.
+These scripts install the direct v2 socket exporter into upstream openpilot/sunnypilot. `comma/scripts/transform_onroad_ui_export.py` copies `comma/src/commaview_export.<flavor>.py` into the UI and adds the hooks that call it. The change is additive, but it touches live upstream files, so default repair behavior is conservative.
 
 | Script | Usage | Flags/env |
 | --- | --- | --- |
-| `comma/scripts/verify_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/verify_onroad_ui_export_patch.sh [--json]` | `--json` prints machine-readable status. `COMMAVIEWD_INSTALL_DIR` overrides `/data/commaview`; `COMMAVIEWD_OP_ROOT` overrides `/data/openpilot`. |
-| `comma/scripts/apply_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair]` | `--force-offroad` waits for offroad before patching. `--force-repair` is the only destructive repair path; it backs up targets before reset/reapply. `COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART=1` suppresses UI restart/marker behavior. |
+| `comma/scripts/verify_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/verify_onroad_ui_export_patch.sh [--json] [--platform auto\|mici\|tizi\|tici]` | Always prints the status JSON (`--json` is accepted for callers). `COMMAVIEWD_INSTALL_DIR` overrides `/data/commaview`; `COMMAVIEWD_OP_ROOT` overrides `/data/openpilot`. |
+| `comma/scripts/apply_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair] [--platform auto\|mici\|tizi\|tici]` | `--force-offroad` waits for offroad before changing files. `--force-repair` is the only destructive repair path; it backs up targets before reset/reapply. `COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART=1` suppresses UI restart/marker behavior. |
+| `comma/scripts/revert_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/revert_onroad_ui_export_patch.sh [--force-offroad] [--preflight-only]` | Restores the upstream files (used by `uninstall.sh`). `--preflight-only` checks without changing anything. |
 
-Patch safety rules:
+Apply safety rules:
 
-- Normal apply first verifies whether the patch is already applied or applies cleanly.
-- If upstream changed and the patch no longer applies cleanly, the helper exits instead of resetting files.
-- If target files are dirty, the helper exits instead of modifying them.
+- Without `--force-repair`, if verify already passes, apply changes no files: it restarts the openpilot UI when offroad (or leaves a restart marker while onroad) and exits 0. `install.sh` always passes `--force-repair`.
+- If target files have local changes, apply exits 44 instead of modifying them unless `--force-repair` is given.
+- Otherwise it backs up the targets, runs the transformer, and restores the backup if the transformer or the follow-up verify fails.
 - `--force-repair` is explicit, offroad-gated through the existing flow, and backs up files under `/data/commaview/backups/onroad-ui-export/<timestamp>` before resetting/reapplying.
 
 ## Build scripts
@@ -145,10 +157,10 @@ Patch safety rules:
 | Script | Usage | Flags/env |
 | --- | --- | --- |
 | `commaviewd/scripts/run-verification.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/run-verification.sh` | Full verification pipeline: upstream interface guard, reproducible build, binary contract check, unit tests, release smoke bundle. Env: `OP_ROOT`, `DIST_DIR`, `RELEASE_SMOKE_TAG`. |
-| `commaviewd/scripts/upstream-interface-guard.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/upstream-interface-guard.sh [--manifest <path>]` | Checks expected upstream schemas/services/patch applicability. Writes manifest to `DIST_DIR` by default. |
+| `commaviewd/scripts/upstream-interface-guard.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/upstream-interface-guard.sh [--telemetry-only] [--manifest <path>]` | Checks that upstream `cereal/services.py` and `log.capnp` have the services and fields the runtime needs (accepting renamed aliases), and that this repo's transformer, apply/verify scripts and exporter template exist. Apply/verify check applicability. Writes manifest to `DIST_DIR` by default. |
 | `commaviewd/scripts/reproducible-build.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/reproducible-build.sh [--manifest <path>]` | Builds twice with fixed `SOURCE_DATE_EPOCH` and compares host/aarch64 digests. |
 | `commaviewd/scripts/binary-contract-check.sh` | `DIST_DIR=/path/to/dist commaviewd/scripts/binary-contract-check.sh [--manifest <path>]` | Validates binary architecture, deps, runpath, size, and bundled runtime libraries. |
-| `commaviewd/scripts/run-unit-tests.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/run-unit-tests.sh` | Builds runtime and compiles/runs C++ unit tests. Env: `OP_ROOT`, compiler env inherited by build script. |
+| `commaviewd/scripts/run-unit-tests.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/run-unit-tests.sh` | Builds the runtime (needs the arm64 toolchain or `COMMAVIEWD_SKIP_ARM=1`), then runs the C++ unit tests, the contract/integration scripts, and pytest over `comma/tests`. Run from the repository root. Env: `OP_ROOT`, compiler env inherited by build script. |
 | `scripts/verify-telemetry-hardening.sh` | `bash scripts/verify-telemetry-hardening.sh` | Grep-based guard that raw-only telemetry hardening remains in place and old dev/debug flags/env are absent. No flags. |
 
 Experimental video-source selection: the bridge defaults to the existing full
@@ -184,7 +196,7 @@ These are mostly CI-facing but useful for targeted local checks.
 | `commaviewd/tests/local_discovery_contract_test.sh` | Verifies local discovery responder contract. |
 | `commaviewd/tests/onroad_ui_export_ci_contract_test.sh` | Ensures workflows align to direct v2 validation. |
 | `commaviewd/tests/raw_only_runtime_contract_test.sh` | Guards raw-only runtime behavior. |
-| `commaviewd/tests/reproducible_build_test.sh` | Guards reproducible build script behavior. |
+| `commaviewd/tests/reproducible_build_test.sh` | Checks the reproducible-build script's `--help`. |
 | `commaviewd/tests/runtime_debug_policy_contract_test.sh` | Guards runtime-debug config/policy behavior. |
 | `commaviewd/tests/timestamped_video_runtime_contract_test.sh` | Guards timestamped video runtime behavior. |
 | `commaviewd/tests/unit_tests_pipeline_test.sh` | Guards unit-test pipeline script presence/help behavior. |
@@ -245,14 +257,14 @@ Main CI matrix:
 - `sunnypilot/sunnypilot@release-mici` (`--platform mici`)
 - `sunnypilot/sunnypilot@release-tizi` (`--platform tizi`)
 
-Daily canaries:
+Canaries (Mondays and Thursdays, 07:23/07:53 UTC):
 
-- openpilot: `nightly`, `nightly-dev`, `release-mici-staging`, `release-tizi-staging`
-- sunnypilot: `dev`, `staging`, `release-mici-staging`, `release-tizi-staging`
+- openpilot: `nightly`, `nightly-dev`, `master`, `release-mici-staging`, `release-tizi-staging` (`nightly`, `nightly-dev` and `master` run the applicability check and telemetry-only guard only)
+- sunnypilot: `dev`, `master`, `staging`, `release-mici-staging`, `release-tizi-staging`
 
 ## Program plans and telemetry references
 
-- `commaviewd/docs/COM-55-onroad-ui-parity-program.md` — phased execution plan for comma-device onroad UI parity.
+- `commaviewd/docs/COM-55-onroad-ui-parity-program.md` — historical phased plan for comma-device onroad UI parity (its telemetry-JSON milestone predates the raw-only cutover).
 - `commaviewd/docs/ai/telemetry-raw-only-readme.md` — short operator doc.
 - `commaviewd/docs/ai/telemetry-raw-only-deep-dive.md` — deep technical doc.
 
