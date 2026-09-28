@@ -2,11 +2,8 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <cctype>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
-#include <ctime>
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits>
@@ -14,16 +11,19 @@
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace commaview::runtime {
 namespace {
 
+using commaview::api::HttpResponse;
+
 constexpr uint64_t kMaxChunk = 256 * 1024;
 constexpr size_t kMaxRecipeBytes = 2 * 1024 * 1024;
 
-commaview::api::HttpResponse error(int status, const char* detail) {
-  commaview::api::HttpResponse result;
+HttpResponse error(int status, const char* detail) {
+  HttpResponse result;
   result.status = status;
   result.body = std::string("{\"ok\":false,\"error\":\"") + detail + "\"}";
   return result;
@@ -68,6 +68,19 @@ bool decimal(const std::string& text, uint64_t* value) {
   return true;
 }
 
+// Every archive/recipe open refuses symlinks and never leaks into children.
+int open_directory(const char* path) {
+  return ::open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+}
+
+int open_directory_at(int dir, const char* name) {
+  return ::openat(dir, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+}
+
+int open_file_at(int dir, const char* name) {
+  return ::openat(dir, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+}
+
 const char* archive_root() {
   const char* override_root = std::getenv("COMMAVIEWD_SOURCE_ARCHIVE_ROOT");
   return override_root && override_root[0] ? override_root : "/data/media/0/realdata";
@@ -78,7 +91,7 @@ const char* recipe_root() {
   return override_root && override_root[0] ? override_root : "/data/commaview/recording-recipes";
 }
 
-commaview::api::HttpResponse range_response(const std::map<std::string, std::string>& q) {
+HttpResponse range_response(const std::map<std::string, std::string>& q) {
   if (q.size() != 5 || !q.count("route") || !q.count("segment") ||
       !q.count("kind") || !q.count("offset") || !q.count("length") ||
       !safe_route(q.at("route"))) return error(400, "invalid query");
@@ -96,19 +109,19 @@ commaview::api::HttpResponse range_response(const std::map<std::string, std::str
   if (!filename || (kind == "snapshot" && segment != 0)) return error(400, "invalid kind");
   int file = -1;
   if (kind == "snapshot") {
-    const int root = ::open(recipe_root(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    const int root = open_directory(recipe_root());
     if (root < 0) return error(404, "snapshot unavailable");
     const std::string name = "ui-snapshot-" + q.at("route") + ".jsonl";
-    file = ::openat(root, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    file = open_file_at(root, name.c_str());
     ::close(root);
   } else {
     const std::string segment_name = q.at("route") + "--" + std::to_string(segment);
-    const int root = ::open(archive_root(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    const int root = open_directory(archive_root());
     if (root < 0) return error(404, "archive unavailable");
-    const int dir = ::openat(root, segment_name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    const int dir = open_directory_at(root, segment_name.c_str());
     ::close(root);
     if (dir < 0) return error(404, "segment unavailable");
-    file = ::openat(dir, filename, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    file = open_file_at(dir, filename);
     ::close(dir);
   }
   if (file < 0) return error(404, "media unavailable");
@@ -123,7 +136,7 @@ commaview::api::HttpResponse range_response(const std::map<std::string, std::str
     ::close(file);
     return error(400, "range outside media");
   }
-  commaview::api::HttpResponse response;
+  HttpResponse response;
   response.content_type = "application/octet-stream";
   response.headers["Cache-Control"] = "no-store";
   response.body.resize(static_cast<size_t>(length));
@@ -146,11 +159,11 @@ commaview::api::HttpResponse range_response(const std::map<std::string, std::str
   return response;
 }
 
-commaview::api::HttpResponse recipe_response(const std::map<std::string, std::string>& q) {
+HttpResponse recipe_response(const std::map<std::string, std::string>& q) {
   if (q.size() != 1 || !q.count("route") || !safe_route(q.at("route"))) {
     return error(400, "invalid route");
   }
-  const int root = ::open(recipe_root(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  const int root = open_directory(recipe_root());
   if (root < 0) return error(404, "recipe unavailable");
   DIR* dir = ::fdopendir(root);
   if (!dir) {
@@ -169,7 +182,7 @@ commaview::api::HttpResponse recipe_response(const std::map<std::string, std::st
   }
   std::sort(names.begin(), names.end());
   for (const std::string& name : names) {
-    const int file = ::openat(root, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    const int file = open_file_at(root, name.c_str());
     if (file < 0) continue;
     struct stat info = {};
     if (::fstat(file, &info) != 0 || !S_ISREG(info.st_mode) ||
@@ -211,18 +224,18 @@ commaview::api::HttpResponse recipe_response(const std::map<std::string, std::st
   ::closedir(dir);
   if (overflow) return error(413, "recipe too large");
   if (body.empty()) return error(404, "recipe unavailable");
-  commaview::api::HttpResponse response;
+  HttpResponse response;
   response.content_type = "application/x-ndjson";
   response.headers["Cache-Control"] = "no-store";
   response.body = std::move(body);
   return response;
 }
 
-commaview::api::HttpResponse manifest_response(const std::map<std::string, std::string>& q) {
+HttpResponse manifest_response(const std::map<std::string, std::string>& q) {
   if (q.size() != 1 || !q.count("route") || !safe_route(q.at("route"))) {
     return error(400, "invalid route");
   }
-  const int root = ::open(archive_root(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  const int root = open_directory(archive_root());
   if (root < 0) return error(404, "archive unavailable");
   DIR* listing = ::fdopendir(root);
   if (!listing) {
@@ -237,11 +250,11 @@ commaview::api::HttpResponse manifest_response(const std::map<std::string, std::
     uint64_t number = 0;
     if (!decimal(name.substr(prefix.size()), &number) || number > 99999 ||
         name != prefix + std::to_string(number)) continue;
-    const int dir = ::openat(root, name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    const int dir = open_directory_at(root, name.c_str());
     if (dir < 0) continue;
     bool complete = true;
     for (const char* file_name : {"fcamera.hevc", "ecamera.hevc", "rlog.zst"}) {
-      const int file = ::openat(dir, file_name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+      const int file = open_file_at(dir, file_name);
       struct stat info = {};
       if (file < 0 || ::fstat(file, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size <= 0) {
         complete = false;
@@ -263,7 +276,7 @@ commaview::api::HttpResponse manifest_response(const std::map<std::string, std::
     body += std::to_string(segments[i]);
   }
   body += "]}";
-  commaview::api::HttpResponse response;
+  HttpResponse response;
   response.body = std::move(body);
   response.headers["Cache-Control"] = "no-store";
   return response;
@@ -284,7 +297,7 @@ commaview::api::HttpResponse source_recording_archive_response(const std::string
 
 commaview::api::HttpResponse source_recording_current_response(const std::string& route_id) {
   if (!safe_route(route_id)) return error(404, "route unavailable");
-  commaview::api::HttpResponse response;
+  HttpResponse response;
   response.body = "{\"routeId\":\"" + route_id + "\"}";
   response.headers["Cache-Control"] = "no-store";
   return response;

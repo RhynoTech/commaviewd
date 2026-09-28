@@ -15,7 +15,6 @@
 namespace commaview::runtime_debug {
 
 inline constexpr const char* kRuntimeDebugConfigPath = "/data/commaview/config/runtime-debug.json";
-inline constexpr const char* kRuntimeDebugDefaultsPath = "/data/commaview/runtime-debug.defaults.json";
 inline constexpr const char* kRuntimeDebugEffectivePath = "/data/commaview/run/runtime-debug-effective.json";
 inline constexpr const char* kRuntimeDebugStatsPath = "/data/commaview/run/telemetry-stats.json";
 inline constexpr int kRuntimeDebugConfigVersion = 1;
@@ -76,11 +75,6 @@ inline bool read_text_file(const std::string& path, std::string* out) {
 inline std::string runtime_debug_config_path() {
   const char* path = std::getenv("COMMAVIEWD_RUNTIME_DEBUG_CONFIG");
   return (path != nullptr && path[0] != '\0') ? path : kRuntimeDebugConfigPath;
-}
-
-inline std::string runtime_debug_defaults_path() {
-  const char* path = std::getenv("COMMAVIEWD_RUNTIME_DEBUG_DEFAULTS");
-  return (path != nullptr && path[0] != '\0') ? path : kRuntimeDebugDefaultsPath;
 }
 
 inline std::string runtime_debug_effective_path() {
@@ -147,15 +141,22 @@ inline telemetry::ServicePolicy policy_for_service(const LoadedRuntimeDebugConfi
   return telemetry::default_service_policy_for_name(service_name);
 }
 
-inline bool extract_string_field(const std::string& body, const char* key, std::string* value_out) {
-  if (key == nullptr || value_out == nullptr) return false;
+// Position of the first non-space character after `"key":` (first occurrence of
+// the key anywhere in body), or npos. Callers must check pos < body.size().
+inline size_t json_value_pos(const std::string& body, const char* key) {
   const std::string needle = std::string("\"") + key + "\"";
   size_t pos = body.find(needle);
-  if (pos == std::string::npos) return false;
+  if (pos == std::string::npos) return pos;
   pos = body.find(':', pos + needle.size());
-  if (pos == std::string::npos) return false;
+  if (pos == std::string::npos) return pos;
   pos++;
   while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) pos++;
+  return pos;
+}
+
+inline bool extract_string_field(const std::string& body, const char* key, std::string* value_out) {
+  if (key == nullptr || value_out == nullptr) return false;
+  size_t pos = json_value_pos(body, key);
   if (pos >= body.size() || body[pos] != '"') return false;
   pos++;
   std::string out;
@@ -188,13 +189,7 @@ inline bool extract_string_field(const std::string& body, const char* key, std::
 
 inline bool extract_int_field(const std::string& body, const char* key, int* value_out) {
   if (key == nullptr || value_out == nullptr) return false;
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t pos = body.find(needle);
-  if (pos == std::string::npos) return false;
-  pos = body.find(':', pos + needle.size());
-  if (pos == std::string::npos) return false;
-  pos++;
-  while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) pos++;
+  const size_t pos = json_value_pos(body, key);
   if (pos >= body.size()) return false;
   size_t end = pos;
   if (body[end] == '-') end++;
@@ -356,6 +351,23 @@ inline std::string render_config_json(const LoadedRuntimeDebugConfig& cfg, bool 
   return base;
 }
 
+// Safe-default config reported for an unusable body: defaults for every
+// service, marked invalid with the given error and warning.
+inline LoadedRuntimeDebugConfig invalid_runtime_debug_config(bool exists,
+                                                             const std::string& source_path,
+                                                             const std::string& error,
+                                                             const char* warning) {
+  LoadedRuntimeDebugConfig parsed = default_runtime_debug_config(exists);
+  parsed.source_path = source_path;
+  parsed.exists = exists;
+  parsed.valid = false;
+  parsed.safe_fallback = true;
+  parsed.error = error;
+  parsed.warnings.push_back(warning);
+  finalize_config_hash(&parsed);
+  return parsed;
+}
+
 inline LoadedRuntimeDebugConfig parse_runtime_debug_config_body(const std::string& body,
                                                                 bool exists,
                                                                 const std::string& source_path) {
@@ -365,12 +377,8 @@ inline LoadedRuntimeDebugConfig parse_runtime_debug_config_body(const std::strin
 
   const std::string trimmed = trim_copy(body);
   if (trimmed.empty()) {
-    parsed.valid = false;
-    parsed.safe_fallback = true;
-    parsed.error = "empty runtime debug config";
-    parsed.warnings.push_back("runtime debug config empty; using safe defaults");
-    finalize_config_hash(&parsed);
-    return parsed;
+    return invalid_runtime_debug_config(exists, source_path, "empty runtime debug config",
+                                        "runtime debug config empty; using safe defaults");
   }
 
   int version = parsed.config_version;
@@ -396,30 +404,17 @@ inline LoadedRuntimeDebugConfig parse_runtime_debug_config_body(const std::strin
                                      telemetry::kDefaultServicePolicies[i].policy,
                                      &parsed_policy,
                                      &error)) {
-      parsed = default_runtime_debug_config(exists);
-      parsed.source_path = source_path;
-      parsed.exists = exists;
-      parsed.valid = false;
-      parsed.safe_fallback = true;
-      parsed.error = std::string("service ") + service_name + ": " + error;
-      parsed.warnings.push_back("invalid runtime debug config; using safe defaults");
-      finalize_config_hash(&parsed);
-      return parsed;
+      return invalid_runtime_debug_config(exists, source_path,
+                                          std::string("service ") + service_name + ": " + error,
+                                          "invalid runtime debug config; using safe defaults");
     }
 
     parsed.service_policies[service_name] = parsed_policy;
   }
 
   if (parsed.config_version <= 0) {
-    parsed = default_runtime_debug_config(exists);
-    parsed.source_path = source_path;
-    parsed.exists = exists;
-    parsed.valid = false;
-    parsed.safe_fallback = true;
-    parsed.error = "configVersion must be > 0";
-    parsed.warnings.push_back("invalid runtime debug config; using safe defaults");
-    finalize_config_hash(&parsed);
-    return parsed;
+    return invalid_runtime_debug_config(exists, source_path, "configVersion must be > 0",
+                                        "invalid runtime debug config; using safe defaults");
   }
 
   parsed.valid = true;

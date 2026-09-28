@@ -5,8 +5,8 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
-#include <csignal>
+#include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
@@ -30,6 +30,10 @@
 namespace commaview::runtime {
 namespace {
 
+// Same helpers the runtime-debug renderer uses (identical implementations).
+using commaview::runtime_debug::json_escape;
+using commaview::runtime_debug::trim_copy;
+
 constexpr const char* kInstallDir = "/data/commaview";
 constexpr const char* kParamsDir = "/data/params/d";
 constexpr int kDefaultApiPort = 5002;
@@ -47,7 +51,6 @@ constexpr size_t kSupportLogTotalCapBytes = 2 * 1024 * 1024;
 struct SupportLogFileSpec {
   std::string entry_name;
   std::string path;
-  bool text;
   bool rotated;
 };
 
@@ -56,14 +59,14 @@ std::vector<SupportLogFileSpec> support_log_files() {
   // total response cap, but a support bundle must always retain the current
   // bounded counters and effective configuration needed to diagnose the run.
   std::vector<SupportLogFileSpec> files = {
-      {"telemetry-stats.json", "/data/commaview/run/telemetry-stats.json", true, false},
-      {"runtime-debug-effective.json", "/data/commaview/run/runtime-debug-effective.json", true, false},
-      {"onroad-ui-export-status.json", "/data/commaview/run/onroad-ui-export-status.json", true, false},
-      {"last-restart-reason.txt", "/data/commaview/run/last-restart-reason.txt", true, false},
-      {"runtime-run-events.jsonl", "/data/commaview/logs/runtime-run-events.jsonl", true, false},
-      {"commaviewd-bridge.log", "/data/commaview/logs/commaviewd-bridge.log", true, false},
-      {"commaviewd-control.log", "/data/commaview/logs/commaviewd-control.log", true, false},
-      {"onroad-ui-export-startup.log", "/data/commaview/logs/onroad-ui-export-startup.log", true, false},
+      {"telemetry-stats.json", "/data/commaview/run/telemetry-stats.json", false},
+      {"runtime-debug-effective.json", "/data/commaview/run/runtime-debug-effective.json", false},
+      {"onroad-ui-export-status.json", "/data/commaview/run/onroad-ui-export-status.json", false},
+      {"last-restart-reason.txt", "/data/commaview/run/last-restart-reason.txt", false},
+      {"runtime-run-events.jsonl", "/data/commaview/logs/runtime-run-events.jsonl", false},
+      {"commaviewd-bridge.log", "/data/commaview/logs/commaviewd-bridge.log", false},
+      {"commaviewd-control.log", "/data/commaview/logs/commaviewd-control.log", false},
+      {"onroad-ui-export-startup.log", "/data/commaview/logs/onroad-ui-export-startup.log", false},
   };
   const std::array<std::string, 4> rotated = {{
       "commaviewd-bridge.log",
@@ -75,7 +78,7 @@ std::vector<SupportLogFileSpec> support_log_files() {
     for (int idx = 1; idx <= 14; ++idx) {
       const std::string rotated_name = name + "." + std::to_string(idx);
       const std::string rotated_path = "/data/commaview/logs/" + rotated_name;
-      files.push_back({rotated_name, rotated_path, true, true});
+      files.push_back({rotated_name, rotated_path, true});
     }
   }
   return files;
@@ -91,30 +94,6 @@ std::mutex g_pairing_mutex;
 PairingGrant g_pairing_grant;
 bool run_command(const std::vector<std::string>& args, int* exit_code, std::string* stdout_text, std::string* stderr_text);
 bool is_onroad();
-
-std::string trim_copy(const std::string& in) {
-  size_t s = 0;
-  while (s < in.size() && std::isspace(static_cast<unsigned char>(in[s]))) s++;
-  size_t e = in.size();
-  while (e > s && std::isspace(static_cast<unsigned char>(in[e - 1]))) e--;
-  return in.substr(s, e - s);
-}
-
-std::string json_escape(const std::string& in) {
-  std::string out;
-  out.reserve(in.size() + 8);
-  for (char c : in) {
-    switch (c) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default: out.push_back(c); break;
-    }
-  }
-  return out;
-}
 
 std::string normalize_code(const std::string& in) {
   std::string out;
@@ -133,19 +112,17 @@ bool codes_equal(const std::string& a, const std::string& b) {
 std::string random_pair_code() {
   static const char* alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   std::array<unsigned char, 8> bytes{};
+  size_t filled = 0;
   int fd = open("/dev/urandom", O_RDONLY);
   if (fd >= 0) {
     ssize_t n = read(fd, bytes.data(), bytes.size());
     close(fd);
-    if (n < static_cast<ssize_t>(bytes.size())) {
-      std::srand(static_cast<unsigned int>(std::time(nullptr) ^ getpid()));
-      for (size_t i = static_cast<size_t>(n < 0 ? 0 : n); i < bytes.size(); ++i) {
-        bytes[i] = static_cast<unsigned char>(std::rand() & 0xFF);
-      }
-    }
-  } else {
+    filled = n < 0 ? 0 : static_cast<size_t>(n);
+  }
+  if (filled < bytes.size()) {
+    // /dev/urandom missing or short: fill the remaining bytes from rand().
     std::srand(static_cast<unsigned int>(std::time(nullptr) ^ getpid()));
-    for (size_t i = 0; i < bytes.size(); ++i) {
+    for (size_t i = filled; i < bytes.size(); ++i) {
       bytes[i] = static_cast<unsigned char>(std::rand() & 0xFF);
     }
   }
@@ -161,12 +138,16 @@ bool file_executable(const char* path) {
   return path != nullptr && access(path, X_OK) == 0;
 }
 
-std::string read_file_trimmed(const std::string& path) {
+std::string read_file_raw(const std::string& path) {
   std::ifstream f(path);
   if (!f) return "";
   std::stringstream ss;
   ss << f.rdbuf();
-  return trim_copy(ss.str());
+  return ss.str();
+}
+
+std::string read_file_trimmed(const std::string& path) {
+  return trim_copy(read_file_raw(path));
 }
 
 std::string runtime_version() {
@@ -217,14 +198,6 @@ bool write_file(const std::string& path, const std::string& value, mode_t mode =
 void ensure_runtime_debug_dirs() {
   mkdir("/data/commaview/config", 0755);
   mkdir("/data/commaview/run", 0755);
-}
-
-std::string read_file_raw(const std::string& path) {
-  std::ifstream f(path);
-  if (!f) return "";
-  std::stringstream ss;
-  ss << f.rdbuf();
-  return ss.str();
 }
 
 uint64_t now_ms() {
@@ -354,7 +327,7 @@ std::string default_runtime_stats_json(const commaview::runtime_debug::LoadedRun
 }
 
 std::string load_runtime_stats_json(const commaview::runtime_debug::LoadedRuntimeDebugConfig& effective) {
-  const std::string raw = trim_copy(read_file_raw(commaview::runtime_debug::runtime_debug_stats_path()));
+  const std::string raw = read_file_trimmed(commaview::runtime_debug::runtime_debug_stats_path());
   return raw.empty() ? default_runtime_stats_json(effective) : raw;
 }
 
@@ -373,15 +346,6 @@ std::string runtime_debug_state_json() {
   return out.str();
 }
 
-std::string default_onroad_ui_export_status_json() {
-  return "{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"missing\",\"reason\":\"onroad UI export status unavailable\"}";
-}
-
-std::string load_onroad_ui_export_status_json() {
-  const std::string raw = trim_copy(read_file_raw(kOnroadUiExportStatusFile));
-  return raw.empty() ? default_onroad_ui_export_status_json() : raw;
-}
-
 bool json_field_true(const std::string& body, const char* key) {
   if (key == nullptr) return false;
   return body.find(std::string("\"") + key + "\":true") != std::string::npos;
@@ -391,6 +355,11 @@ std::string onroad_ui_export_status_error_json(const std::string& state, const s
   return std::string("{\"healthy\":false,\"patchVerified\":false,\"statusScope\":\"patch-installation\",\"repairNeeded\":true,\"state\":\"") +
          json_escape(state.empty() ? "error" : state) + "\",\"reason\":\"" +
          json_escape(reason.empty() ? "onroad UI export verify failed" : reason) + "\"}";
+}
+
+std::string load_onroad_ui_export_status_json() {
+  const std::string raw = read_file_trimmed(kOnroadUiExportStatusFile);
+  return raw.empty() ? onroad_ui_export_status_error_json("missing", "onroad UI export status unavailable") : raw;
 }
 
 std::string run_onroad_ui_export_verify_json(int* rc_out, std::string* err_out) {
@@ -433,18 +402,21 @@ std::string run_onroad_ui_export_apply_status_json(int* rc_out, std::string* err
   std::string err;
   std::vector<std::string> args{kOnroadUiExportApplyScript};
   if (force_offroad) args.push_back("--force-offroad");
-  if (!run_command(args, &rc, &out, &err)) {
-    if (err_out) *err_out = trim_copy(err).empty() ? "onroad UI export repair failed" : trim_copy(err);
-    return onroad_ui_export_status_error_json("error", trim_copy(err).empty() ? "onroad UI export repair failed" : trim_copy(err));
+  const bool ran = run_command(args, &rc, &out, &err);
+  const std::string trimmed_err = trim_copy(err);
+  const std::string failure = trimmed_err.empty() ? "onroad UI export repair failed" : trimmed_err;
+  if (!ran) {
+    if (err_out) *err_out = failure;
+    return onroad_ui_export_status_error_json("error", failure);
   }
 
   if (rc_out) *rc_out = rc;
-  if (err_out) *err_out = trim_copy(err);
+  if (err_out) *err_out = trimmed_err;
 
   const std::string body = trim_copy(out);
   if (!body.empty()) return body;
   if (rc == 0) return load_onroad_ui_export_status_json();
-  return onroad_ui_export_status_error_json("error", trim_copy(err).empty() ? "onroad UI export repair failed" : trim_copy(err));
+  return onroad_ui_export_status_error_json("error", failure);
 }
 
 std::string live_onroad_ui_export_status_json(bool allow_self_heal) {
@@ -651,12 +623,6 @@ std::string read_param(const char* key) {
   return read_file_trimmed(root + "/" + key);
 }
 
-bool write_param(const char* key, const char* value) {
-  mkdir(kParamsDir, 0755);
-  const std::string path = std::string(kParamsDir) + "/" + key;
-  return write_file(path, value, 0644);
-}
-
 bool is_onroad() {
   // Sunnypilot publishes IsOffroad, not IsOnroad. Prefer the actual device
   // state so the status API and offroad-only mutations agree with the car.
@@ -670,7 +636,10 @@ bool is_onroad() {
   return true;
 }
 
-bool extract_string_field(const std::string& body, const char* key, std::string* value_out) {
+// Raw text between the quotes after the first `"key":` - no escape decoding,
+// and an empty value counts as missing (returns false, *value_out == "").
+// Deliberately differs from commaview::runtime_debug::extract_string_field.
+bool extract_raw_string_field(const std::string& body, const char* key, std::string* value_out) {
   if (key == nullptr || value_out == nullptr) return false;
   const std::string needle = std::string("\"") + key + "\"";
   size_t pos = body.find(needle);
@@ -794,17 +763,31 @@ bool run_command_with_optional_sudo(const std::vector<std::string>& args,
 
 // Change only the active Wi-Fi connection. Never edit NetworkManager's global
 // default or a saved profile that is not currently connected.
-std::string wifi_power_save_status_response() {
+bool active_wifi_profile(std::string* profile, std::string* error_json) {
   int rc = 0;
-  std::string profile, ignored, configured;
+  std::string ignored;
   if (!run_command({"nmcli", "-g", "GENERAL.CONNECTION", "device", "show", "wlan0"},
-                   &rc, &profile, &ignored) || rc != 0) {
-    return "{\"ok\":false,\"error\":\"Wi-Fi connection unavailable\"}";
+                   &rc, profile, &ignored) || rc != 0) {
+    *error_json = "{\"ok\":false,\"error\":\"Wi-Fi connection unavailable\"}";
+    return false;
   }
-  profile = trim_copy(profile);
-  if (profile.empty() || profile == "--") {
-    return "{\"ok\":false,\"error\":\"Wi-Fi not connected\"}";
+  *profile = trim_copy(*profile);
+  if (profile->empty() || *profile == "--") {
+    *error_json = "{\"ok\":false,\"error\":\"Wi-Fi not connected\"}";
+    return false;
   }
+  return true;
+}
+
+bool offroad_and_disengaged() {
+  return read_param("IsOffroad") == "1" && read_param("IsEngaged") == "0";
+}
+
+std::string wifi_power_save_status_response() {
+  std::string profile, error_json;
+  if (!active_wifi_profile(&profile, &error_json)) return error_json;
+  int rc = 0;
+  std::string ignored, configured;
   if (!run_command({"nmcli", "-g", "802-11-wireless.powersave", "connection", "show", profile},
                    &rc, &configured, &ignored) || rc != 0) {
     return "{\"ok\":false,\"error\":\"Wi-Fi power-save state unavailable\"}";
@@ -819,25 +802,20 @@ std::string wifi_power_save_status_response() {
 
 std::string wifi_power_save_set_response(const std::string& body) {
   std::string mode;
-  if (!extract_string_field(body, "mode", &mode) || (mode != "on" && mode != "off")) {
+  if (!extract_raw_string_field(body, "mode", &mode) || (mode != "on" && mode != "off")) {
     return "{\"ok\":false,\"error\":\"mode must be on or off\"}";
   }
-  if (read_param("IsOffroad") != "1" || read_param("IsEngaged") != "0") {
+  if (!offroad_and_disengaged()) {
+    return "{\"ok\":false,\"error\":\"offroad and disengaged required\"}";
+  }
+  std::string profile, error_json;
+  if (!active_wifi_profile(&profile, &error_json)) return error_json;
+  // Re-check after the nmcli round trip, right before the write.
+  if (!offroad_and_disengaged()) {
     return "{\"ok\":false,\"error\":\"offroad and disengaged required\"}";
   }
   int rc = 0;
-  std::string profile, ignored;
-  if (!run_command({"nmcli", "-g", "GENERAL.CONNECTION", "device", "show", "wlan0"},
-                   &rc, &profile, &ignored) || rc != 0) {
-    return "{\"ok\":false,\"error\":\"Wi-Fi connection unavailable\"}";
-  }
-  profile = trim_copy(profile);
-  if (profile.empty() || profile == "--") {
-    return "{\"ok\":false,\"error\":\"Wi-Fi not connected\"}";
-  }
-  if (read_param("IsOffroad") != "1" || read_param("IsEngaged") != "0") {
-    return "{\"ok\":false,\"error\":\"offroad and disengaged required\"}";
-  }
+  std::string ignored;
   const std::string value = mode == "on" ? "3" : "2";
   if (!run_command_with_optional_sudo({"nmcli", "connection", "modify", "id", profile,
                                       "802-11-wireless.powersave", value},
@@ -852,8 +830,8 @@ std::string wifi_power_save_set_response(const std::string& body) {
 }
 
 bool extract_pair_code(const std::string& body, std::string* code_out) {
-  return extract_string_field(body, "pairCode", code_out) ||
-         extract_string_field(body, "code", code_out);
+  return extract_raw_string_field(body, "pairCode", code_out) ||
+         extract_raw_string_field(body, "code", code_out);
 }
 
 std::string pairing_create(const std::string& api_token) {
@@ -914,8 +892,6 @@ commaview::api::HttpResponse make_json(int code, const std::string& body) {
   return resp;
 }
 
-}  // namespace
-
 std::string onroad_ui_export_status_response() {
   return live_onroad_ui_export_status_json(false);
 }
@@ -934,6 +910,145 @@ std::string onroad_ui_export_repair_response(const std::string& request_body) {
   return resp.str();
 }
 
+constexpr const char* kUnauthorizedJson = "{\"ok\":false,\"error\":\"unauthorized\"}";
+
+std::string version_response_json() {
+  const std::string version = runtime_version();
+  const std::string telemetryMode = telemetry_mode();
+  const std::string dongleId = device_dongle_id();
+  const std::string hardwareSerial = device_hardware_serial();
+  const std::string model = device_model();
+  std::ostringstream body;
+  body << "{\"version\":\"" << json_escape(version) << "\",";
+  body << "\"runtimeVersion\":\"" << json_escape(version) << "\",";
+  body << "\"dongleId\":\"" << json_escape(dongleId) << "\",";
+  body << "\"dongle_id\":\"" << json_escape(dongleId) << "\",";
+  body << "\"hardwareSerial\":\"" << json_escape(hardwareSerial) << "\",";
+  body << "\"deviceModel\":\"" << json_escape(model) << "\",";
+  body << "\"device\":\"" << json_escape(model) << "\",";
+  body << "\"api_port\":" << kDefaultApiPort << ",";
+  body << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\"}";
+  return body.str();
+}
+
+commaview::api::HttpResponse handle_source_recording_get(const commaview::api::HttpRequest& req,
+                                                         const std::string& api_token) {
+  // Route archives and UI timelines are private, even on devices where
+  // ordinary control endpoints have not yet been paired.
+  if (api_token.empty() || !is_authorized(req, api_token)) {
+    return make_json(401, kUnauthorizedJson);
+  }
+  if (req.path == "/commaview/source-recording/current") {
+    if (!is_onroad()) {
+      return make_json(403, "{\"ok\":false,\"error\":\"onroad required\"}");
+    }
+    return source_recording_current_response(read_param("CurrentRoute"));
+  }
+  if (is_onroad()) {
+    return make_json(403, "{\"ok\":false,\"error\":\"offroad required\"}");
+  }
+  return source_recording_archive_response(req.path);
+}
+
+commaview::api::HttpResponse handle_get(const commaview::api::HttpRequest& req, const std::string& api_token) {
+  if (req.path.rfind("/commaview/source-recording/", 0) == 0) {
+    return handle_source_recording_get(req, api_token);
+  }
+  if (req.path == "/commaview/version") {
+    return make_json(200, version_response_json());
+  }
+  if (req.path == "/commaview/status") {
+    return make_json(200, runtime_status_json());
+  }
+  if (req.path == "/commaview/onroad-ui-export/status") {
+    return make_json(200, onroad_ui_export_status_response());
+  }
+  if (req.path == "/commaview/runtime-debug/config") {
+    return make_json(200, runtime_debug_state_json());
+  }
+  if (req.path == "/commaview/wifi/power-save") {
+    if (!is_authorized(req, api_token)) {
+      return make_json(401, kUnauthorizedJson);
+    }
+    const std::string body = wifi_power_save_status_response();
+    return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 503, body);
+  }
+  if (req.path == "/commaview/support/logs") {
+    if (!is_authorized(req, api_token)) {
+      return make_json(401, kUnauthorizedJson);
+    }
+    return make_json(200, support_logs_response_json());
+  }
+  return make_json(404, "{\"error\":\"not found\"}");
+}
+
+commaview::api::HttpResponse handle_post(const commaview::api::HttpRequest& req, const std::string& api_token) {
+  if (req.path == "/pairing/redeem") {
+    std::string code;
+    if (!extract_pair_code(req.body, &code)) {
+      return make_json(400, "{\"ok\":false,\"error\":\"pairCode required\"}");
+    }
+    std::string body = pairing_redeem(code, api_token);
+    int status = body.find("\"ok\":true") != std::string::npos ? 200 : 400;
+    return make_json(status, body);
+  }
+
+  // Everything below /pairing/redeem needs the token, including unknown paths.
+  if (!is_authorized(req, api_token)) {
+    return make_json(401, kUnauthorizedJson);
+  }
+
+  if (req.path == "/pairing/create") {
+    return make_json(200, pairing_create(api_token));
+  }
+
+  if (req.path == "/commaview/wifi/power-save") {
+    const std::string body = wifi_power_save_set_response(req.body);
+    const int code = body.find("\"ok\":true") != std::string::npos ? 200 :
+                     body.find("offroad and disengaged required") != std::string::npos ? 403 : 400;
+    return make_json(code, body);
+  }
+
+  if (req.path == "/commaview/runtime-debug/config") {
+    commaview::runtime_debug::LoadedRuntimeDebugConfig parsed;
+    std::string error;
+    if (!write_runtime_debug_config_json(req.body, &parsed, &error)) {
+      return make_json(400, runtime_debug_write_response(false, load_persisted_runtime_debug_config(), error));
+    }
+    return make_json(200, runtime_debug_write_response(true, parsed));
+  }
+  if (req.path == "/commaview/runtime-debug/defaults") {
+    std::string body = runtime_debug_restore_defaults_response();
+    int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
+    return make_json(code, body);
+  }
+  if (req.path == "/commaview/runtime-debug/apply") {
+    std::string body = runtime_debug_apply_response();
+    int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
+    return make_json(code, body);
+  }
+  if (req.path == "/commaview/onroad-ui-export/repair") {
+    std::string body = onroad_ui_export_repair_response(req.body);
+    int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
+    return make_json(code, body);
+  }
+  return make_json(404, "{\"error\":\"not found\"}");
+}
+
+commaview::api::HttpResponse handle_request(const commaview::api::HttpRequest& req, const std::string& api_token) {
+  if (req.method == "OPTIONS") {
+    commaview::api::HttpResponse r;
+    r.status = 204;
+    r.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+    return r;
+  }
+  if (req.method == "GET") return handle_get(req, api_token);
+  if (req.method == "POST") return handle_post(req, api_token);
+  return make_json(405, "{\"error\":\"method not allowed\"}");
+}
+
+}  // namespace
+
 int run_control_mode(int argc, char* argv[]) {
   int port = kDefaultApiPort;
   for (int i = 2; i < argc; i++) {
@@ -946,126 +1061,7 @@ int run_control_mode(int argc, char* argv[]) {
   const std::string api_token = load_api_token();
 
   commaview::api::HttpServer server(port, [api_token](const commaview::api::HttpRequest& req) {
-    if (req.method == "OPTIONS") {
-      commaview::api::HttpResponse r;
-      r.status = 204;
-      r.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
-      return r;
-    }
-
-    if (req.method == "GET") {
-      if (req.path.rfind("/commaview/source-recording/", 0) == 0) {
-        // Route archives and UI timelines are private, even on devices where
-        // ordinary control endpoints have not yet been paired.
-        if (api_token.empty() || !is_authorized(req, api_token)) {
-          return make_json(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
-        }
-        if (req.path == "/commaview/source-recording/current") {
-          if (!is_onroad()) {
-            return make_json(403, "{\"ok\":false,\"error\":\"onroad required\"}");
-          }
-          return source_recording_current_response(read_param("CurrentRoute"));
-        }
-        if (is_onroad()) {
-          return make_json(403, "{\"ok\":false,\"error\":\"offroad required\"}");
-        }
-        return source_recording_archive_response(req.path);
-      }
-      if (req.path == "/commaview/version") {
-        const std::string version = runtime_version();
-        const std::string telemetryMode = telemetry_mode();
-        const std::string dongleId = device_dongle_id();
-        const std::string hardwareSerial = device_hardware_serial();
-        std::ostringstream body;
-        body << "{\"version\":\"" << json_escape(version) << "\",";
-        body << "\"runtimeVersion\":\"" << json_escape(version) << "\",";
-        body << "\"dongleId\":\"" << json_escape(dongleId) << "\",";
-        body << "\"dongle_id\":\"" << json_escape(dongleId) << "\",";
-        body << "\"hardwareSerial\":\"" << json_escape(hardwareSerial) << "\",";
-        body << "\"deviceModel\":\"" << json_escape(device_model()) << "\",";
-        body << "\"device\":\"" << json_escape(device_model()) << "\",";
-        body << "\"api_port\":" << kDefaultApiPort << ",";
-        body << "\"telemetryMode\":\"" << json_escape(telemetryMode) << "\"}";
-        return make_json(200, body.str());
-      }
-      if (req.path == "/commaview/status") {
-        return make_json(200, runtime_status_json());
-      }
-      if (req.path == "/commaview/onroad-ui-export/status") {
-        return make_json(200, onroad_ui_export_status_response());
-      }
-      if (req.path == "/commaview/runtime-debug/config") {
-        return make_json(200, runtime_debug_state_json());
-      }
-      if (req.path == "/commaview/wifi/power-save") {
-        if (!is_authorized(req, api_token)) {
-          return make_json(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
-        }
-        const std::string body = wifi_power_save_status_response();
-        return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 503, body);
-      }
-      if (req.path == "/commaview/support/logs") {
-        if (!is_authorized(req, api_token)) {
-          return make_json(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
-        }
-        return make_json(200, support_logs_response_json());
-      }
-      return make_json(404, "{\"error\":\"not found\"}");
-    }
-
-    if (req.method == "POST") {
-      if (req.path == "/pairing/redeem") {
-        std::string code;
-        if (!extract_pair_code(req.body, &code)) {
-          return make_json(400, "{\"ok\":false,\"error\":\"pairCode required\"}");
-        }
-        std::string body = pairing_redeem(code, api_token);
-        int status = body.find("\"ok\":true") != std::string::npos ? 200 : 400;
-        return make_json(status, body);
-      }
-
-      if (!is_authorized(req, api_token)) {
-        return make_json(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
-      }
-
-      if (req.path == "/pairing/create") {
-        return make_json(200, pairing_create(api_token));
-      }
-
-      if (req.path == "/commaview/wifi/power-save") {
-        const std::string body = wifi_power_save_set_response(req.body);
-        const int code = body.find("\"ok\":true") != std::string::npos ? 200 :
-                         body.find("offroad and disengaged required") != std::string::npos ? 403 : 400;
-        return make_json(code, body);
-      }
-
-      if (req.path == "/commaview/runtime-debug/config") {
-        commaview::runtime_debug::LoadedRuntimeDebugConfig parsed;
-        std::string error;
-        if (!write_runtime_debug_config_json(req.body, &parsed, &error)) {
-          return make_json(400, runtime_debug_write_response(false, load_persisted_runtime_debug_config(), error));
-        }
-        return make_json(200, runtime_debug_write_response(true, parsed));
-      }
-      if (req.path == "/commaview/runtime-debug/defaults") {
-        std::string body = runtime_debug_restore_defaults_response();
-        int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
-        return make_json(code, body);
-      }
-      if (req.path == "/commaview/runtime-debug/apply") {
-        std::string body = runtime_debug_apply_response();
-        int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
-        return make_json(code, body);
-      }
-      if (req.path == "/commaview/onroad-ui-export/repair") {
-        std::string body = onroad_ui_export_repair_response(req.body);
-        int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
-        return make_json(code, body);
-      }
-      return make_json(404, "{\"error\":\"not found\"}");
-    }
-
-    return make_json(405, "{\"error\":\"method not allowed\"}");
+    return handle_request(req, api_token);
   });
 
   std::string err;
