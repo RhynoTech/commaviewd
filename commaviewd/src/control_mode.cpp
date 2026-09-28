@@ -792,6 +792,65 @@ bool run_command_with_optional_sudo(const std::vector<std::string>& args,
   return *rc == 0;
 }
 
+// Change only the active Wi-Fi connection. Never edit NetworkManager's global
+// default or a saved profile that is not currently connected.
+std::string wifi_power_save_status_response() {
+  int rc = 0;
+  std::string profile, ignored, configured;
+  if (!run_command({"nmcli", "-g", "GENERAL.CONNECTION", "device", "show", "wlan0"},
+                   &rc, &profile, &ignored) || rc != 0) {
+    return "{\"ok\":false,\"error\":\"Wi-Fi connection unavailable\"}";
+  }
+  profile = trim_copy(profile);
+  if (profile.empty() || profile == "--") {
+    return "{\"ok\":false,\"error\":\"Wi-Fi not connected\"}";
+  }
+  if (!run_command({"nmcli", "-g", "802-11-wireless.powersave", "connection", "show", profile},
+                   &rc, &configured, &ignored) || rc != 0) {
+    return "{\"ok\":false,\"error\":\"Wi-Fi power-save state unavailable\"}";
+  }
+  configured = trim_copy(configured);
+  if (configured != "enable" && configured != "disable" && configured != "default") {
+    return "{\"ok\":false,\"error\":\"Unknown Wi-Fi power-save state\"}";
+  }
+  return std::string("{\"ok\":true,\"mode\":\"") + configured + "\",\"enabled\":" +
+         (configured == "default" ? "null" : configured == "enable" ? "true" : "false") + "}";
+}
+
+std::string wifi_power_save_set_response(const std::string& body) {
+  std::string mode;
+  if (!extract_string_field(body, "mode", &mode) || (mode != "on" && mode != "off")) {
+    return "{\"ok\":false,\"error\":\"mode must be on or off\"}";
+  }
+  if (read_param("IsOffroad") != "1" || read_param("IsEngaged") != "0") {
+    return "{\"ok\":false,\"error\":\"offroad and disengaged required\"}";
+  }
+  int rc = 0;
+  std::string profile, ignored;
+  if (!run_command({"nmcli", "-g", "GENERAL.CONNECTION", "device", "show", "wlan0"},
+                   &rc, &profile, &ignored) || rc != 0) {
+    return "{\"ok\":false,\"error\":\"Wi-Fi connection unavailable\"}";
+  }
+  profile = trim_copy(profile);
+  if (profile.empty() || profile == "--") {
+    return "{\"ok\":false,\"error\":\"Wi-Fi not connected\"}";
+  }
+  if (read_param("IsOffroad") != "1" || read_param("IsEngaged") != "0") {
+    return "{\"ok\":false,\"error\":\"offroad and disengaged required\"}";
+  }
+  const std::string value = mode == "on" ? "3" : "2";
+  if (!run_command_with_optional_sudo({"nmcli", "connection", "modify", "id", profile,
+                                      "802-11-wireless.powersave", value},
+                                      &rc, &ignored, &ignored)) {
+    return "{\"ok\":false,\"error\":\"Could not save Wi-Fi setting\"}";
+  }
+  // This hardware cannot reapply power saving to an active Wi-Fi link. Do not
+  // bounce the network under the tablet: the saved choice takes effect after
+  // the next normal reconnect.
+  return std::string("{\"ok\":true,\"mode\":\"") + (mode == "on" ? "enable" : "disable") +
+         "\",\"enabled\":" + (mode == "on" ? "true" : "false") + ",\"reconnectRequired\":true}";
+}
+
 bool extract_pair_code(const std::string& body, std::string* code_out) {
   return extract_string_field(body, "pairCode", code_out) ||
          extract_string_field(body, "code", code_out);
@@ -938,6 +997,13 @@ int run_control_mode(int argc, char* argv[]) {
       if (req.path == "/commaview/runtime-debug/config") {
         return make_json(200, runtime_debug_state_json());
       }
+      if (req.path == "/commaview/wifi/power-save") {
+        if (!is_authorized(req, api_token)) {
+          return make_json(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
+        }
+        const std::string body = wifi_power_save_status_response();
+        return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 503, body);
+      }
       if (req.path == "/commaview/support/logs") {
         if (!is_authorized(req, api_token)) {
           return make_json(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
@@ -964,6 +1030,13 @@ int run_control_mode(int argc, char* argv[]) {
 
       if (req.path == "/pairing/create") {
         return make_json(200, pairing_create(api_token));
+      }
+
+      if (req.path == "/commaview/wifi/power-save") {
+        const std::string body = wifi_power_save_set_response(req.body);
+        const int code = body.find("\"ok\":true") != std::string::npos ? 200 :
+                         body.find("offroad and disengaged required") != std::string::npos ? 403 : 400;
+        return make_json(code, body);
       }
 
       if (req.path == "/commaview/runtime-debug/config") {
