@@ -5,80 +5,33 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
-#include <limits.h>
 #include <poll.h>
 #include <sys/socket.h>
-#include <sys/uio.h>
-#include <unistd.h>
 #include <vector>
 
 namespace {
 
-ssize_t system_send(void*, int fd, const uint8_t* data, size_t len, int flags) {
-  return ::send(fd, data, len, flags);
+using commaview::net::SendDeadline;
+using commaview::net::SendResult;
+using commaview::net::SendStatus;
+
+constexpr int kSendFlags = MSG_NOSIGNAL | MSG_DONTWAIT;
+
+SendResult invalid_argument_result() {
+  SendResult result{};
+  result.status = SendStatus::InvalidArgument;
+  result.error = EINVAL;
+  return result;
 }
 
-commaview::net::SendStatus classify_send_error(int error) {
-  if (error == EAGAIN || error == EWOULDBLOCK) return commaview::net::SendStatus::Backpressure;
-  if (error == EPIPE || error == ECONNRESET || error == ENOTCONN) return commaview::net::SendStatus::Disconnected;
-  return commaview::net::SendStatus::Disconnected;
+// EAGAIN/EWOULDBLOCK are backpressure; every other errno (EPIPE, ECONNRESET, ENOTCONN, ...)
+// is treated as a disconnect.
+SendStatus classify_send_error(int error) {
+  if (error == EAGAIN || error == EWOULDBLOCK) return SendStatus::Backpressure;
+  return SendStatus::Disconnected;
 }
 
-bool validate_send_buffers(const commaview::net::SendBuffer* buffers,
-                           size_t buffer_count,
-                           commaview::net::SendResult* result) {
-  if (buffers == nullptr && buffer_count > 0) {
-    result->status = commaview::net::SendStatus::InvalidArgument;
-    result->error = EINVAL;
-    return false;
-  }
-  for (size_t i = 0; i < buffer_count; ++i) {
-    if (buffers[i].data == nullptr && buffers[i].len > 0) {
-      result->status = commaview::net::SendStatus::InvalidArgument;
-      result->error = EINVAL;
-      return false;
-    }
-  }
-  return true;
-}
-
-std::vector<iovec> build_iovecs(const commaview::net::SendBuffer* buffers, size_t buffer_count) {
-  std::vector<iovec> iovecs;
-  iovecs.reserve(buffer_count);
-  for (size_t i = 0; i < buffer_count; ++i) {
-    if (buffers[i].len == 0) continue;
-    iovec iov{};
-    iov.iov_base = const_cast<uint8_t*>(buffers[i].data);
-    iov.iov_len = buffers[i].len;
-    iovecs.push_back(iov);
-  }
-  return iovecs;
-}
-
-void advance_iovecs(std::vector<iovec>* iovecs, size_t* iov_index, size_t bytes) {
-  while (bytes > 0 && *iov_index < iovecs->size()) {
-    iovec& iov = (*iovecs)[*iov_index];
-    if (bytes < iov.iov_len) {
-      iov.iov_base = static_cast<uint8_t*>(iov.iov_base) + bytes;
-      iov.iov_len -= bytes;
-      return;
-    }
-    bytes -= iov.iov_len;
-    iov.iov_len = 0;
-    ++(*iov_index);
-  }
-}
-
-size_t max_iov_per_sendmsg() {
-#ifdef IOV_MAX
-  return static_cast<size_t>(IOV_MAX);
-#else
-  const long value = sysconf(_SC_IOV_MAX);
-  return value > 0 ? static_cast<size_t>(value) : 16U;
-#endif
-}
-
-bool wait_for_socket_writable(int fd, const commaview::net::SendDeadline& deadline) {
+bool wait_for_socket_writable(int fd, const SendDeadline& deadline) {
   if (fd < 0) return false;
   while (!deadline.expired()) {
     const uint64_t remaining_us = deadline.remaining_micros();
@@ -91,15 +44,64 @@ bool wait_for_socket_writable(int fd, const commaview::net::SendDeadline& deadli
     pfd.fd = fd;
     pfd.events = POLLOUT;
     const int ready = poll(&pfd, 1, timeout_ms);
-    if (ready > 0) {
-      if ((pfd.revents & POLLOUT) != 0) return true;
-      return false;
-    }
+    if (ready > 0) return (pfd.revents & POLLOUT) != 0;
     if (ready == 0) continue;
     if (errno == EINTR) continue;
     return false;
   }
   return false;
+}
+
+// The bounded, non-blocking send loop shared by send_all_bounded and send_all_for_test.
+// `send_once(data, len)` makes one send attempt over the unsent bytes. Only send_all_bounded
+// passes wait_for_writable=true: on EAGAIN/EWOULDBLOCK it polls for POLLOUT until the deadline
+// instead of returning Backpressure immediately.
+template <typename SendOnce>
+SendResult bounded_send_loop(int fd,
+                             const uint8_t* data,
+                             size_t len,
+                             const SendDeadline& deadline,
+                             bool wait_for_writable,
+                             SendOnce send_once) {
+  SendResult result{};
+  while (result.bytes_sent < len) {
+    if (deadline.expired()) {
+      result.status = SendStatus::Backpressure;
+      result.error = EAGAIN;
+      result.elapsed_micros = deadline.elapsed_micros();
+      return result;
+    }
+
+    const ssize_t n = send_once(data + result.bytes_sent, len - result.bytes_sent);
+    if (n > 0) {
+      result.bytes_sent += static_cast<size_t>(n);
+      continue;
+    }
+    if (n == 0) {
+      result.status = SendStatus::Disconnected;
+      result.elapsed_micros = deadline.elapsed_micros();
+      return result;
+    }
+
+    const int err = errno;
+    if (err == EINTR) continue;
+    result.status = classify_send_error(err);
+    result.error = err;
+    result.elapsed_micros = deadline.elapsed_micros();
+    if (wait_for_writable) {
+      if (result.status == SendStatus::Backpressure && wait_for_socket_writable(fd, deadline)) {
+        result.status = SendStatus::Ok;
+        result.error = 0;
+        continue;
+      }
+      result.elapsed_micros = deadline.elapsed_micros();
+    }
+    return result;
+  }
+
+  result.status = SendStatus::Ok;
+  result.elapsed_micros = deadline.elapsed_micros();
+  return result;
 }
 
 }  // namespace
@@ -146,21 +148,15 @@ uint32_t read_be32(const uint8_t* buf) {
          static_cast<uint32_t>(buf[3]);
 }
 
-SendDeadline::SendDeadline(uint64_t budget_micros, bool force_expired)
+SendDeadline::SendDeadline(uint64_t budget_micros)
     : budget_micros_(budget_micros),
-      force_expired_(force_expired),
       started_at_(std::chrono::steady_clock::now()) {}
 
 SendDeadline SendDeadline::after_micros(uint64_t budget_micros) {
-  return SendDeadline(budget_micros, false);
-}
-
-SendDeadline SendDeadline::already_expired_for_test(bool expired) {
-  return SendDeadline(0, expired);
+  return SendDeadline(budget_micros);
 }
 
 bool SendDeadline::expired() const {
-  if (force_expired_) return true;
   if (budget_micros_ == 0) return false;
   return elapsed_micros() >= budget_micros_;
 }
@@ -171,7 +167,6 @@ uint64_t SendDeadline::elapsed_micros() const {
 }
 
 uint64_t SendDeadline::remaining_micros() const {
-  if (force_expired_) return 0;
   if (budget_micros_ == 0) return std::numeric_limits<uint64_t>::max();
   const uint64_t elapsed = elapsed_micros();
   return elapsed >= budget_micros_ ? 0 : budget_micros_ - elapsed;
@@ -183,226 +178,16 @@ SendResult send_all_for_test(int fd,
                              SendDeadline deadline,
                              SendForTest send_fn,
                              void* send_ctx) {
-  SendResult result{};
-  if (data == nullptr && len > 0) {
-    result.status = SendStatus::InvalidArgument;
-    result.error = EINVAL;
-    return result;
-  }
-  if (send_fn == nullptr) {
-    result.status = SendStatus::InvalidArgument;
-    result.error = EINVAL;
-    return result;
-  }
-
-  const auto* p = static_cast<const uint8_t*>(data);
-  while (result.bytes_sent < len) {
-    if (deadline.expired()) {
-      result.status = SendStatus::Backpressure;
-      result.error = EAGAIN;
-      result.elapsed_micros = deadline.elapsed_micros();
-      return result;
-    }
-
-    const ssize_t n = send_fn(send_ctx,
-                              fd,
-                              p + result.bytes_sent,
-                              len - result.bytes_sent,
-                              MSG_NOSIGNAL | MSG_DONTWAIT);
-    if (n > 0) {
-      result.bytes_sent += static_cast<size_t>(n);
-      continue;
-    }
-    if (n == 0) {
-      result.status = SendStatus::Disconnected;
-      result.elapsed_micros = deadline.elapsed_micros();
-      return result;
-    }
-
-    const int err = errno;
-    if (err == EINTR) continue;
-    result.status = classify_send_error(err);
-    result.error = err;
-    result.elapsed_micros = deadline.elapsed_micros();
-    return result;
-  }
-
-  result.status = SendStatus::Ok;
-  result.elapsed_micros = deadline.elapsed_micros();
-  return result;
+  if (data == nullptr && len > 0) return invalid_argument_result();
+  if (send_fn == nullptr) return invalid_argument_result();
+  return bounded_send_loop(fd, static_cast<const uint8_t*>(data), len, deadline, /*wait_for_writable=*/false,
+                           [&](const uint8_t* p, size_t n) { return send_fn(send_ctx, fd, p, n, kSendFlags); });
 }
 
 SendResult send_all_bounded(int fd, const void* data, size_t len, SendDeadline deadline) {
-  SendResult result{};
-  if (data == nullptr && len > 0) {
-    result.status = SendStatus::InvalidArgument;
-    result.error = EINVAL;
-    return result;
-  }
-
-  const auto* p = static_cast<const uint8_t*>(data);
-  while (result.bytes_sent < len) {
-    if (deadline.expired()) {
-      result.status = SendStatus::Backpressure;
-      result.error = EAGAIN;
-      result.elapsed_micros = deadline.elapsed_micros();
-      return result;
-    }
-
-    const ssize_t n = system_send(nullptr,
-                                  fd,
-                                  p + result.bytes_sent,
-                                  len - result.bytes_sent,
-                                  MSG_NOSIGNAL | MSG_DONTWAIT);
-    if (n > 0) {
-      result.bytes_sent += static_cast<size_t>(n);
-      continue;
-    }
-    if (n == 0) {
-      result.status = SendStatus::Disconnected;
-      result.elapsed_micros = deadline.elapsed_micros();
-      return result;
-    }
-
-    const int err = errno;
-    if (err == EINTR) continue;
-    result.status = classify_send_error(err);
-    result.error = err;
-    result.elapsed_micros = deadline.elapsed_micros();
-    if (result.status == SendStatus::Backpressure && wait_for_socket_writable(fd, deadline)) {
-      result.status = SendStatus::Ok;
-      result.error = 0;
-      continue;
-    }
-    result.elapsed_micros = deadline.elapsed_micros();
-    return result;
-  }
-
-  result.status = SendStatus::Ok;
-  result.elapsed_micros = deadline.elapsed_micros();
-  return result;
-}
-
-SendResult send_buffers_for_test(int fd,
-                                 const SendBuffer* buffers,
-                                 size_t buffer_count,
-                                 SendDeadline deadline,
-                                 SendForTest send_fn,
-                                 void* send_ctx) {
-  SendResult result{};
-  if (!validate_send_buffers(buffers, buffer_count, &result)) return result;
-  if (send_fn == nullptr) {
-    result.status = SendStatus::InvalidArgument;
-    result.error = EINVAL;
-    return result;
-  }
-
-  std::vector<iovec> iovecs = build_iovecs(buffers, buffer_count);
-  size_t iov_index = 0;
-  while (iov_index < iovecs.size()) {
-    if (deadline.expired()) {
-      result.status = SendStatus::Backpressure;
-      result.error = EAGAIN;
-      result.elapsed_micros = deadline.elapsed_micros();
-      return result;
-    }
-
-    std::vector<uint8_t> remaining;
-    for (size_t i = iov_index; i < iovecs.size(); ++i) {
-      const auto* base = static_cast<const uint8_t*>(iovecs[i].iov_base);
-      remaining.insert(remaining.end(), base, base + iovecs[i].iov_len);
-    }
-
-    const ssize_t n = send_fn(send_ctx,
-                              fd,
-                              remaining.data(),
-                              remaining.size(),
-                              MSG_NOSIGNAL | MSG_DONTWAIT);
-    if (n > 0) {
-      result.bytes_sent += static_cast<size_t>(n);
-      advance_iovecs(&iovecs, &iov_index, static_cast<size_t>(n));
-      continue;
-    }
-    if (n == 0) {
-      result.status = SendStatus::Disconnected;
-      result.elapsed_micros = deadline.elapsed_micros();
-      return result;
-    }
-
-    const int err = errno;
-    if (err == EINTR) continue;
-    result.status = classify_send_error(err);
-    result.error = err;
-    result.elapsed_micros = deadline.elapsed_micros();
-    return result;
-  }
-
-  result.status = SendStatus::Ok;
-  result.elapsed_micros = deadline.elapsed_micros();
-  return result;
-}
-
-SendResult send_buffers_bounded(int fd,
-                                const SendBuffer* buffers,
-                                size_t buffer_count,
-                                SendDeadline deadline) {
-  SendResult result{};
-  if (!validate_send_buffers(buffers, buffer_count, &result)) return result;
-
-  std::vector<iovec> iovecs = build_iovecs(buffers, buffer_count);
-  size_t iov_index = 0;
-  const size_t max_iov = max_iov_per_sendmsg();
-  while (iov_index < iovecs.size()) {
-    if (deadline.expired()) {
-      result.status = SendStatus::Backpressure;
-      result.error = EAGAIN;
-      result.elapsed_micros = deadline.elapsed_micros();
-      return result;
-    }
-
-    msghdr msg{};
-    msg.msg_iov = &iovecs[iov_index];
-    msg.msg_iovlen = std::min(max_iov, iovecs.size() - iov_index);
-
-    const ssize_t n = ::sendmsg(fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
-    if (n > 0) {
-      result.bytes_sent += static_cast<size_t>(n);
-      advance_iovecs(&iovecs, &iov_index, static_cast<size_t>(n));
-      continue;
-    }
-    if (n == 0) {
-      result.status = SendStatus::Disconnected;
-      result.elapsed_micros = deadline.elapsed_micros();
-      return result;
-    }
-
-    const int err = errno;
-    if (err == EINTR) continue;
-    result.status = classify_send_error(err);
-    result.error = err;
-    result.elapsed_micros = deadline.elapsed_micros();
-    if (result.status == SendStatus::Backpressure && wait_for_socket_writable(fd, deadline)) {
-      result.status = SendStatus::Ok;
-      result.error = 0;
-      continue;
-    }
-    result.elapsed_micros = deadline.elapsed_micros();
-    return result;
-  }
-
-  result.status = SendStatus::Ok;
-  result.elapsed_micros = deadline.elapsed_micros();
-  return result;
-}
-
-SendResult send_frame_bounded(int fd, const uint8_t* payload, size_t payload_len, SendDeadline deadline) {
-  uint8_t hdr[4];
-  put_be32(hdr, static_cast<uint32_t>(payload_len));
-  const SendBuffer buffers[] = {
-      {hdr, sizeof(hdr)},
-      {payload, payload_len},
-  };
-  return send_buffers_bounded(fd, buffers, 2, deadline);
+  if (data == nullptr && len > 0) return invalid_argument_result();
+  return bounded_send_loop(fd, static_cast<const uint8_t*>(data), len, deadline, /*wait_for_writable=*/true,
+                           [fd](const uint8_t* p, size_t n) { return ::send(fd, p, n, kSendFlags); });
 }
 
 SendResult send_frame_with_partial_recovery(int fd,
@@ -410,12 +195,7 @@ SendResult send_frame_with_partial_recovery(int fd,
                                             size_t payload_len,
                                             SendDeadline initial_deadline,
                                             uint64_t recovery_budget_micros) {
-  if (payload == nullptr && payload_len > 0) {
-    SendResult invalid;
-    invalid.status = SendStatus::InvalidArgument;
-    invalid.error = EINVAL;
-    return invalid;
-  }
+  if (payload == nullptr && payload_len > 0) return invalid_argument_result();
 
   std::vector<uint8_t> frame(4 + payload_len);
   put_be32(frame.data(), static_cast<uint32_t>(payload_len));
@@ -439,29 +219,6 @@ SendResult send_frame_with_partial_recovery(int fd,
   recovery.partial_recovery_attempted = true;
   recovery.partial_recovery_succeeded = recovery.status == SendStatus::Ok;
   return recovery;
-}
-
-bool send_all(int fd, const void* data, size_t len) {
-  return send_all_bounded(fd, data, len, SendDeadline::after_micros(0)).status == SendStatus::Ok;
-}
-
-bool send_frame(int fd, const uint8_t* payload, size_t payload_len) {
-  return send_frame_bounded(fd, payload, payload_len, SendDeadline::after_micros(0)).status == SendStatus::Ok;
-}
-
-bool send_meta_bytes(int fd, const uint8_t* bytes, size_t bytes_len, uint8_t msg_type) {
-  if (bytes == nullptr || bytes_len == 0) return true;
-  std::vector<uint8_t> payload(1 + bytes_len);
-  payload[0] = msg_type;
-  memcpy(&payload[1], bytes, bytes_len);
-  return send_frame(fd, payload.data(), payload.size());
-}
-
-bool send_meta_json(int fd, const std::string& json, uint8_t msg_meta_type) {
-  return send_meta_bytes(fd,
-                         reinterpret_cast<const uint8_t*>(json.data()),
-                         json.size(),
-                         msg_meta_type);
 }
 
 }  // namespace commaview::net

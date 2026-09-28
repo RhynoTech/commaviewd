@@ -19,8 +19,6 @@ void note_video_send_failure_details(RuntimeVideoSendStats& stats,
   stats.last_at_ms = now_ms;
 }
 
-}  // namespace
-
 void note_video_send_result(RuntimeVideoSendStats& stats,
                             const commaview::net::SendResult& result,
                             uint64_t now_ms) {
@@ -45,6 +43,8 @@ void note_video_send_result(RuntimeVideoSendStats& stats,
       break;
   }
 }
+
+}  // namespace
 
 void note_video_chunk_send_result(RuntimeVideoSendStats& stats,
                                   const commaview::video::VideoChunk& chunk,

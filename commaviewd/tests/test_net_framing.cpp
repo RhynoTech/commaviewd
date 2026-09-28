@@ -22,7 +22,7 @@ struct ScriptedSendCall {
 struct ScriptedSender {
   std::vector<ScriptedSendCall> calls;
   size_t call_index = 0;
-  std::vector<uint8_t> bytes;
+  std::vector<uint8_t> bytes = {};
 };
 
 ssize_t scripted_send(void* ctx, int, const uint8_t* data, size_t len, int) {
@@ -40,6 +40,13 @@ ssize_t scripted_send(void* ctx, int, const uint8_t* data, size_t len, int) {
   return call.result;
 }
 
+// Unbounded framed send, as the removed send_frame() helper did.
+bool send_frame_unbounded(int fd, const uint8_t* payload, size_t payload_len) {
+  return commaview::net::send_frame_with_partial_recovery(
+             fd, payload, payload_len, commaview::net::SendDeadline::after_micros(0), 0)
+             .status == commaview::net::SendStatus::Ok;
+}
+
 }  // namespace
 
 static void test_bounded_send_retries_eintr_and_partial_success() {
@@ -55,7 +62,7 @@ static void test_bounded_send_retries_eintr_and_partial_success() {
       -1,
       payload.data(),
       payload.size(),
-      commaview::net::SendDeadline::already_expired_for_test(false),
+      commaview::net::SendDeadline::after_micros(0),
       scripted_send,
       &sender);
 
@@ -73,7 +80,7 @@ static void test_bounded_send_classifies_eagain_as_backpressure() {
       -1,
       payload.data(),
       payload.size(),
-      commaview::net::SendDeadline::already_expired_for_test(false),
+      commaview::net::SendDeadline::after_micros(0),
       scripted_send,
       &sender);
 
@@ -91,7 +98,7 @@ static void test_bounded_send_reports_partial_progress_before_backpressure() {
       -1,
       payload.data(),
       payload.size(),
-      commaview::net::SendDeadline::already_expired_for_test(false),
+      commaview::net::SendDeadline::after_micros(0),
       scripted_send,
       &sender);
 
@@ -110,7 +117,7 @@ static void test_bounded_send_classifies_ewouldblock_as_backpressure() {
       -1,
       payload.data(),
       payload.size(),
-      commaview::net::SendDeadline::already_expired_for_test(false),
+      commaview::net::SendDeadline::after_micros(0),
       scripted_send,
       &sender);
 
@@ -140,7 +147,7 @@ static void test_bounded_send_classifies_epipe_as_disconnected() {
       -1,
       payload.data(),
       payload.size(),
-      commaview::net::SendDeadline::already_expired_for_test(false),
+      commaview::net::SendDeadline::after_micros(0),
       scripted_send,
       &sender);
 
@@ -148,35 +155,6 @@ static void test_bounded_send_classifies_epipe_as_disconnected() {
   assert(result.error == EPIPE);
   assert(result.bytes_sent == 0);
   assert(sender.call_index == sender.calls.size());
-}
-
-static void test_send_iov_handles_partial_iovec_boundaries() {
-  uint8_t a[] = {0xA1, 0xA2};
-  uint8_t b[] = {0xB1, 0xB2, 0xB3};
-  uint8_t c[] = {0xC1};
-  std::vector<commaview::net::SendBuffer> buffers{
-      {a, sizeof(a)},
-      {b, sizeof(b)},
-      {c, sizeof(c)},
-  };
-
-  ScriptedSender sender{{
-      {1, 0},
-      {3, 0},
-      {2, 0},
-  }};
-
-  const auto result = commaview::net::send_buffers_for_test(
-      -1,
-      buffers.data(),
-      buffers.size(),
-      commaview::net::SendDeadline::already_expired_for_test(false),
-      scripted_send,
-      &sender);
-
-  const std::vector<uint8_t> expected{0xA1, 0xA2, 0xB1, 0xB2, 0xB3, 0xC1};
-  assert(result.status == commaview::net::SendStatus::Ok);
-  assert(sender.bytes == expected);
 }
 
 static size_t fill_socket_until_backpressure(int fd) {
@@ -230,28 +208,6 @@ static void test_bounded_send_waits_for_socket_writability_before_deadline() {
   assert(result.elapsed_micros >= 1000);
 }
 
-static void test_bounded_send_buffers_waits_for_socket_writability_before_deadline() {
-  int fds[2]{};
-  assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
-  fill_socket_until_backpressure(fds[0]);
-  auto drainer = drain_socket_after_delay(fds[1]);
-
-  uint8_t a[] = {0x51, 0x52};
-  uint8_t b[] = {0x53, 0x54};
-  commaview::net::SendBuffer buffers[] = {{a, sizeof(a)}, {b, sizeof(b)}};
-  const auto result = commaview::net::send_buffers_bounded(
-      fds[0],
-      buffers,
-      2,
-      commaview::net::SendDeadline::after_micros(200000));
-
-  close_socketpair_and_join(fds, &drainer);
-
-  assert(result.status == commaview::net::SendStatus::Ok);
-  assert(result.bytes_sent == sizeof(a) + sizeof(b));
-  assert(result.elapsed_micros >= 1000);
-}
-
 static void test_partial_frame_send_recovers_without_breaking_framing() {
   int fds[2]{};
   assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
@@ -299,7 +255,7 @@ static void test_partial_frame_send_recovers_without_breaking_framing() {
   assert(std::equal(payload.begin(), payload.end(), recovered_frame.begin() + 4));
 
   const std::vector<uint8_t> next_payload{0x11, 0x22, 0x33};
-  assert(commaview::net::send_frame(fds[0], next_payload.data(), next_payload.size()));
+  assert(send_frame_unbounded(fds[0], next_payload.data(), next_payload.size()));
   uint8_t next_frame[7]{};
   assert(::recv(fds[1], next_frame, sizeof(next_frame), MSG_WAITALL) == sizeof(next_frame));
   assert(commaview::net::read_be32(next_frame) == next_payload.size());
@@ -315,9 +271,7 @@ int main() {
   test_bounded_send_reports_partial_progress_before_backpressure();
   test_bounded_send_classifies_ewouldblock_as_backpressure();
   test_bounded_send_classifies_epipe_as_disconnected();
-  test_send_iov_handles_partial_iovec_boundaries();
   test_bounded_send_waits_for_socket_writability_before_deadline();
-  test_bounded_send_buffers_waits_for_socket_writability_before_deadline();
   test_partial_frame_send_recovers_without_breaking_framing();
 
   uint8_t b[4]{};
@@ -329,7 +283,7 @@ int main() {
 
   // Basic frame
   std::vector<uint8_t> payload{0x01, 0x02, 0x03, 0x04};
-  assert(commaview::net::send_frame(fds[0], payload.data(), payload.size()));
+  assert(send_frame_unbounded(fds[0], payload.data(), payload.size()));
 
   uint8_t hdr[4]{};
   assert(read(fds[1], hdr, 4) == 4);
@@ -342,7 +296,9 @@ int main() {
   // Meta bytes frame
   std::vector<uint8_t> meta{0xAA, 0xBB, 0xCC};
   constexpr uint8_t msg_type = 0x04;
-  assert(commaview::net::send_meta_bytes(fds[0], meta.data(), meta.size(), msg_type));
+  std::vector<uint8_t> meta_payload{msg_type};
+  meta_payload.insert(meta_payload.end(), meta.begin(), meta.end());
+  assert(send_frame_unbounded(fds[0], meta_payload.data(), meta_payload.size()));
 
   assert(read(fds[1], hdr, 4) == 4);
   assert(commaview::net::read_be32(hdr) == meta.size() + 1);
