@@ -548,3 +548,30 @@ def test_control_mode_routes_present_for_runtime_debug_config():
     assert "live_onroad_ui_export_status_json(false)" in text
     assert "run_onroad_ui_export_apply_status_json" in text
     assert 'json_field_true(request_body, "forceOffroad")' in text
+
+
+# Standalone device scripts cannot source a shared helper: install.sh runs piped from curl,
+# and control mode/start.sh exec the patch scripts individually. These helpers are therefore
+# duplicated on purpose; this guard keeps the copies from drifting apart.
+DUPLICATED_SHELL_HELPERS = {
+    "commaview_pids": (INSTALL_SH, STOP_SH),
+    "write_param": (INSTALL_SH, APPLY_PATCH_SH, REVERT_PATCH_SH),
+    "restore_force_offroad_mode": (INSTALL_SH, APPLY_PATCH_SH, REVERT_PATCH_SH),
+    "wait_until_offroad": (INSTALL_SH, APPLY_PATCH_SH, REVERT_PATCH_SH),
+    "read_param": (APPLY_PATCH_SH, REVERT_PATCH_SH),
+    "request_openpilot_ui_restart": (APPLY_PATCH_SH, REVERT_PATCH_SH),
+    "managed_targets": (APPLY_PATCH_SH, REVERT_PATCH_SH),
+    "reset_managed_targets": (APPLY_PATCH_SH, REVERT_PATCH_SH),
+    "normalize_ui_platform": (APPLY_PATCH_SH, VERIFY_PATCH_SH),
+    "read_device_model": (APPLY_PATCH_SH, VERIFY_PATCH_SH),
+    "remote_flavor": (APPLY_PATCH_SH, VERIFY_PATCH_SH),
+    "state_value": (APPLY_PATCH_SH, VERIFY_PATCH_SH),
+    "upstream_head": (APPLY_PATCH_SH, VERIFY_PATCH_SH),
+    "upstream_remote": (APPLY_PATCH_SH, VERIFY_PATCH_SH),
+}
+
+
+def test_duplicated_standalone_script_helpers_stay_in_sync():
+    for name, paths in DUPLICATED_SHELL_HELPERS.items():
+        bodies = {path.name: _shell_function_body(path.read_text(), name) for path in paths}
+        assert len(set(bodies.values())) == 1, f"{name} drifted between {sorted(bodies)}"

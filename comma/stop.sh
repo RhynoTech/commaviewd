@@ -21,36 +21,35 @@ pid_alive() {
   [ -n "$1" ] && kill -0 "$1" 2>/dev/null
 }
 
+# Polls every 0.2s, up to <attempts> times, until none of <pids> is alive.
+wait_for_pids_exit() {
+  local attempts="$1"
+  local pids="$2"
+  local pid remaining
+  for _ in $(seq 1 "$attempts"); do
+    remaining=""
+    for pid in $pids; do
+      if pid_alive "$pid"; then
+        remaining="$remaining $pid"
+      fi
+    done
+    [ -z "$remaining" ] && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
 stop_pids() {
   local pids="$1"
-  local pid remaining
   [ -n "$pids" ] || return 0
 
   # shellcheck disable=SC2086
   kill $pids 2>/dev/null || true
-  for _ in $(seq 1 25); do
-    remaining=""
-    for pid in $pids; do
-      if pid_alive "$pid"; then
-        remaining="$remaining $pid"
-      fi
-    done
-    [ -z "$remaining" ] && return 0
-    sleep 0.2
-  done
+  wait_for_pids_exit 25 "$pids" && return 0
 
   # shellcheck disable=SC2086
   kill -9 $pids 2>/dev/null || true
-  for _ in $(seq 1 10); do
-    remaining=""
-    for pid in $pids; do
-      if pid_alive "$pid"; then
-        remaining="$remaining $pid"
-      fi
-    done
-    [ -z "$remaining" ] && return 0
-    sleep 0.2
-  done
+  wait_for_pids_exit 10 "$pids" && return 0
 
   return 1
 }

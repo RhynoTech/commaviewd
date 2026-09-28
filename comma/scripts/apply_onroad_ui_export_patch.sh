@@ -349,6 +349,16 @@ upstream_remote() {
   git -C "$OP_ROOT" remote get-url origin 2>/dev/null || true
 }
 
+# Records patch provenance; verify_onroad_ui_export_patch.sh writes the same format.
+write_patch_state_env() {
+  fingerprint="$(sha256sum "$TRANSFORMER" "$template" | sha256sum | awk '{print $1}')"
+  current_upstream_head="$(upstream_head)"
+  current_upstream_remote="$(upstream_remote)"
+  mkdir -p "$(dirname "$STATE_ENV")"
+  printf 'ONROAD_UI_EXPORT_FLAVOR=%s\nONROAD_UI_EXPORT_METHOD=transformer\nONROAD_UI_EXPORT_UI_PLATFORM=%s\nONROAD_UI_EXPORT_TRANSFORMER_SHA=%s\nONROAD_UI_EXPORT_OP_ROOT=%s\nONROAD_UI_EXPORT_UPSTREAM_HEAD=%s\nONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s\n' \
+    "$flavor" "$ui_platform" "$fingerprint" "$OP_ROOT" "$current_upstream_head" "$current_upstream_remote" > "$STATE_ENV"
+}
+
 remote_flavor() {
   local remote="$1"
   remote="${remote%.git}"
@@ -445,18 +455,7 @@ else
   exit "$transform_ec"
 fi
 
-fingerprint="$(sha256sum "$TRANSFORMER" "$template" | sha256sum | awk '{print $1}')"
-current_upstream_head="$(upstream_head)"
-current_upstream_remote="$(upstream_remote)"
-mkdir -p "$(dirname "$STATE_ENV")"
-printf 'ONROAD_UI_EXPORT_FLAVOR=%s
-ONROAD_UI_EXPORT_METHOD=transformer
-ONROAD_UI_EXPORT_UI_PLATFORM=%s
-ONROAD_UI_EXPORT_TRANSFORMER_SHA=%s
-ONROAD_UI_EXPORT_OP_ROOT=%s
-ONROAD_UI_EXPORT_UPSTREAM_HEAD=%s
-ONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s
-' "$flavor" "$ui_platform" "$fingerprint" "$OP_ROOT" "$current_upstream_head" "$current_upstream_remote" > "$STATE_ENV"
+write_patch_state_env
 
 if [ -x "$VERIFY_SCRIPT" ]; then
   verify_ec=0
@@ -492,17 +491,6 @@ if [ -x "$VERIFY_SCRIPT" ]; then
   exit "$verify_ec"
 fi
 
-fingerprint="$(sha256sum "$TRANSFORMER" "$template" | sha256sum | awk '{print $1}')"
-current_upstream_head="$(upstream_head)"
-current_upstream_remote="$(upstream_remote)"
-mkdir -p "$(dirname "$STATE_ENV")"
-printf 'ONROAD_UI_EXPORT_FLAVOR=%s
-ONROAD_UI_EXPORT_METHOD=transformer
-ONROAD_UI_EXPORT_UI_PLATFORM=%s
-ONROAD_UI_EXPORT_TRANSFORMER_SHA=%s
-ONROAD_UI_EXPORT_OP_ROOT=%s
-ONROAD_UI_EXPORT_UPSTREAM_HEAD=%s
-ONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s
-' "$flavor" "$ui_platform" "$fingerprint" "$OP_ROOT" "$current_upstream_head" "$current_upstream_remote" > "$STATE_ENV"
+write_patch_state_env
 request_openpilot_ui_restart
 restart_openpilot_ui_if_offroad

@@ -40,12 +40,16 @@ if [ $? -ne 0 ]; then
   echo "WARN: invalid runtime debug config JSON; bridge/control will fall back to safe defaults" >> "$LOG_DIR/commaviewd-control.log"
 fi
 
+read_is_onroad() {
+  cat /data/params/d/IsOnroad 2>/dev/null | tr -d "\000\r\n" || echo 0
+}
+
 restart_openpilot_ui_if_pending() {
   if [ ! -f "$ONROAD_UI_EXPORT_RESTART_MARKER" ]; then
     return 0
   fi
 
-  is_onroad="$(cat /data/params/d/IsOnroad 2>/dev/null | tr -d "\000\r\n" || echo 0)"
+  is_onroad="$(read_is_onroad)"
   if [ "$is_onroad" = "1" ]; then
     echo "WARN: deferred onroad UI export restart still pending while onroad" >> "$ONROAD_UI_EXPORT_LOG"
     return 0
@@ -78,7 +82,7 @@ refresh_onroad_ui_export_status() {
     return 0
   fi
 
-  is_onroad="$(cat /data/params/d/IsOnroad 2>/dev/null | tr -d "\000\r\n" || echo 0)"
+  is_onroad="$(read_is_onroad)"
   if [ "$is_onroad" = "1" ]; then
     echo "WARN: onroad UI export verify failed while onroad; skipping startup repair" >> "$ONROAD_UI_EXPORT_LOG"
     return 0

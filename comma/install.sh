@@ -9,15 +9,16 @@ GITHUB_REPO="${COMMAVIEWD_RELEASE_REPO:-RhynoTech/commaviewd}"
 
 resolve_latest_release_tag() {
   local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20"
-  curl -fsSL --retry 3 --retry-delay 1 "$api_url"     | tr -d '\r'     | grep -m1 '"tag_name":'     | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/' || true
+  curl -fsSL --retry 3 --retry-delay 1 "$api_url" \
+    | tr -d '\r' \
+    | grep -m1 '"tag_name":' \
+    | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/' || true
 }
 
-INSTALLED_VERSION=""
 INSTALLED_RELEASE_TAG=""
 if [ -f "$VERSION_ENV" ]; then
   # shellcheck disable=SC1090
   . "$VERSION_ENV"
-  INSTALLED_VERSION="${VERSION:-}"
   INSTALLED_RELEASE_TAG="${RELEASE_TAG:-}"
 fi
 
@@ -51,7 +52,7 @@ resolve_release_inputs() {
   ASSET_SHA_NAME="${ASSET_NAME}.sha256"
   BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
   # Keep installer companions pinned to the same resolved release by default.
-  # Falling back to master here mixes release assets with moving scripts/patches.
+  # Falling back to master here mixes release assets with moving companion scripts.
   INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-$RELEASE_TAG}"
   INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma}"
 }
@@ -66,7 +67,7 @@ FORCE_OFFROAD=0
 FORCE_OFFROAD_OWNED=0
 FORCE_OFFROAD_PREV=""
 tmpdir=""
-COMPANION_DIR="$SCRIPT_DIR"
+COMPANION_DIR=""  # set to "$tmpdir/companions" by refresh_required_files
 BACKUP_ROOT="${COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups}"
 INSTALL_ROLLBACK_BACKUP_ROOT="${COMMAVIEWD_INSTALL_ROLLBACK_BACKUP_ROOT:-$BACKUP_ROOT/install-rollback}"
 INSTALL_MUTATED=0
@@ -154,36 +155,36 @@ commaview_pids() {
   done | sort -nu
 }
 
+# Polls every 0.2s, up to <attempts> times, until none of <pids> is alive.
+wait_for_pids_exit() {
+  local attempts="$1"
+  local pids="$2"
+  local pid remaining
+  for _ in $(seq 1 "$attempts"); do
+    remaining=""
+    for pid in $pids; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining="$remaining $pid"
+      fi
+    done
+    [ -z "$remaining" ] && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
 stop_commaview_processes() {
-  local pids remaining pid
+  local pids
   pids="$(commaview_pids | tr '\n' ' ')"
   [ -n "$pids" ] || return 0
 
   # shellcheck disable=SC2086
   kill $pids 2>/dev/null || true
-  for _ in $(seq 1 25); do
-    remaining=""
-    for pid in $pids; do
-      if kill -0 "$pid" 2>/dev/null; then
-        remaining="$remaining $pid"
-      fi
-    done
-    [ -z "$remaining" ] && return 0
-    sleep 0.2
-  done
+  wait_for_pids_exit 25 "$pids" && return 0
 
   # shellcheck disable=SC2086
   kill -9 $pids 2>/dev/null || true
-  for _ in $(seq 1 10); do
-    remaining=""
-    for pid in $pids; do
-      if kill -0 "$pid" 2>/dev/null; then
-        remaining="$remaining $pid"
-      fi
-    done
-    [ -z "$remaining" ] && return 0
-    sleep 0.2
-  done
+  wait_for_pids_exit 10 "$pids" && return 0
 
   return 1
 }
