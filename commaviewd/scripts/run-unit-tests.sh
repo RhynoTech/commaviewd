@@ -139,5 +139,6 @@ python3 "$ROOT/tests/wifi_power_save_api_integration_test.py"
 "$REPO_ROOT/comma/tests/runtime_log_rotation_contract_test.sh"
 "$REPO_ROOT/comma/tests/runtime_process_supervisor_contract_test.sh"
 "$REPO_ROOT/comma/tests/runtime_support_logs_contract_test.sh"
+"$REPO_ROOT/comma/tests/install_release_resolution_contract_test.sh"
 python3 -m pytest "$REPO_ROOT/comma/tests" -q
 echo "PASS: commaviewd unit tests passed"

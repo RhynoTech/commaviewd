@@ -63,6 +63,8 @@ curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma/i
   | ssh comma@<comma-ip> bash
 ```
 
+Without `--tag`, the installer installs the runtime paired with the current CommaView app release, from `https://commaview.com/api/current-release`. A runtime that's tagged but not yet paired with an app release isn't installed this way. If that lookup fails, the installer falls back to the newest GitHub release.
+
 Install/update a specific release:
 
 ```bash
@@ -87,12 +89,14 @@ ssh comma@<comma-ip> 'bash /data/commaview/install.sh --force-offroad'
 | Flag/env | Purpose |
 | --- | --- |
 | `--tag <release-tag>` | Install/update to a specific GitHub release tag. |
-| `--current` | Reinstall the currently installed release from `/data/commaview/version.env`. Without this, installer resolves latest by default. |
+| `--current` | Reinstall the currently installed release from `/data/commaview/version.env`. |
 | `--force-offroad` | Set `OffroadMode` and wait for a real offroad transition before changing files. |
 | `-h`, `--help` | Print installer usage. |
 | `COMMAVIEWD_RELEASE_REPO` | Override release repo; default `RhynoTech/commaviewd`. |
 | `COMMAVIEWD_RELEASE_TAG` | Override resolved release tag. |
-| `COMMAVIEWD_DEFAULT_TAG` | Fallback default tag before querying latest. |
+| `COMMAVIEWD_DEFAULT_TAG` | Tag to install when none is given, before any lookup. |
+| `COMMAVIEWD_CURRENT_RELEASE_URL` | Override the current-release lookup used when no tag is given. Defaults to `https://commaview.com/api/current-release` for `RhynoTech/commaviewd`; other release repos skip it. |
+| `COMMAVIEWD_RELEASES_API_URL` | Override the GitHub releases API used for the newest-release fallback. |
 | `COMMAVIEWD_INSTALLER_REF` | Pin companion scripts to a ref; defaults to resolved release tag. |
 | `COMMAVIEWD_ASSET_NAME` | Override release asset filename. |
 | `COMMAVIEWD_BASE_URL` | Override release asset base URL. |
