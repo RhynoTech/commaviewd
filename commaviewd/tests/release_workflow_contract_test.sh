@@ -42,6 +42,8 @@ assert_contains "Checkout release control-plane scripts" "$WORKFLOW" "promotion 
 assert_contains "path: release-control" "$WORKFLOW" "promotion should keep master control scripts separate from release tag workspace"
 assert_contains "node release-control/scripts/update-firebase-current-release.mjs" "$WORKFLOW" "promotion should run guarded updater from master, not old release tag"
 assert_contains "ref: master" "$WORKFLOW" "promotion control checkout should pin to master"
+assert_contains '--publish-url "$ACCOUNT_SERVICE_URLS"' "$WORKFLOW" "promotion should also publish to the account service"
+assert_contains "publishToAccountServices" "$FIREBASE_UPDATE" "updater should publish to the account service when asked"
 assert_contains "PROVENANCE_ASSETS=(" "$WORKFLOW" "release workflow should define provenance assets for upload"
 assert_contains 'REQUIRED_ASSETS=("$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}")' "$WORKFLOW" "release workflow should validate bundle, checksum, and provenance assets"
 assert_contains 'cd "$OUT_DIR"' "$BUILD_BUNDLE" "bundle script should enter release directory before writing checksum"

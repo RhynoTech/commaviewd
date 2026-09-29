@@ -225,9 +225,13 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true
         env:
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          # The account service's /api/current-release, replacing Firestore (RhynoTech/commaview-web,
+          # account/). Until the switch a failure there only warns; my.commaview.com joins at the switch.
+          ACCOUNT_SERVICE_URLS: https://my-staging.commaview.com
         run: |
           set -euo pipefail
           TAG='${{ steps.vars.outputs.tag }}'
           node release-control/scripts/update-firebase-current-release.mjs \
             --runtime-tag "$TAG" \
-            --project commaview
+            --project commaview \
+            --publish-url "$ACCOUNT_SERVICE_URLS"
