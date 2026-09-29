@@ -7,6 +7,8 @@ function usage() {
   node scripts/update-firebase-current-release.mjs --app-tag app-v0.0.130-alpha [--app-channel firebase-app-distribution] [--status-label "..."] [--project commaview]
   node scripts/update-firebase-current-release.mjs --runtime-tag v0.0.47-alpha [--project commaview] [--allow-runtime-downgrade]
 
+--publish-url        also publish to the account service(s) at these addresses (comma-separated); a
+                     failure there is a warning unless --require-publish is set
 Requires FIREBASE_SERVICE_ACCOUNT_JSON unless --dry-run is set.`);
 }
 
@@ -17,6 +19,10 @@ function parseArgs(argv) {
     if (!key.startsWith('--')) throw new Error(`Unexpected positional argument: ${key}`);
     if (key === '--dry-run') {
       out.dryRun = 'true';
+      continue;
+    }
+    if (key === '--require-publish') {
+      out.requirePublish = 'true';
       continue;
     }
     if (key === '--allow-runtime-downgrade') {
@@ -118,6 +124,68 @@ async function accessToken(serviceAccount) {
   return tokenResponse.access_token;
 }
 
+// The account service's copy of the manifest (GET /api/current-release on my.commaview.com and
+// my-staging.commaview.com, replacing Firestore): the same fields, sent with a Google ID token for
+// this key's service account, made for the service's address. Nothing new to keep secret.
+const PUBLISHED_FIELDS = ['appTag', 'runtimeTag', 'channel', 'statusLabel', 'appDownloadUrl', 'releaseNotes', 'minAppVersion', 'maxAppVersion'];
+
+function publishUrls(value) {
+  if (!value) return [];
+  return value.split(',').map((item) => item.trim()).filter(Boolean).map((item) => {
+    const url = new URL(item);
+    if (url.protocol !== 'https:' || url.username || url.password) throw new Error(`Invalid publish URL: ${item}`);
+    return url.origin;
+  });
+}
+
+function publishBody(fields) {
+  const body = {};
+  for (const key of PUBLISHED_FIELDS) if (fields[key]) body[key] = fields[key].stringValue;
+  return body;
+}
+
+async function idToken(serviceAccount, audience) {
+  const now = Math.floor(Date.now() / 1000);
+  const unsigned = `${base64urlJson({ alg: 'RS256', typ: 'JWT' })}.${base64urlJson({
+    iss: serviceAccount.client_email,
+    target_audience: audience,
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600,
+  })}`;
+  const signature = createSign('RSA-SHA256').update(unsigned).sign(serviceAccount.private_key).toString('base64url');
+  const response = await requestJson('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: `${unsigned}.${signature}`,
+    }).toString(),
+  });
+  if (!response.id_token) throw new Error('OAuth token response did not include id_token');
+  return response.id_token;
+}
+
+// Returns whether every service took it. A failure is a warning unless --require-publish.
+async function publishToAccountServices(origins, serviceAccount, fields) {
+  let allPublished = true;
+  for (const origin of origins) {
+    try {
+      const token = await idToken(serviceAccount, origin);
+      await requestJson(`${origin}/api/current-release`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(publishBody(fields)),
+      });
+      console.log(`Published the current release manifest to ${origin}`);
+    } catch (error) {
+      allPublished = false;
+      console.log(`::warning::Could not publish the current release manifest to ${origin}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return allPublished;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const fields = {};
@@ -142,6 +210,8 @@ async function main() {
     throw new Error('Provide --app-tag and/or --runtime-tag');
   }
 
+  const origins = publishUrls(args['publish-url']);
+
   const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
   const serviceAccount = serviceAccountJson ? JSON.parse(serviceAccountJson) : undefined;
   const projectId = args.project ?? serviceAccount?.project_id ?? 'commaview';
@@ -151,6 +221,7 @@ async function main() {
 
   if (args.dryRun === 'true') {
     console.log(JSON.stringify({ projectId, document: 'publicConfig/currentRelease', fields }, null, 2));
+    for (const origin of origins) console.log(`Would publish to ${origin}/api/current-release: ${JSON.stringify(publishBody(fields))}`);
     return;
   }
 
@@ -178,6 +249,10 @@ async function main() {
     body: JSON.stringify({ fields }),
   });
   console.log(`Updated Firestore current release manifest in project ${projectId}: ${fieldNames.join(', ')}`);
+
+  if (origins.length && !(await publishToAccountServices(origins, serviceAccount, fields)) && args.requirePublish === 'true') {
+    throw new Error('Publishing to the account service failed (--require-publish)');
+  }
 }
 
 main().catch((error) => {
