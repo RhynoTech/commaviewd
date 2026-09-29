@@ -21,6 +21,10 @@ constexpr size_t kMaxRecipeQueue = 128;
 constexpr size_t kMaxSnapshotQueue = 256;
 constexpr size_t kMaxSnapshotPayload = 64 * 1024;
 constexpr uint64_t kMaxSnapshotFileBytes = 512ULL * 1024 * 1024;
+// receive_one_frame() accepts service indexes 0..kRecipeEventServiceIndex and indexes latest_
+// with every index below it.
+static_assert(kRecipeEventServiceIndex == kServiceCount,
+              "the recipe event index must directly follow the telemetry service indexes");
 
 uint64_t now_ms() {
   struct timespec ts = {};
@@ -40,6 +44,18 @@ bool recv_all_exact(int fd, uint8_t* data, size_t len) {
     received += static_cast<size_t>(rc);
   }
   return true;
+}
+
+// One JSONL-safe object: starts with '{', ends with '}', and has no line breaks.
+bool is_single_line_json_object(const std::string& json) {
+  return json.size() >= 2 && json.front() == '{' && json.back() == '}' &&
+         json.find_first_of("\r\n") == std::string::npos;
+}
+
+void sync_and_close(FILE* file) {
+  std::fflush(file);
+  fdatasync(fileno(file));
+  std::fclose(file);
 }
 
 bool ensure_parent_dirs(const std::string& path) {
@@ -224,9 +240,7 @@ void SocketServer::stop() {
   {
     std::lock_guard<std::mutex> lock(recipe_mutex_);
     if (snapshot_file_ != nullptr) {
-      std::fflush(snapshot_file_);
-      fdatasync(fileno(snapshot_file_));
-      std::fclose(snapshot_file_);
+      sync_and_close(snapshot_file_);
       snapshot_file_ = nullptr;
       snapshot_active_ = false;
     }
@@ -288,8 +302,7 @@ void SocketServer::offer_recipe_event(const LatestFrame& frame) {
   if (frame.service_index != kRecipeEventServiceIndex || recipe_file_ == nullptr ||
       frame.payload.size() > 4096) return;
   const std::string json(frame.payload.begin(), frame.payload.end());
-  if (json.size() < 2 || json.front() != '{' || json.back() != '}' ||
-      json.find_first_of("\r\n") != std::string::npos) return;
+  if (!is_single_line_json_object(json)) return;
   const bool switched = json.find("\"kind\":\"camera_switch\"") != std::string::npos;
   const bool anchor = json.find("\"kind\":\"anchor\"") != std::string::npos;
   if (!switched && !anchor) return;
@@ -323,8 +336,7 @@ void SocketServer::offer_snapshot(const LatestFrame& frame) {
     return;
   }
   const std::string json(frame.payload.begin(), frame.payload.end());
-  if (json.front() != '{' || json.back() != '}' ||
-      json.find_first_of("\r\n") != std::string::npos) {
+  if (!is_single_line_json_object(json)) {
     std::lock_guard<std::mutex> lock(recipe_mutex_);
     ++snapshot_sequence_;
     ++snapshot_dropped_;
@@ -375,11 +387,7 @@ void SocketServer::recipe_writer_loop() {
     }
     if (has_snapshot) {
       if (snapshot_route_ != route || snapshot_file_ == nullptr) {
-        if (snapshot_file_ != nullptr) {
-          std::fflush(snapshot_file_);
-          fdatasync(fileno(snapshot_file_));
-          std::fclose(snapshot_file_);
-        }
+        if (snapshot_file_ != nullptr) sync_and_close(snapshot_file_);
         snapshot_route_ = route;
         const std::string path = recipe_dir_ + "/ui-snapshot-" + route + ".jsonl";
         snapshot_file_ = std::fopen(path.c_str(), "a");
@@ -464,7 +472,9 @@ bool SocketServer::receive_one_frame(int client_fd) {
   uint8_t len_buf[4] = {};
   if (!recv_all_exact(client_fd, len_buf, sizeof(len_buf))) return false;
 
-  const uint32_t payload_len = ntohl(*reinterpret_cast<uint32_t*>(len_buf));
+  uint32_t payload_len_be = 0;
+  std::memcpy(&payload_len_be, len_buf, sizeof(payload_len_be));
+  const uint32_t payload_len = ntohl(payload_len_be);
   if (payload_len < 3 || payload_len > kMaxFrameBytes) {
     std::lock_guard<std::mutex> lock(mutex_);
     stats_.malformed_count += 1;

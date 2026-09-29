@@ -21,8 +21,7 @@ bool get_session_policy(const std::string& session_id, bool* suppress_video);
 
 void consume_client_control_frames(int client_fd,
                                    ClientControlState* state,
-                                   const char* video_service,
+                                   const char* stream_name,
                                    uint8_t msg_control_type);
-
 
 }  // namespace commaview::control

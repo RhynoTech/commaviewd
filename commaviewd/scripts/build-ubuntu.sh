@@ -60,8 +60,6 @@ VIDEO_ROUTER_SRC="$ROOT/src/router.cpp"
 VIDEO_TRANSPORT_POLICY_SRC="$ROOT/src/video_transport_policy.cpp"
 VIDEO_CHUNK_PROTOCOL_SRC="$ROOT/src/video_chunk_protocol.cpp"
 RUNTIME_VIDEO_SEND_ACCOUNTING_SRC="$ROOT/src/runtime_video_send_accounting.cpp"
-TELEMETRY_JSON_SRC="$ROOT/src/json_builder.cpp"
-TELEMETRY_STATS_SRC="$ROOT/src/telemetry_stats.cpp"
 RUNTIME_MODE_SRC="$ROOT/src/mode.cpp"
 RUNTIME_BRIDGE_MODE_SRC="$ROOT/src/bridge_mode.cpp"
 RUNTIME_CONTROL_MODE_SRC="$ROOT/src/control_mode.cpp"
@@ -90,12 +88,10 @@ ARM_KJ_SO="${ARM_KJ_SO:-$(detect_arm_lib /usr/lib/aarch64-linux-gnu/libkj-*.so |
 ARM_CAPNP_NAME="$(basename "$ARM_CAPNP_SO")"
 ARM_KJ_NAME="$(basename "$ARM_KJ_SO")"
 
-MSGQ_SOURCE="$MSGQ_ROOT/msgq/msgq.cc"
 mkdir -p "$DIST_DIR"
-python3 "$ROOT/scripts/patch-msgq-recv.py" "$MSGQ_SOURCE" "$PATCHED_MSGQ_LOCAL"
+python3 "$ROOT/scripts/patch-msgq-recv.py" "$MSGQ_ROOT/msgq/msgq.cc" "$PATCHED_MSGQ_LOCAL"
 MSGQ_SOURCE="$PATCHED_MSGQ_LOCAL"
 
-DEPRECATED_SCHEMA_NAME=""
 if [[ -f "$OP_SOURCE_ROOT/cereal/deprecated.capnp" ]]; then
   DEPRECATED_SCHEMA_NAME="deprecated"
 elif [[ -f "$OP_SOURCE_ROOT/cereal/legacy.capnp" ]]; then
@@ -114,7 +110,7 @@ require_file() {
 
 for f in \
   "$MAIN_SRC" "$BRIDGE_SRC" "$NET_FRAMING_SRC" "$NET_SOCKET_SRC" \
-  "$CONTROL_POLICY_SRC" "$VIDEO_ROUTER_SRC" "$VIDEO_TRANSPORT_POLICY_SRC" "$VIDEO_CHUNK_PROTOCOL_SRC" "$RUNTIME_VIDEO_SEND_ACCOUNTING_SRC" "$TELEMETRY_JSON_SRC" "$TELEMETRY_STATS_SRC" \
+  "$CONTROL_POLICY_SRC" "$VIDEO_ROUTER_SRC" "$VIDEO_TRANSPORT_POLICY_SRC" "$VIDEO_CHUNK_PROTOCOL_SRC" "$RUNTIME_VIDEO_SEND_ACCOUNTING_SRC" \
   "$RUNTIME_MODE_SRC" "$RUNTIME_BRIDGE_MODE_SRC" "$RUNTIME_CONTROL_MODE_SRC" \
   "$API_HTTP_SERVER_SRC" "$SOURCE_RECORDING_ARCHIVE_SRC" "$UI_EXPORT_SOCKET_SRC" \
   "$OP_SOURCE_ROOT/cereal/log.capnp" "$CAR_SCHEMA_PATH" "$OP_SOURCE_ROOT/cereal/services.py" \
@@ -130,7 +126,7 @@ if [[ "$SKIP_ARM" != "1" ]]; then
   done
 fi
 
-mkdir -p "$OP_SOURCE_ROOT/cereal/gen/cpp" "$DIST_DIR" "$BUNDLE_LIB_DIR"
+mkdir -p "$OP_SOURCE_ROOT/cereal/gen/cpp" "$BUNDLE_LIB_DIR"
 
 VIDEO_SCHEMA_FLAGS=()
 if grep -Eq 'narrowRoadEncodeData|cabinEncodeData' "$OP_SOURCE_ROOT/cereal/services.py"; then
@@ -156,7 +152,7 @@ COMMON_SRCS=(
   "$RUNTIME_MODE_SRC" "$RUNTIME_BRIDGE_MODE_SRC" "$RUNTIME_CONTROL_MODE_SRC"
   "$API_HTTP_SERVER_SRC" "$SOURCE_RECORDING_ARCHIVE_SRC" "$UI_EXPORT_SOCKET_SRC"
   "$NET_FRAMING_SRC" "$NET_SOCKET_SRC" "$CONTROL_POLICY_SRC"
-  "$VIDEO_ROUTER_SRC" "$VIDEO_TRANSPORT_POLICY_SRC" "$VIDEO_CHUNK_PROTOCOL_SRC" "$RUNTIME_VIDEO_SEND_ACCOUNTING_SRC" "$TELEMETRY_STATS_SRC"
+  "$VIDEO_ROUTER_SRC" "$VIDEO_TRANSPORT_POLICY_SRC" "$VIDEO_CHUNK_PROTOCOL_SRC" "$RUNTIME_VIDEO_SEND_ACCOUNTING_SRC"
   "$OP_SOURCE_ROOT/cereal/messaging/socketmaster.cc"
   "$MSGQ_SOURCE"
   "$MSGQ_ROOT/msgq/event.cc" "$MSGQ_ROOT/msgq/impl_fake.cc"
@@ -196,4 +192,4 @@ install -m 755 "$ARM_KJ_SO" "$BUNDLE_LIB_DIR/$ARM_KJ_NAME"
 echo "[5/5] Done"
 ls -lh "$HOST_OUT" "$ARM_OUT" "$BUNDLE_LIB_DIR/$ARM_CAPNP_NAME" "$BUNDLE_LIB_DIR/$ARM_KJ_NAME"
 file "$HOST_OUT" "$ARM_OUT"
-aarch64-linux-gnu-readelf -d "$ARM_OUT" | egrep "NEEDED|RPATH|RUNPATH" || true
+aarch64-linux-gnu-readelf -d "$ARM_OUT" | grep -E "NEEDED|RPATH|RUNPATH" || true

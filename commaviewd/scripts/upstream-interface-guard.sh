@@ -50,10 +50,14 @@ check_file() {
   [[ -f "$p" ]] || missing+=("file:$p")
 }
 
-check_token() {
+has_token() {
   local file="$1"
   local token="$2"
-  grep -Eq "(^|[^A-Za-z0-9_])${token}([^A-Za-z0-9_]|$)" "$file" || missing+=("token:$token@$file")
+  grep -Eq "(^|[^A-Za-z0-9_])${token}([^A-Za-z0-9_]|$)" "$file"
+}
+
+check_token() {
+  has_token "$1" "$2" || missing+=("token:$2@$1")
 }
 
 required_files=(
@@ -119,12 +123,10 @@ for svc in "${required_services[@]}"; do
 done
 
 resolve_service_alias() {
-  local semantic="$1"
-  shift
   local service
   for service in "$@"; do
-    if grep -Eq "(^|[^A-Za-z0-9_])${service}([^A-Za-z0-9_]|$)" "$OP_SOURCE_ROOT/cereal/services.py" && \
-       grep -Eq "(^|[^A-Za-z0-9_])${service}([^A-Za-z0-9_]|$)" "$OP_SOURCE_ROOT/cereal/log.capnp"; then
+    if has_token "$OP_SOURCE_ROOT/cereal/services.py" "$service" && \
+       has_token "$OP_SOURCE_ROOT/cereal/log.capnp" "$service"; then
       printf '%s\n' "$service"
       return 0
     fi
@@ -132,13 +134,13 @@ resolve_service_alias() {
   return 1
 }
 
-calibration_service="$(resolve_service_alias calibration extrinsicsCalibration liveCalibration || true)"
-road_camera_service="$(resolve_service_alias road_camera narrowRoadCameraState roadCameraState || true)"
-vehicle_parameters_service="$(resolve_service_alias vehicle_parameters vehicleParameters liveParameters || true)"
-road_encode_service="$(resolve_service_alias road_encode narrowRoadEncodeData roadEncodeData || true)"
-driver_encode_service="$(resolve_service_alias cabin_encode cabinEncodeData driverEncodeData || true)"
-livestream_road_encode_service="$(resolve_service_alias livestream_road_encode livestreamNarrowRoadEncodeData livestreamRoadEncodeData || true)"
-livestream_driver_encode_service="$(resolve_service_alias livestream_cabin_encode livestreamCabinEncodeData livestreamDriverEncodeData || true)"
+calibration_service="$(resolve_service_alias extrinsicsCalibration liveCalibration || true)"
+road_camera_service="$(resolve_service_alias narrowRoadCameraState roadCameraState || true)"
+vehicle_parameters_service="$(resolve_service_alias vehicleParameters liveParameters || true)"
+road_encode_service="$(resolve_service_alias narrowRoadEncodeData roadEncodeData || true)"
+driver_encode_service="$(resolve_service_alias cabinEncodeData driverEncodeData || true)"
+livestream_road_encode_service="$(resolve_service_alias livestreamNarrowRoadEncodeData livestreamRoadEncodeData || true)"
+livestream_driver_encode_service="$(resolve_service_alias livestreamCabinEncodeData livestreamDriverEncodeData || true)"
 [[ -n "$calibration_service" ]] || missing+=("service-alias:calibration(one-of:extrinsicsCalibration liveCalibration)")
 [[ -n "$road_camera_service" ]] || missing+=("service-alias:road_camera(one-of:narrowRoadCameraState roadCameraState)")
 [[ -n "$vehicle_parameters_service" ]] || missing+=("service-alias:vehicle_parameters(one-of:vehicleParameters liveParameters)")

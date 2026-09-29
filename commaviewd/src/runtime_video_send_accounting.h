@@ -47,10 +47,6 @@ struct RuntimeVideoSendStats {
   int64_t last_tcp_not_sent_bytes = -1;
 };
 
-void note_video_send_result(RuntimeVideoSendStats& stats,
-                            const commaview::net::SendResult& result,
-                            uint64_t now_ms);
-
 void note_video_chunk_send_result(RuntimeVideoSendStats& stats,
                                   const commaview::video::VideoChunk& chunk,
                                   const commaview::net::SendResult& result,

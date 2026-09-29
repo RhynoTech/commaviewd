@@ -217,15 +217,18 @@ def _torque_bar_value(ui_state, service_resolver=None) -> float:
   return max(-1.0, min(1.0, -_safe_float(ui_state.sm["carOutput"].actuatorsOutput.torque)))
 
 
+_STATUS_MODE_NAMES = {
+  "disengaged": "disengaged",
+  "engaged": "engaged",
+  "override": "override",
+  "lat_only": "latOnly",
+  "long_only": "longOnly",
+}
+
+
 def _status_mode_name(status) -> str:
   status_value = str(status.value if hasattr(status, "value") else status)
-  return {
-    "disengaged": "disengaged",
-    "engaged": "engaged",
-    "override": "override",
-    "lat_only": "latOnly",
-    "long_only": "longOnly",
-  }.get(status_value, "unknown")
+  return _STATUS_MODE_NAMES.get(status_value, "unknown")
 
 
 def _panda_states_summary(ui_state) -> tuple[bool, bool, bool]:
@@ -302,7 +305,6 @@ class _CommaViewSocketExporter:
     self._latest_onroad_projection = None
     self._service_resolver = _ServiceResolver()
     self._pending = {}
-    self._recipe_enabled = True
     self._recipe_pending = deque()
     self._recipe_sequence = 0
     self._recipe_camera = None
@@ -391,7 +393,7 @@ class _CommaViewSocketExporter:
     now = time.monotonic()
     camera = _safe_str(active_camera)
     camera = "wideRoad" if camera in ("wideRoad", "wide") else "road"
-    source_switch = self._recipe_enabled and camera != self._recipe_camera
+    source_switch = camera != self._recipe_camera
     if not source_switch and self._last_projection_offer_time and now - self._last_projection_offer_time < COMMAVIEW_MIN_EXPORT_INTERVAL_SEC:
       self._stats["rateLimited"] += 1
       return
@@ -426,12 +428,11 @@ class _CommaViewSocketExporter:
       "logMonoTime": max(road_log_mono, wide_log_mono, model_log_mono, live_calib_log_mono),
     }
     self._last_projection_offer_time = now
-    if self._recipe_enabled:
-      kind = "camera_switch" if source_switch else "anchor"
-      if source_switch or now - self._last_recipe_anchor_time >= 5.0:
-        self._offer_recipe_event(kind, self._latest_onroad_projection)
-        self._recipe_camera = camera
-        self._last_recipe_anchor_time = now
+    kind = "camera_switch" if source_switch else "anchor"
+    if source_switch or now - self._last_recipe_anchor_time >= 5.0:
+      self._offer_recipe_event(kind, self._latest_onroad_projection)
+      self._recipe_camera = camera
+      self._last_recipe_anchor_time = now
     self._offer_payload(COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX, self._latest_onroad_projection)
 
   def publish(self, ui_state) -> None:
@@ -457,17 +458,6 @@ class _CommaViewSocketExporter:
       self._last_offer_time[service_index] = now
       self._offer_payload(service_index, payload)
     self._snapshot_durations_ns.append(time.monotonic_ns() - started_ns)
-
-  def _publish_json(self, service_index: int, payload_fn, ui_state) -> None:
-    try:
-      payload = payload_fn(ui_state)
-    except Exception:
-      self._stats["snapshotExceptions"] += 1
-      return
-    self._publish_payload(service_index, payload)
-
-  def _publish_payload(self, service_index: int, payload: dict) -> None:
-    self._offer_payload(service_index, payload)
 
   def _generation(self, ui_state, dependencies) -> tuple:
     generation = []
@@ -602,15 +592,17 @@ class _CommaViewSocketExporter:
     now = time.monotonic()
     if now < self._next_connect_attempt:
       return False
+    sock = None
     try:
       sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
       sock.settimeout(COMMAVIEW_SOCKET_TIMEOUT_SEC)
       sock.connect(self._socket_path)
     except OSError:
-      try:
-        sock.close()
-      except (OSError, UnboundLocalError):
-        pass
+      if sock is not None:
+        try:
+          sock.close()
+        except OSError:
+          pass
       self._next_connect_attempt = now + COMMAVIEW_CONNECT_RETRY_SEC
       return False
     self._sock = sock
@@ -1087,11 +1079,11 @@ class _CommaViewSocketExporter:
     car_params = getattr(ui_state, "CP", None)
     return {
       "exportVersion": 1,
-      "openpilotLongitudinalControl": bool(getattr(car_params, "openpilotLongitudinalControl", False)) if car_params is not None else False,
-      "maxLateralAccel": _safe_float(getattr(car_params, "maxLateralAccel", COMMAVIEW_DEFAULT_MAX_LAT_ACCEL)) if car_params is not None else COMMAVIEW_DEFAULT_MAX_LAT_ACCEL,
-      "carFingerprint": _safe_str(getattr(car_params, "carFingerprint", "")) if car_params is not None else "",
-      "carName": _safe_str(getattr(car_params, "carName", "")) if car_params is not None else "",
-      "carVin": _safe_str(getattr(car_params, "carVin", "")) if car_params is not None else "",
+      "openpilotLongitudinalControl": bool(getattr(car_params, "openpilotLongitudinalControl", False)),
+      "maxLateralAccel": _safe_float(getattr(car_params, "maxLateralAccel", COMMAVIEW_DEFAULT_MAX_LAT_ACCEL)),
+      "carFingerprint": _safe_str(getattr(car_params, "carFingerprint", "")),
+      "carName": _safe_str(getattr(car_params, "carName", "")),
+      "carVin": _safe_str(getattr(car_params, "carVin", "")),
       "logMonoTime": 0,
     }
 

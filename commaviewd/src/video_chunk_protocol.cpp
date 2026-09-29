@@ -1,13 +1,22 @@
 #include "video_chunk_protocol.h"
 
 #include <algorithm>
-#include <cassert>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 
+#ifdef COMMAVIEW_VIDEO_CHUNK_PROTOCOL_TESTING
+#include <cassert>
+#endif
+
 namespace commaview::video {
 namespace {
+
+// type(1) sequence(4) index(2) count(2) flags(1) timestamp_ns(8) width(4) height(4)
+// codec_header_len(4) data_len(4) offset(4) chunk_len(4); all big-endian. The Android
+// decoder's VIDEO_CHUNK_HEADER_LENGTH must match.
+constexpr size_t kVideoChunkHeaderBytes = 1 + 4 + 2 + 2 + 1 + 8 + 4 + 4 + 4 + 4 + 4 + 4;
+static_assert(kVideoChunkHeaderBytes == 42, "video chunk wire header is 42 bytes");
 
 void append_u16_be(std::vector<uint8_t>& out, uint16_t value) {
   out.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
@@ -145,7 +154,7 @@ std::vector<uint8_t> encode_video_chunk_payload(const VideoChunk& chunk) {
   }
 
   std::vector<uint8_t> payload;
-  payload.reserve(1 + 4 + 2 + 2 + 1 + 8 + 4 + 4 + 4 + 4 + 4 + 4 + chunk.bytes.size());
+  payload.reserve(kVideoChunkHeaderBytes + chunk.bytes.size());
   payload.push_back(MSG_VIDEO_CHUNK);
   append_u32_be(payload, chunk.frame_sequence);
   append_u16_be(payload, chunk.chunk_index);
@@ -172,7 +181,9 @@ VideoChunkLayoutForTest plan_video_chunk_layout_for_test(size_t codec_header_siz
 VideoChunk decode_video_chunk_payload_for_test(const std::vector<uint8_t>& payload) {
   assert(!payload.empty());
   size_t pos = 0;
-  assert(payload[pos++] == MSG_VIDEO_CHUNK);
+  const uint8_t msg_type = payload[pos++];
+  assert(msg_type == MSG_VIDEO_CHUNK);
+  (void)msg_type;
 
   VideoChunk chunk;
   chunk.frame_sequence = read_u32_be(payload, &pos);

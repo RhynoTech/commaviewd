@@ -34,17 +34,29 @@ jobs:
   verify:
     name: verify (${{ matrix.target.name }})
     runs-on: ubuntu-24.04
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
+        # Every target runs the full verification pipeline unless it sets run_verification: false.
         target:
           - name: openpilot-release-mici
             upstream_repo: commaai/openpilot
             upstream_ref: release-mici
             ui_platform: mici
+          - name: openpilot-release-tizi
+            upstream_repo: commaai/openpilot
+            upstream_ref: release-tizi
+            ui_platform: tizi
+          # openpilot releases for devices with the chestnut external GPU (0.11.2 onward).
+          - name: openpilot-release-chestnut-mici
+            upstream_repo: commaai/openpilot
+            upstream_ref: release-chestnut
+            ui_platform: mici
+          - name: openpilot-release-chestnut-tizi
+            upstream_repo: commaai/openpilot
+            upstream_ref: release-chestnut
+            ui_platform: tizi
           - name: openpilot-release-tici
             upstream_repo: commaai/openpilot
             upstream_ref: release-tici
@@ -58,6 +70,11 @@ jobs:
             upstream_repo: sunnypilot/sunnypilot
             upstream_ref: release-tizi
             ui_platform: tizi
+          # The exact sunnypilot source the release workflow builds from (ci/upstream-refs.env).
+          - name: sunnypilot-release-pin
+            upstream_repo: sunnypilot/openpilot
+            upstream_ref: release-pin
+            ui_platform: mici
 
     steps:
       - name: Checkout CommaView
@@ -81,6 +98,10 @@ jobs:
           set -euo pipefail
           REPO='${{ matrix.target.upstream_repo }}'
           REF='${{ matrix.target.upstream_ref }}'
+          if [[ "$REF" == "release-pin" ]]; then
+            . ci/upstream-refs.env
+            REF="${COMMAVIEWD_RELEASE_SUNNYPILOT_REF:?missing COMMAVIEWD_RELEASE_SUNNYPILOT_REF in ci/upstream-refs.env}"
+          fi
           SHA="$(git ls-remote "https://github.com/${REPO}.git" "refs/heads/${REF}" | awk '{print $1}')"
           if [[ -z "$SHA" ]]; then
             SHA="$(git ls-remote "https://github.com/${REPO}.git" "refs/tags/${REF}" | awk '{print $1}')"
@@ -95,7 +116,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: openpilot-src
-          key: upstream-src-${{ runner.os }}-${{ matrix.target.upstream_repo }}-${{ steps.upstream.outputs.sha }}
+          key: upstream-src-sparse-${{ runner.os }}-${{ matrix.target.upstream_repo }}-${{ steps.upstream.outputs.sha }}
 
       - name: Checkout upstream source
         if: steps.upstream-cache.outputs.cache-hit != 'true'
@@ -105,6 +126,15 @@ jobs:
           ref: ${{ steps.upstream.outputs.sha }}
           path: openpilot-src
           submodules: recursive
+          # commaviewd never reads the driving models, which are most of a release tree (1.8 of
+          # 2.0 GB on release-chestnut). A blobless sparse checkout leaves them out, which keeps the
+          # cached source small; the cache key says "sparse" so full-tree caches are never mixed in.
+          filter: blob:none
+          sparse-checkout: |
+            /*
+            !/selfdrive/modeld/models/
+            !/openpilot/selfdrive/modeld/models/
+          sparse-checkout-cone-mode: false
       - name: Direct v2 onroad UI export patch applicability check
         run: |
           set -euxo pipefail
@@ -117,7 +147,9 @@ jobs:
 
 
       - name: Run commaviewd verification pipeline
-        if: ${{ matrix.target.run_verification != false }}
+        # toJSON keeps an unset run_verification ("null") running; a bare != false comparison
+        # coerces null to false and silently skipped verification for every target.
+        if: ${{ toJSON(matrix.target.run_verification) != 'false' }}
         env:
           OP_ROOT: ${{ github.workspace }}/openpilot-src
           ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}

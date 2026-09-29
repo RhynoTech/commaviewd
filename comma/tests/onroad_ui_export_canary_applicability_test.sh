@@ -124,7 +124,11 @@ run_ref() {
     git -C "$checkout" fetch --depth 1 origin "$ref"
     git -C "$checkout" checkout -q FETCH_HEAD
   else
-    git clone --depth 1 --branch "$ref" "$repo" "$checkout"
+    # Blobless and sparse: the driving models are most of a release tree (1.8 of 2.0 GB on
+    # release-chestnut) and nothing here reads them. Later fetches keep the blobless filter.
+    git clone --depth 1 --filter=blob:none --no-checkout --branch "$ref" "$repo" "$checkout"
+    git -C "$checkout" sparse-checkout set --no-cone '/*' '!/selfdrive/modeld/models/' '!/openpilot/selfdrive/modeld/models/'
+    git -C "$checkout" checkout -q "$ref"
   fi
 
   git -C "$checkout" reset --hard -q HEAD
@@ -138,7 +142,11 @@ path, label = sys.argv[1:]
 with open(path) as f:
     manifest = json.load(f)
 resolved = manifest.get("resolvedServices", {})
-if set(resolved) != {"calibration", "roadCamera", "vehicleParameters"} or not all(resolved.values()):
+expected = {
+    "calibration", "roadCamera", "vehicleParameters",
+    "roadEncode", "cabinEncode", "livestreamRoadEncode", "livestreamCabinEncode",
+}
+if set(resolved) != expected or not all(resolved.values()):
     raise SystemExit(f"bad semantic service mapping for {label}: {manifest}")
 PY
 
@@ -226,10 +234,14 @@ PY
 
 run_ref 'openpilot release-tici' "$OPENPILOT_REPO" 'release-tici' "$CACHE_ROOT/openpilot-release-tici" 'OPENPILOT' 'tizi'
 run_ref 'openpilot release-mici' "$OPENPILOT_REPO" 'release-mici' "$CACHE_ROOT/openpilot-release-mici" 'OPENPILOT' 'mici'
+run_ref 'openpilot release-tizi' "$OPENPILOT_REPO" 'release-tizi' "$CACHE_ROOT/openpilot-release-tizi" 'OPENPILOT' 'tizi'
+run_ref 'openpilot release-chestnut (mici)' "$OPENPILOT_REPO" 'release-chestnut' "$CACHE_ROOT/openpilot-release-chestnut" 'OPENPILOT' 'mici'
+run_ref 'openpilot release-chestnut (tizi)' "$OPENPILOT_REPO" 'release-chestnut' "$CACHE_ROOT/openpilot-release-chestnut" 'OPENPILOT' 'tizi'
 run_ref 'openpilot nightly' "$OPENPILOT_REPO" 'nightly' "$CACHE_ROOT/openpilot-nightly" 'OPENPILOT' 'tizi'
 run_ref 'openpilot nightly-dev' "$OPENPILOT_REPO" 'nightly-dev' "$CACHE_ROOT/openpilot-nightly-dev" 'OPENPILOT' 'tizi'
 run_ref 'openpilot release-tizi-staging' "$OPENPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/openpilot-release-tizi-staging" 'OPENPILOT' 'tizi'
 run_ref 'openpilot release-mici-staging' "$OPENPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/openpilot-release-mici-staging" 'OPENPILOT' 'mici'
+run_ref 'openpilot release-chestnut-staging' "$OPENPILOT_REPO" 'release-chestnut-staging' "$CACHE_ROOT/openpilot-release-chestnut-staging" 'OPENPILOT' 'mici'
 run_ref 'openpilot master' "$OPENPILOT_REPO" 'master' "$CACHE_ROOT/openpilot-master" 'OPENPILOT' 'mici'
 
 run_ref 'sunnypilot release-tizi' "$SUNNYPILOT_REPO" 'release-tizi' "$CACHE_ROOT/sunnypilot-release-tizi" 'SUNNYPILOT' 'tizi'
@@ -237,6 +249,7 @@ run_ref 'sunnypilot release-mici' "$SUNNYPILOT_REPO" 'release-mici' "$CACHE_ROOT
 run_ref 'sunnypilot staging' "$SUNNYPILOT_REPO" 'staging' "$CACHE_ROOT/sunnypilot-staging" 'SUNNYPILOT' 'tizi'
 run_ref 'sunnypilot release-tizi-staging' "$SUNNYPILOT_REPO" 'release-tizi-staging' "$CACHE_ROOT/sunnypilot-release-tizi-staging" 'SUNNYPILOT' 'tizi'
 run_ref 'sunnypilot release-mici-staging' "$SUNNYPILOT_REPO" 'release-mici-staging' "$CACHE_ROOT/sunnypilot-release-mici-staging" 'SUNNYPILOT' 'mici'
+run_ref 'sunnypilot staging-chestnut' "$SUNNYPILOT_REPO" 'staging-chestnut' "$CACHE_ROOT/sunnypilot-staging-chestnut" 'SUNNYPILOT' 'mici'
 run_ref 'sunnypilot dev' "$SUNNYPILOT_REPO" 'dev' "$CACHE_ROOT/sunnypilot-dev" 'SUNNYPILOT' 'mici'
 run_ref 'sunnypilot master' "$SUNNYPILOT_REPO" 'master' "$CACHE_ROOT/sunnypilot-master" 'SUNNYPILOT' 'mici'
 

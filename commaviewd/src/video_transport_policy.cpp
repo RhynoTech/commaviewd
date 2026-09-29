@@ -64,8 +64,9 @@ void VideoFrameQueue::push(PendingVideoFrame frame) {
     drop_count_ += 1;
     dropped_for_capacity = true;
   }
-  // HEVC frames after an omitted queued frame may depend on the missing frame. Keep the
-  // socket connected, but do not resume delivery until a self-contained keyframe arrives.
+  // Inter-coded (HEVC or livestream H.264) frames after an omitted queued frame may depend on
+  // the missing frame. Keep the socket connected, but do not resume delivery until a
+  // self-contained keyframe arrives.
   if (dropped_for_capacity) waiting_for_keyframe_ = true;
   frames_.push_back(std::move(frame));
   high_watermark_ = std::max(high_watermark_, frames_.size());

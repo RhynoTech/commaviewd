@@ -15,7 +15,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tarfile
 import time
@@ -192,13 +191,11 @@ def identity_from_rlog(rlog_path: Path, LogReader) -> dict:
   return {k: v for k, v in out.items() if v is not None}
 
 
-def device_model_from_params() -> str | None:
-  for candidate in ("/sys/firmware/devicetree/base/model",):
-    try:
-      return Path(candidate).read_text(errors="replace").strip("\x00 \n")
-    except OSError:
-      continue
-  return None
+def device_model_from_devicetree() -> str | None:
+  try:
+    return Path("/sys/firmware/devicetree/base/model").read_text(errors="replace").strip("\x00 \n")
+  except OSError:
+    return None
 
 
 def build_manifest(rlog_path: Path, LogReader) -> dict:
@@ -209,7 +206,7 @@ def build_manifest(rlog_path: Path, LogReader) -> dict:
     identity.update(params_identity)
     identity["identitySource"] = " + ".join(sources)
 
-  model = device_model_from_params()
+  model = device_model_from_devicetree()
   if model:
     identity["deviceModel"] = model
 
@@ -329,11 +326,14 @@ def main() -> int:
   nums = sorted(available)
   first, last = nums[0], nums[-1]
 
-  wanted = sorted(parse_segment_spec(args.segments) & set(nums)) if args.segments else list(nums)
   if args.segments:
-    missing = sorted(parse_segment_spec(args.segments) - set(nums))
+    requested = parse_segment_spec(args.segments)
+    wanted = sorted(requested & set(nums))
+    missing = sorted(requested - set(nums))
     if missing:
       print(f"note: requested segments not on disk, skipped: {missing}")
+  else:
+    wanted = list(nums)
   if not wanted:
     fail("no requested segments exist on disk")
 

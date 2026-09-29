@@ -145,7 +145,8 @@ async function main() {
   const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
   const serviceAccount = serviceAccountJson ? JSON.parse(serviceAccountJson) : undefined;
   const projectId = args.project ?? serviceAccount?.project_id ?? 'commaview';
-  const documentUrl = new URL(`https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/publicConfig/currentRelease`);
+  const currentReleaseUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/publicConfig/currentRelease`;
+  const documentUrl = new URL(currentReleaseUrl);
   for (const field of fieldNames) documentUrl.searchParams.append('updateMask.fieldPaths', field);
 
   if (args.dryRun === 'true') {
@@ -160,7 +161,7 @@ async function main() {
   const token = await accessToken(serviceAccount);
   const authHeaders = { Authorization: `Bearer ${token}` };
   if (args['runtime-tag']) {
-    const currentDocumentUrl = new URL(`https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/publicConfig/currentRelease`);
+    const currentDocumentUrl = new URL(currentReleaseUrl);
     const currentRelease = await requestJson(currentDocumentUrl, { headers: authHeaders });
     const currentRuntimeTag = currentRelease?.fields?.runtimeTag?.stringValue;
     if (currentRuntimeTag && compareRuntimeTags(args['runtime-tag'], currentRuntimeTag) < 0 && args["allow-runtime-downgrade"] !== "true") {

@@ -13,11 +13,10 @@ HELPER_PATH=""
 UI_STATE_PATH=""
 AUGMENTED_ROAD_PATHS=()
 REQUESTED_UI_PLATFORM="auto"
-JSON_ONLY=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --json) JSON_ONLY=1; shift ;;
+    --json) shift ;;  # accepted for callers; output is always JSON
     --platform) REQUESTED_UI_PLATFORM="${2:-}"; shift 2 ;;
     --platform=*) REQUESTED_UI_PLATFORM="${1#--platform=}"; shift ;;
     -h|--help) echo "Usage: verify_onroad_ui_export_patch.sh [--json] [--platform auto|mici|tizi|tici]"; exit 0 ;;
@@ -427,7 +426,12 @@ PYSMOKE
     eval "$smoke_eval"
   fi
 
-  if $helper_present && $ui_state_hook_present && $runtime_flavor_constant_present &&      $socket_path_present && $socket_env_present && $frame_version_present && $unix_socket_present &&      $framing_present && $compact_json_present && $payload_helpers_present && $publish_paths_present &&      $risk_fields_present && $legacy_bucket_markers_absent && $exporter_install_present &&      $exporter_publish_present && $onroad_camera_relay_present && $onroad_projection_present &&      $payload_smoke_passed && $critical_services_publishable; then
+  if $helper_present && $ui_state_hook_present && $runtime_flavor_constant_present && \
+     $socket_path_present && $socket_env_present && $frame_version_present && $unix_socket_present && \
+     $framing_present && $compact_json_present && $payload_helpers_present && $publish_paths_present && \
+     $risk_fields_present && $legacy_bucket_markers_absent && $exporter_install_present && \
+     $exporter_publish_present && $onroad_camera_relay_present && $onroad_projection_present && \
+     $payload_smoke_passed && $critical_services_publishable; then
     if [ -z "$applied_upstream_head" ]; then
       state="repair-needed"
       reason="source transformer socket UI export markers verified but patch provenance is missing; rerun repair against the current upstream checkout"
@@ -554,19 +558,11 @@ payload = {
 print(json.dumps(payload, separators=(",", ":")))
 PYJSON
 )"
-printf '%s
-' "$json" > "$STATE_JSON"
+printf '%s\n' "$json" > "$STATE_JSON"
 if [ -n "$fingerprint" ] && $patch_verified; then
-  printf 'ONROAD_UI_EXPORT_FLAVOR=%s
-ONROAD_UI_EXPORT_METHOD=transformer
-ONROAD_UI_EXPORT_UI_PLATFORM=%s
-ONROAD_UI_EXPORT_TRANSFORMER_SHA=%s
-ONROAD_UI_EXPORT_OP_ROOT=%s
-ONROAD_UI_EXPORT_UPSTREAM_HEAD=%s
-ONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s
-' "$flavor" "$ui_platform" "$fingerprint" "$OP_ROOT" "$upstream_head_value" "$upstream_remote_value" > "$STATE_ENV"
+  printf 'ONROAD_UI_EXPORT_FLAVOR=%s\nONROAD_UI_EXPORT_METHOD=transformer\nONROAD_UI_EXPORT_UI_PLATFORM=%s\nONROAD_UI_EXPORT_TRANSFORMER_SHA=%s\nONROAD_UI_EXPORT_OP_ROOT=%s\nONROAD_UI_EXPORT_UPSTREAM_HEAD=%s\nONROAD_UI_EXPORT_UPSTREAM_REMOTE=%s\n' \
+    "$flavor" "$ui_platform" "$fingerprint" "$OP_ROOT" "$upstream_head_value" "$upstream_remote_value" > "$STATE_ENV"
 fi
-printf '%s
-' "$json"
+printf '%s\n' "$json"
 if $patch_verified; then exit 0; fi
 exit 1

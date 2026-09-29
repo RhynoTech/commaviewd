@@ -6,18 +6,32 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 VERSION_ENV="${SCRIPT_DIR}/version.env"
 GITHUB_REPO="${COMMAVIEWD_RELEASE_REPO:-RhynoTech/commaviewd}"
+RELEASES_API_URL="${COMMAVIEWD_RELEASES_API_URL:-https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20}"
+# The runtime paired with the current CommaView app release. It describes RhynoTech/commaviewd
+# only, so another release repo skips it unless the URL is set explicitly.
+CURRENT_RELEASE_URL="${COMMAVIEWD_CURRENT_RELEASE_URL:-}"
+if [ -z "$CURRENT_RELEASE_URL" ] && [ "$GITHUB_REPO" = "RhynoTech/commaviewd" ]; then
+  CURRENT_RELEASE_URL="https://commaview.com/api/current-release"
+fi
 
 resolve_latest_release_tag() {
-  local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20"
-  curl -fsSL --retry 3 --retry-delay 1 "$api_url"     | tr -d '\r'     | grep -m1 '"tag_name":'     | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/' || true
+  curl -fsSL --retry 3 --retry-delay 1 "$RELEASES_API_URL" \
+    | tr -d '\r' \
+    | grep -m1 '"tag_name":' \
+    | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/' || true
 }
 
-INSTALLED_VERSION=""
+resolve_current_release_tag() {
+  [ -n "$CURRENT_RELEASE_URL" ] || return 0
+  curl -fsL --max-time 5 --retry 1 --retry-delay 1 "$CURRENT_RELEASE_URL" \
+    | tr -d '\r\n' \
+    | sed -nE 's/.*"runtimeTag"[[:space:]]*:[[:space:]]*"(v[^"]+)".*/\1/p' || true
+}
+
 INSTALLED_RELEASE_TAG=""
 if [ -f "$VERSION_ENV" ]; then
   # shellcheck disable=SC1090
   . "$VERSION_ENV"
-  INSTALLED_VERSION="${VERSION:-}"
   INSTALLED_RELEASE_TAG="${RELEASE_TAG:-}"
 fi
 
@@ -39,7 +53,12 @@ resolve_release_inputs() {
     elif [ -n "${COMMAVIEWD_INSTALLER_REF:-}" ] && [[ "${COMMAVIEWD_INSTALLER_REF}" == v* ]]; then
       RELEASE_TAG="$COMMAVIEWD_INSTALLER_REF"
     else
-      RELEASE_TAG="$(resolve_latest_release_tag)"
+      # Prefer the runtime the current app release uses, so a runtime that's tagged but
+      # not yet paired with an app release isn't installed by default.
+      RELEASE_TAG="$(resolve_current_release_tag)"
+      if [ -z "$RELEASE_TAG" ]; then
+        RELEASE_TAG="$(resolve_latest_release_tag)"
+      fi
     fi
   fi
   if [ -z "$RELEASE_TAG" ]; then
@@ -51,12 +70,22 @@ resolve_release_inputs() {
   ASSET_SHA_NAME="${ASSET_NAME}.sha256"
   BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
   # Keep installer companions pinned to the same resolved release by default.
-  # Falling back to master here mixes release assets with moving scripts/patches.
+  # Falling back to master here mixes release assets with moving companion scripts.
   INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-$RELEASE_TAG}"
   INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma}"
 }
 
-resolve_release_inputs
+# --tag and --current pick the release while the arguments are parsed, so only look up the
+# default (which needs the network) when neither is given.
+default_release_needed=1
+for arg in "$@"; do
+  case "$arg" in
+    --tag|--current) default_release_needed=0 ;;
+  esac
+done
+if [ "$default_release_needed" = "1" ]; then
+  resolve_release_inputs
+fi
 
 INSTALL_DIR="/data/commaview"
 CONTINUE_SH="/data/continue.sh"
@@ -66,7 +95,7 @@ FORCE_OFFROAD=0
 FORCE_OFFROAD_OWNED=0
 FORCE_OFFROAD_PREV=""
 tmpdir=""
-COMPANION_DIR="$SCRIPT_DIR"
+COMPANION_DIR=""  # set to "$tmpdir/companions" by refresh_required_files
 BACKUP_ROOT="${COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups}"
 INSTALL_ROLLBACK_BACKUP_ROOT="${COMMAVIEWD_INSTALL_ROLLBACK_BACKUP_ROOT:-$BACKUP_ROOT/install-rollback}"
 INSTALL_MUTATED=0
@@ -83,9 +112,12 @@ Usage:
 
 Options:
   --tag <release-tag>            Install or update to a specific release tag.
-  --current                      Reinstall the currently installed release instead of resolving latest.
+  --current                      Reinstall the installed release instead of looking one up.
   --force-offroad                Set OffroadMode and wait for an actual offroad transition before changing files.
   -h, --help                     Show this help and exit.
+
+Without --tag or --current, installs the runtime paired with the current CommaView app
+release, or the newest GitHub release if that lookup fails.
 USAGE
 }
 
@@ -154,36 +186,36 @@ commaview_pids() {
   done | sort -nu
 }
 
+# Polls every 0.2s, up to <attempts> times, until none of <pids> is alive.
+wait_for_pids_exit() {
+  local attempts="$1"
+  local pids="$2"
+  local pid remaining
+  for _ in $(seq 1 "$attempts"); do
+    remaining=""
+    for pid in $pids; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining="$remaining $pid"
+      fi
+    done
+    [ -z "$remaining" ] && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
 stop_commaview_processes() {
-  local pids remaining pid
+  local pids
   pids="$(commaview_pids | tr '\n' ' ')"
   [ -n "$pids" ] || return 0
 
   # shellcheck disable=SC2086
   kill $pids 2>/dev/null || true
-  for _ in $(seq 1 25); do
-    remaining=""
-    for pid in $pids; do
-      if kill -0 "$pid" 2>/dev/null; then
-        remaining="$remaining $pid"
-      fi
-    done
-    [ -z "$remaining" ] && return 0
-    sleep 0.2
-  done
+  wait_for_pids_exit 25 "$pids" && return 0
 
   # shellcheck disable=SC2086
   kill -9 $pids 2>/dev/null || true
-  for _ in $(seq 1 10); do
-    remaining=""
-    for pid in $pids; do
-      if kill -0 "$pid" 2>/dev/null; then
-        remaining="$remaining $pid"
-      fi
-    done
-    [ -z "$remaining" ] && return 0
-    sleep 0.2
-  done
+  wait_for_pids_exit 10 "$pids" && return 0
 
   return 1
 }

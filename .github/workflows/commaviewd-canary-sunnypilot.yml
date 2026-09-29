@@ -16,8 +16,6 @@ jobs:
   verify:
     name: Early drift canary verify (${{ matrix.target.upstream_ref }})
     runs-on: ubuntu-24.04
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -33,6 +31,8 @@ jobs:
             ui_platform: mici
           - upstream_ref: release-tizi-staging
             ui_platform: tizi
+          - upstream_ref: staging-chestnut
+            ui_platform: mici
 
 
     steps:
@@ -70,7 +70,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: openpilot-src
-          key: upstream-src-${{ runner.os }}-sunnypilot-sunnypilot-${{ steps.upstream.outputs.sha }}
+          key: upstream-src-sparse-${{ runner.os }}-sunnypilot-sunnypilot-${{ steps.upstream.outputs.sha }}
 
       - name: Checkout sunnypilot source
         if: steps.upstream-cache.outputs.cache-hit != 'true'
@@ -80,6 +80,15 @@ jobs:
           ref: ${{ steps.upstream.outputs.sha }}
           path: openpilot-src
           submodules: recursive
+          # commaviewd never reads the driving models, which are most of a release tree (1.8 of
+          # 2.0 GB on release-chestnut). A blobless sparse checkout leaves them out, which keeps the
+          # cached source small; the cache key says "sparse" so full-tree caches are never mixed in.
+          filter: blob:none
+          sparse-checkout: |
+            /*
+            !/selfdrive/modeld/models/
+            !/openpilot/selfdrive/modeld/models/
+          sparse-checkout-cone-mode: false
       - name: Transformer onroad UI export applicability check
         run: |
           set -euxo pipefail

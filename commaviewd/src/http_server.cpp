@@ -2,16 +2,18 @@
 
 #include <arpa/inet.h>
 #include <cerrno>
-#include <csignal>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sstream>
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <utility>
 
 namespace commaview::api {
 namespace {
@@ -111,6 +113,22 @@ bool parse_request(const std::string& raw, HttpRequest* req, std::string* error)
 
   req->body = raw.substr(body_start, content_len);
   return true;
+}
+
+// Handler responses and parse failures share this header block. The bare 413 for an
+// oversized request is written separately, without CORS or Content-Type headers.
+std::string serialize_response(const HttpResponse& resp) {
+  std::ostringstream out;
+  out << "HTTP/1.1 " << resp.status << " " << reason_phrase(resp.status) << "\r\n";
+  out << "Content-Type: " << resp.content_type << "\r\n";
+  out << "Access-Control-Allow-Origin: *\r\n";
+  out << "Access-Control-Allow-Headers: Content-Type, X-CommaView-Token\r\n";
+  for (const auto& kv : resp.headers) {
+    out << kv.first << ": " << kv.second << "\r\n";
+  }
+  out << "Content-Length: " << resp.body.size() << "\r\n\r\n";
+  out << resp.body;
+  return out.str();
 }
 
 bool send_all(int fd, const char* data, size_t len) {
@@ -250,31 +268,11 @@ bool HttpServer::handle_client(int client_fd) {
     HttpResponse bad;
     bad.status = 400;
     bad.body = "{\"ok\":false,\"error\":\"bad request\"}";
-
-    std::ostringstream out;
-    out << "HTTP/1.1 " << bad.status << " " << reason_phrase(bad.status) << "\r\n";
-    out << "Content-Type: " << bad.content_type << "\r\n";
-    out << "Access-Control-Allow-Origin: *\r\n";
-    out << "Access-Control-Allow-Headers: Content-Type, X-CommaView-Token\r\n";
-    out << "Content-Length: " << bad.body.size() << "\r\n\r\n";
-    out << bad.body;
-    const std::string resp = out.str();
-    return send_all(client_fd, resp.data(), resp.size());
+    const std::string wire = serialize_response(bad);
+    return send_all(client_fd, wire.data(), wire.size());
   }
 
-  HttpResponse resp = handler_(req);
-
-  std::ostringstream out;
-  out << "HTTP/1.1 " << resp.status << " " << reason_phrase(resp.status) << "\r\n";
-  out << "Content-Type: " << resp.content_type << "\r\n";
-  out << "Access-Control-Allow-Origin: *\r\n";
-  out << "Access-Control-Allow-Headers: Content-Type, X-CommaView-Token\r\n";
-  for (const auto& kv : resp.headers) {
-    out << kv.first << ": " << kv.second << "\r\n";
-  }
-  out << "Content-Length: " << resp.body.size() << "\r\n\r\n";
-  out << resp.body;
-  const std::string wire = out.str();
+  const std::string wire = serialize_response(handler_(req));
   return send_all(client_fd, wire.data(), wire.size());
 }
 
