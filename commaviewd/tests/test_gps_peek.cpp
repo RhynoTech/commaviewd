@@ -105,7 +105,16 @@ std::vector<uint8_t> car_event() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  // --write-gps-queue PATH FIX_MS... writes a queue file with a gpsLocationExternal fix at
+  // 37.7749, -122.4194 for each time, laid out by this build's own msgq and schema, for tests that
+  // need one: forks differ in both (reader slots, GPS field layout).
+  if (argc >= 4 && std::string(argv[1]) == "--write-gps-queue") {
+    FakeQueue queue(argv[2], 1 << 16);
+    for (int i = 3; i < argc; i++) queue.publish(gps_event(37.7749, -122.4194, std::atoll(argv[i])));
+    return 0;
+  }
+
   char dir_template[] = "/tmp/commaview-gps-peek-XXXXXX";
   const std::string dir = mkdtemp(dir_template);
   using commaview::gps::GpsPeek;

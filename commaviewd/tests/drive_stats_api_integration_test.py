@@ -19,6 +19,8 @@ import urllib.request
 
 # A cereal Event holding a gpsLocationExternal fix (37.7749, -122.4194, hasFix, 4.5 m, 90°, 12.5 m/s)
 # whose unixTimestampMillis is the sentinel 0x0123456789ABCDEF, swapped for the time the test runs.
+# It and the queue below follow openpilot's schema and msgq (15 reader slots). Forks differ in both,
+# so the pipeline passes COMMAVIEWD_GPS_QUEUE_TOOL, which writes the queue with the target's own.
 GPS_EVENT_HEX = (
     "000000000d0000000000000002000100e8030000000000002f000000000000000000000008000100000000000000"
     "4841d0d556ec2fe3424050fc1873d79a5ec000000000000000000000b44200009040efcdab8967452301000000000000"
@@ -45,6 +47,15 @@ def write_msgq_queue(path, messages, data_size=65536):
     header = bytearray(MSGQ_HEADER_BYTES)
     header[8:16] = struct.pack("<Q", offset)  # lap 0, write pointer after the last message
     path.write_bytes(bytes(header) + bytes(data))
+
+
+def write_gps_queue(path, fix_times):
+    """The comma's GPS queue holding a fix at each time, as its own msgq and schema would write it."""
+    tool = os.environ.get("COMMAVIEWD_GPS_QUEUE_TOOL")
+    if tool:
+        subprocess.check_call([tool, "--write-gps-queue", str(path)] + [str(t) for t in fix_times])
+    else:
+        write_msgq_queue(path, [gps_event(t) for t in fix_times])
 
 
 def request(port, path, method="GET", token=None, body=None):
@@ -161,7 +172,7 @@ def main():
             # A drive: the car is on, loggerd names the route, and the comma's GPS is in msgq.
             runs.unlink(missing_ok=True)
             now_ms = int(time.time() * 1000)
-            write_msgq_queue(msgq / "msgq_gpsLocationExternal", [gps_event(now_ms - 2000), gps_event(now_ms)])
+            write_gps_queue(msgq / "msgq_gpsLocationExternal", [now_ms - 2000, now_ms])
             (params / "IsOffroad").write_text("0")
             (params / "CurrentRoute").write_text("0000002a--8f1e2d3c4b")
             wait_for(lambda: request(port, "/commaview/drive-stats", token=token)[1]["current"] is not None, "the drive to start")
