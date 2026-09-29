@@ -38,4 +38,6 @@ sed -i '/# commaview-hook/d; /commaview\/start.sh/d' /data/continue.sh 2>/dev/nu
 
 echo "Removing files..."
 rm -rf "$INSTALL_DIR"
+# A position from the drive log, if location was on (stop.sh clears it too).
+rm -rf /dev/shm/commaview
 echo "CommaView uninstalled"

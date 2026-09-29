@@ -100,6 +100,22 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_SOURCE_ROOT" -I"$OP_SOURCE_ROOT/cere
   "$ROOT/src/source_recording_archive.cpp" \
   -o "$TMP/test_source_recording_archive"
 
+# The generated cereal sources the build step just wrote, for tests that read real events.
+CEREAL_SRCS=( "$OP_SOURCE_ROOT/cereal/gen/cpp/log.capnp.c++" "$OP_SOURCE_ROOT/cereal/gen/cpp/car.capnp.c++" "$OP_SOURCE_ROOT/cereal/gen/cpp/custom.capnp.c++" )
+for legacy in deprecated legacy; do
+  if [[ -f "$OP_SOURCE_ROOT/cereal/gen/cpp/$legacy.capnp.c++" ]]; then
+    CEREAL_SRCS+=( "$OP_SOURCE_ROOT/cereal/gen/cpp/$legacy.capnp.c++" )
+  fi
+done
+MSGQ_ROOT_DIR="$OP_SOURCE_ROOT/msgq_repo"
+[[ -d "$MSGQ_ROOT_DIR" ]] || MSGQ_ROOT_DIR="$OP_ROOT/msgq_repo"
+
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" -I"$MSGQ_ROOT_DIR" \
+  "$ROOT/tests/test_gps_peek.cpp" \
+  "$ROOT/src/gps_peek.cpp" \
+  "${CEREAL_SRCS[@]}" \
+  -lcapnp -lkj -lpthread -o "$TMP/test_gps_peek"
+
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_msgq_header_recovery.cpp" \
   "$DIST_DIR/msgq-commaviewd.cc" \
@@ -116,11 +132,13 @@ INC=( -I"$ROOT/include" -I"$OP_ROOT" -I"$OP_SOURCE_ROOT" -I"$OP_SOURCE_ROOT/cere
 "$TMP/test_ui_export_socket"
 "$TMP/test_source_recording_archive"
 "$TMP/test_msgq_header_recovery"
+"$TMP/test_gps_peek"
 
 "$ROOT/tests/control_mode_api_contract_test.sh"
 "$ROOT/tests/control_mode_pairing_integration_test.sh"
 python3 "$ROOT/tests/source_archive_endpoint_integration_test.py"
 python3 "$ROOT/tests/wifi_power_save_api_integration_test.py"
+python3 "$ROOT/tests/drive_stats_api_integration_test.py"
 "$ROOT/tests/local_discovery_contract_test.sh"
 "$ROOT/tests/upstream_interface_guard_transformer_test.sh"
 "$ROOT/tests/device_test_workflow_contract_test.sh"
