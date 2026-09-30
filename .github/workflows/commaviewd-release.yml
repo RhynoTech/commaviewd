@@ -7,8 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to package (e.g., v0.0.35-alpha)'
-        required: true
+        description: 'Release tag to package (e.g., v0.0.35-alpha). Empty: cut the RELEASE_TAG in master''s comma/version.env (creates the tag)'
+        required: false
+        default: ''
         type: string
       allow_overwrite:
         description: 'Allow manual dispatch to overwrite assets on an existing release'
@@ -40,10 +41,32 @@ jobs:
     timeout-minutes: 90
 
     steps:
+      # A manual run with no tag cuts the release master is preparing: it creates the tag
+      # (comma/version.env's RELEASE_TAG) on master's head, then builds it here. Tags made with
+      # the workflow's token start no other workflow, so this run does the release itself.
+      - name: Cut release tag from master
+        id: cut
+        if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/master" --jq .sha)"
+          TAG="$(gh api "repos/$GITHUB_REPOSITORY/contents/comma/version.env?ref=$SHA" --jq .content \
+            | base64 -d | sed -nE 's/^RELEASE_TAG="?([^"]*)"?[[:space:]]*$/\1/p' | head -n1)"
+          [[ -n "$TAG" ]] || { echo "No RELEASE_TAG in master's comma/version.env" >&2; exit 1; }
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG already exists; bump VERSION and RELEASE_TAG in comma/version.env first" >&2
+            exit 1
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" >/dev/null
+          echo "Created $TAG at $SHA"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Resolve release tag
         id: vars
         env:
-          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          REQUESTED_TAG: ${{ steps.cut.outputs.tag || (github.event_name == 'workflow_dispatch' && inputs.tag) || github.ref_name }}
         run: |
           set -euo pipefail
           TAG="${REQUESTED_TAG}"
