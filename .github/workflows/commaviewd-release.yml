@@ -6,8 +6,21 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      channel:
+        description: 'alpha: the next v<version>-alpha.<n> from master. beta: the version''s beta, from its newest alpha (or from)'
+        required: false
+        default: alpha
+        type: choice
+        options:
+          - alpha
+          - beta
+      from:
+        description: 'Beta only: the alpha to make the beta from (default: the newest), e.g. v0.0.56-alpha.2'
+        required: false
+        default: ''
+        type: string
       tag:
-        description: 'Release tag to package (e.g., v0.0.35-alpha). Empty: cut the RELEASE_TAG in master''s comma/version.env (creates the tag)'
+        description: 'Rebuild an existing tag instead (with allow_overwrite). Empty: cut a new release (channel)'
         required: false
         default: ''
         type: string
@@ -41,27 +54,45 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      # A manual run with no tag cuts the release master is preparing: it creates the tag
-      # (comma/version.env's RELEASE_TAG) on master's head, then builds it here. Tags made with
-      # the workflow's token start no other workflow, so this run does the release itself.
-      - name: Cut release tag from master
+      # A manual run with no tag cuts a release (docs: RhynoTech/CommaView docs/release/README.md):
+      # scripts/release-version.mjs names it from the tags already made, the next
+      # v<version>-alpha.<n> from master's head, or v<version>-beta from the chosen alpha's commit,
+      # and the tag is created here. Tags made with the workflow's token start no other workflow,
+      # so this run does the release itself.
+      - name: Check out master to cut a release
+        if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
+        uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Cut release tag
         id: cut
         if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
         env:
           GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+          FROM: ${{ inputs.from }}
         run: |
           set -euo pipefail
-          SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/master" --jq .sha)"
-          TAG="$(gh api "repos/$GITHUB_REPOSITORY/contents/comma/version.env?ref=$SHA" --jq .content \
-            | base64 -d | sed -nE 's/^RELEASE_TAG="?([^"]*)"?[[:space:]]*$/\1/p' | head -n1)"
-          [[ -n "$TAG" ]] || { echo "No RELEASE_TAG in master's comma/version.env" >&2; exit 1; }
+          # shellcheck disable=SC1091
+          . comma/version.env
+          args=(--prefix v --floor "${VERSION%%-*}" --channel "$CHANNEL" --github-output)
+          [[ -z "$FROM" ]] || args+=(--from "$FROM")
+          node scripts/release-version.mjs "${args[@]}" | tee "$RUNNER_TEMP/next"
+          TAG="$(sed -n 's/^tag=//p' "$RUNNER_TEMP/next")"
+          FROM_TAG="$(sed -n 's/^from_tag=//p' "$RUNNER_TEMP/next")"
+          if [[ -n "$FROM_TAG" ]]; then
+            SHA="$(git rev-parse "refs/tags/${FROM_TAG}^{}")"
+          else
+            SHA="$(git rev-parse HEAD)"
+          fi
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
-            echo "$TAG already exists; bump VERSION and RELEASE_TAG in comma/version.env first" >&2
+            echo "$TAG already exists" >&2
             exit 1
           fi
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" >/dev/null
           echo "Created $TAG at $SHA"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Resolve release tag
         id: vars
@@ -74,8 +105,9 @@ jobs:
             echo "No tag resolved" >&2
             exit 1
           fi
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha$ ]]; then
-            echo "Tag must match v<major>.<minor>.<patch>-alpha (got: $TAG)" >&2
+          # An alpha (v0.0.56-alpha.2, or the old single v0.0.56-alpha) or a version's beta.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(alpha(\.[0-9]+)?|beta)$ ]]; then
+            echo "Tag must match v<major>.<minor>.<patch>-alpha.<n> or -beta (got: $TAG)" >&2
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -85,24 +117,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ steps.vars.outputs.tag }}
-
-      - name: Verify runtime version matches tag
-        run: |
-          set -euo pipefail
-          WANT_VERSION='${{ steps.vars.outputs.version }}'
-          WANT_TAG='${{ steps.vars.outputs.tag }}'
-          # shellcheck disable=SC1091
-          . comma/version.env
-          echo "VERSION in comma/version.env: ${VERSION:-}"
-          echo "RELEASE_TAG in comma/version.env: ${RELEASE_TAG:-}"
-          [[ "${VERSION:-}" == "$WANT_VERSION" ]] || {
-            echo "VERSION mismatch: expected $WANT_VERSION from tag, got ${VERSION:-}" >&2
-            exit 1
-          }
-          [[ "${RELEASE_TAG:-}" == "$WANT_TAG" ]] || {
-            echo "RELEASE_TAG mismatch: expected $WANT_TAG, got ${RELEASE_TAG:-}" >&2
-            exit 1
-          }
 
       - name: Restore apt package cache
         uses: actions/cache@v5
@@ -221,17 +235,20 @@ jobs:
             fi
           fi
 
+          # Alphas are prereleases; a version's beta is the release people get.
+          PRERELEASE=--prerelease
+          [[ "$TAG" != *-beta ]] || PRERELEASE=--latest
           if [[ "$release_exists" = "0" ]]; then
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$TAG" \
               --notes-file "$NOTES_FILE" \
-              --prerelease
+              "$PRERELEASE"
           else
             gh release edit "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --notes-file "$NOTES_FILE" \
-              --prerelease
+              "$PRERELEASE"
           fi
 
           gh release upload "$TAG" "$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}" \

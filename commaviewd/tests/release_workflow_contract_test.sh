@@ -51,9 +51,13 @@ if grep -Fq "FIREBASE_SERVICE_ACCOUNT_JSON" "$WORKFLOW" "$PROMOTE"; then
   echo "FAIL: release promotion must not use a Firebase service account key" >&2
   exit 1
 fi
-assert_contains "Cut release tag from master" "$WORKFLOW" "a manual run with no tag should cut master's prepared release"
+assert_contains "Cut release tag" "$WORKFLOW" "a manual run with no tag should cut a release"
 assert_contains "if: github.event_name == 'workflow_dispatch' && inputs.tag == ''" "$WORKFLOW" "cutting a tag should need a manual run without a tag"
-assert_contains 'already exists; bump VERSION and RELEASE_TAG in comma/version.env first' "$WORKFLOW" "cutting should never move an existing tag"
+assert_contains 'node scripts/release-version.mjs' "$WORKFLOW" "the release planner should name the tag"
+assert_contains 'git rev-parse "refs/tags/${FROM_TAG}^{}"' "$WORKFLOW" "a beta should be built from the chosen alpha's commit"
+assert_contains 'already exists" >&2' "$WORKFLOW" "cutting should never move an existing tag"
+assert_contains '[[ "$TAG" != *-beta ]] || PRERELEASE=--latest' "$WORKFLOW" "only a beta should be a full release"
+node --test "$REPO_ROOT/scripts/release-version.test.mjs" >/dev/null || { echo "FAIL: release-version.mjs tests" >&2; exit 1; }
 assert_contains "PROVENANCE_ASSETS=(" "$WORKFLOW" "release workflow should define provenance assets for upload"
 assert_contains 'REQUIRED_ASSETS=("$ASSET_TGZ" "$ASSET_SHA" "${PROVENANCE_ASSETS[@]}")' "$WORKFLOW" "release workflow should validate bundle, checksum, and provenance assets"
 assert_contains 'cd "$OUT_DIR"' "$BUILD_BUNDLE" "bundle script should enter release directory before writing checksum"
