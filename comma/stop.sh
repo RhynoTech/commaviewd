@@ -10,7 +10,7 @@ commaview_pids() {
     [ -r "$proc/cmdline" ] || continue
     cmd="$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null || true)"
     case "$cmd" in
-      *"/data/commaview/commaviewd bridge"*|*"/data/commaview/commaviewd control"*)
+      *"/data/commaview/commaviewd bridge"*|*"/data/commaview/commaviewd control"*|*"/data/commaview/src/commaview_drive_stats.py"*)
         printf '%s\n' "$pid"
         ;;
     esac
@@ -80,4 +80,6 @@ if [ -n "$leftover" ]; then
 fi
 
 rm -f "$RUN/bridge.pid" "$RUN/control.pid" "$RUN/bridge-supervisor.pid" "$RUN/control-supervisor.pid" "$RUN/log-rotation.pid"
+# A position from the drive log means nothing once the runtime has stopped.
+rm -rf /dev/shm/commaview
 echo "CommaView stopped"

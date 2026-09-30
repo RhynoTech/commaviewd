@@ -130,6 +130,7 @@ prune_runtime_logs_by_age() {
     -name 'commaviewd-bridge.log.*' -o \
     -name 'commaviewd-control.log.*' -o \
     -name 'onroad-ui-export-startup.log.*' -o \
+    -name 'commaview-drive-stats.log.*' -o \
     -name 'runtime-run-events.jsonl.*' \
   \) -mtime +"$COMMAVIEWD_LOG_MAX_AGE_DAYS" -exec rm -f {} + 2>/dev/null || true
 }
@@ -140,6 +141,7 @@ runtime_logs_total_bytes() {
     "$LOG_DIR"/commaviewd-bridge.log* \
     "$LOG_DIR"/commaviewd-control.log* \
     "$LOG_DIR"/onroad-ui-export-startup.log* \
+    "$LOG_DIR"/commaview-drive-stats.log* \
     "$LOG_DIR"/runtime-run-events.jsonl*; do
     [ -f "$file" ] || continue
     size_bytes="$(wc -c < "$file" 2>/dev/null || echo 0)"
@@ -156,6 +158,7 @@ oldest_runtime_log() {
     -name 'commaviewd-bridge.log*' -o \
     -name 'commaviewd-control.log*' -o \
     -name 'onroad-ui-export-startup.log*' -o \
+    -name 'commaview-drive-stats.log*' -o \
     -name 'runtime-run-events.jsonl*' \
   \) -printf '%T@ %p\n' 2>/dev/null | sort -n | head -n 1 | sed 's/^[^ ]* //'
 }
@@ -172,6 +175,7 @@ rotate_runtime_logs() {
   rotate_runtime_log_if_large "$LOG_DIR/commaviewd-bridge.log" "$COMMAVIEWD_LOG_MAX_BYTES"
   rotate_runtime_log_if_large "$LOG_DIR/commaviewd-control.log" "$COMMAVIEWD_LOG_MAX_BYTES"
   rotate_runtime_log_if_large "$LOG_DIR/onroad-ui-export-startup.log" "$COMMAVIEWD_LOG_MAX_BYTES"
+  rotate_runtime_log_if_large "$LOG_DIR/commaview-drive-stats.log" "$COMMAVIEWD_LOG_MAX_BYTES"
   rotate_runtime_log_if_large "$LOG_DIR/runtime-run-events.jsonl" "$COMMAVIEWD_LOG_MAX_BYTES"
   prune_runtime_logs_by_age
   prune_runtime_logs_by_total_size

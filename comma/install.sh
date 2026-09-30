@@ -179,7 +179,7 @@ commaview_pids() {
     [ -r "$proc/cmdline" ] || continue
     cmd="$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null || true)"
     case "$cmd" in
-      *"/data/commaview/commaviewd bridge"*|*"/data/commaview/commaviewd control"*)
+      *"/data/commaview/commaviewd bridge"*|*"/data/commaview/commaviewd control"*|*"/data/commaview/src/commaview_drive_stats.py"*)
         printf '%s\n' "$pid"
         ;;
     esac
@@ -404,6 +404,7 @@ required_files=(
   "scripts/transform_onroad_ui_export.py"
   "src/commaview_export.openpilot.py"
   "src/commaview_export.sunnypilot.py"
+  "src/commaview_drive_stats.py"
 )
 
 refresh_required_files() {
@@ -472,6 +473,7 @@ deploy_required_scripts() {
   rm -f "$INSTALL_DIR/scripts/commaview_export_worker.py"
   copy_required_file "src/commaview_export.openpilot.py" "$INSTALL_DIR/src/commaview_export.openpilot.py" 644
   copy_required_file "src/commaview_export.sunnypilot.py" "$INSTALL_DIR/src/commaview_export.sunnypilot.py" 644
+  copy_required_file "src/commaview_drive_stats.py" "$INSTALL_DIR/src/commaview_drive_stats.py" 644
   copy_required_file "stop.sh" "$INSTALL_DIR/stop.sh"
   copy_required_file "uninstall.sh" "$INSTALL_DIR/uninstall.sh"
 

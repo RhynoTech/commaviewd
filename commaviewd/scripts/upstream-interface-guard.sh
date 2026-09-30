@@ -110,6 +110,8 @@ required_services=(
   carParams
   pandaStates
   wideRoadCameraState
+  gpsLocationExternal
+  gpsLocation
 )
 
 checked_required_services=0
@@ -169,11 +171,32 @@ required_capnp_fields=(
   timestampEof
   timestampSof
   sensor
+  hasFix
+  horizontalAccuracy
+  bearingDeg
+  unixTimestampMillis
 )
 
 for field in "${required_capnp_fields[@]}"; do
   check_token "$OP_SOURCE_ROOT/cereal/log.capnp" "$field"
 done
+
+# Live location reads the comma's GPS from openpilot's msgq ring without subscribing
+# (src/gps_peek.cpp), so the ring's framing is an interface too: the size tag, the -1 wrap tag,
+# 8-byte alignment, and the write pointer moved only after a message is whole.
+msgq_root="$OP_SOURCE_ROOT/msgq_repo"
+[[ -d "$msgq_root" ]] || msgq_root="$OP_ROOT/msgq_repo"
+check_file "$msgq_root/msgq/msgq.h"
+check_file "$msgq_root/msgq/msgq.cc"
+if [[ -f "$msgq_root/msgq/msgq.cc" ]]; then
+  for needle in \
+    'uint64_t total_msg_size = ALIGN(msg->size + sizeof(int64_t));' \
+    '*(int64_t*)p = -1;' \
+    'PACK64(*q->write_pointer, write_cycles, new_ptr);' \
+    'q->data = mem + sizeof(msgq_header_t);'; do
+    grep -Fq "$needle" "$msgq_root/msgq/msgq.cc" || missing+=("msgq-ring:$needle")
+  done
+fi
 
 if [[ ${#missing[@]} -gt 0 ]]; then
   printf 'FAIL: upstream interface drift detected:\n' >&2

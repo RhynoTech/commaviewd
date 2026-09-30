@@ -1,4 +1,5 @@
 #include "control_mode.h"
+#include "gps_peek.h"
 #include "http_server.h"
 #include "runtime_debug_config.h"
 #include "source_recording_archive.h"
@@ -11,6 +12,9 @@
 #include <cstdlib>
 #include <chrono>
 #include <cstring>
+#include <csignal>
+#include <iomanip>
+#include <cmath>
 #include <fcntl.h>
 #include <fstream>
 #include <sstream>
@@ -26,6 +30,8 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+
+extern char** environ;
 
 namespace commaview::runtime {
 namespace {
@@ -67,11 +73,14 @@ std::vector<SupportLogFileSpec> support_log_files() {
       {"commaviewd-bridge.log", "/data/commaview/logs/commaviewd-bridge.log", false},
       {"commaviewd-control.log", "/data/commaview/logs/commaviewd-control.log", false},
       {"onroad-ui-export-startup.log", "/data/commaview/logs/onroad-ui-export-startup.log", false},
+      // The drive stats script's own log never holds positions.
+      {"commaview-drive-stats.log", "/data/commaview/logs/commaview-drive-stats.log", false},
   };
-  const std::array<std::string, 4> rotated = {{
+  const std::array<std::string, 5> rotated = {{
       "commaviewd-bridge.log",
       "commaviewd-control.log",
       "onroad-ui-export-startup.log",
+      "commaview-drive-stats.log",
       "runtime-run-events.jsonl",
   }};
   for (const auto& name : rotated) {
@@ -829,6 +838,507 @@ std::string wifi_power_save_set_response(const std::string& body) {
          "\",\"enabled\":" + (mode == "on" ? "true" : "false") + ",\"reconnectRequired\":true}";
 }
 
+// ---- Drive stats and location, from what the comma already keeps: its onroad flag, its drive
+// logs, and the positions sunnypilot saves. Nothing here subscribes to openpilot's messages. A short
+// script (commaview_drive_stats.py) runs after each drive to read the drive's logs and comma's
+// totals; the API only reads files, and deletes the location files the moment location is turned off.
+
+std::string drivelog_root() {
+#if !defined(__aarch64__)
+  // Host integration tests need an isolated tree; device builds always use the install dir.
+  if (const char* test_root = std::getenv("COMMAVIEWD_TEST_DATA_ROOT")) {
+    if (*test_root) return test_root;
+  }
+#endif
+  return kInstallDir;
+}
+
+// The position openpilot's last finished log minute gives, kept in memory (tmpfs) only.
+std::string drivelog_live_dir() {
+#if !defined(__aarch64__)
+  if (const char* test_dir = std::getenv("COMMAVIEWD_TEST_LIVE_DIR")) {
+    if (*test_dir) return test_dir;
+  }
+#endif
+  return "/dev/shm/commaview";
+}
+
+// sunnypilot keeps the current position in memory params while it drives (its map helper).
+std::string memory_params_dir() {
+#if !defined(__aarch64__)
+  if (const char* test_dir = std::getenv("COMMAVIEWD_TEST_MEM_PARAMS_DIR")) {
+    if (*test_dir) return test_dir;
+  }
+#endif
+  return "/dev/shm/params/d";
+}
+
+// openpilot's msgq rings, read without subscribing (see gps_peek.h).
+std::string msgq_dir() {
+#if !defined(__aarch64__)
+  if (const char* test_dir = std::getenv("COMMAVIEWD_TEST_MSGQ_DIR")) {
+    if (*test_dir) return test_dir;
+  }
+#endif
+  return "/dev/shm";
+}
+
+std::string drivelog_path(const std::string& relative) {
+  return drivelog_root() + "/" + relative;
+}
+
+std::string params_path(const std::string& key) {
+  std::string root = kParamsDir;
+#if !defined(__aarch64__)
+  if (const char* test_root = std::getenv("COMMAVIEWD_TEST_PARAMS_DIR")) {
+    if (*test_root) root = test_root;
+  }
+#endif
+  return root + "/" + key;
+}
+
+constexpr size_t kDrivelogFileCapBytes = 256 * 1024;
+constexpr int64_t kValidWallMs = 1704067200000LL;  // 2024: before that the clock hasn't been set
+constexpr int kLivePositionMaxAgeSec = 30;
+constexpr int kTotalsStaleSec = 30 * 60;
+constexpr int kTotalsRefreshSec = 6 * 60 * 60;
+constexpr int kTotalsRequestGapSec = 5 * 60;
+constexpr int kPositionRunGapSec = 60;
+constexpr int kAfterDriveDelaySec = 30;  // lets loggerd close the drive's last log first
+constexpr int kMinDriveSec = 10;
+constexpr int kDriveScriptTimeoutSec = 10 * 60;
+
+int64_t wall_ms_now() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+int64_t file_mtime_ms(const std::string& path) {
+  struct stat st {};
+  if (stat(path.c_str(), &st) != 0) return 0;
+  return static_cast<int64_t>(st.st_mtim.tv_sec) * 1000 + st.st_mtim.tv_nsec / 1000000;
+}
+
+// A file the drive stats script wrote, embedded as it is, or null when it's missing, too big or not an object.
+std::string embedded_json_object(const std::string& path) {
+  struct stat st {};
+  if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+      static_cast<size_t>(st.st_size) > kDrivelogFileCapBytes) {
+    return "null";
+  }
+  const std::string raw = read_file_trimmed(path);
+  if (raw.size() < 2 || raw.front() != '{' || raw.back() != '}') return "null";
+  return raw;
+}
+
+// The value after the first `"key":`, spaces allowed: a JSON boolean or a number.
+size_t json_value_start(const std::string& body, const char* key) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t pos = body.find(needle);
+  if (pos == std::string::npos) return std::string::npos;
+  pos = body.find_first_not_of(" \t\r\n", pos + needle.size());
+  if (pos == std::string::npos || body[pos] != ':') return std::string::npos;
+  return body.find_first_not_of(" \t\r\n", pos + 1);
+}
+
+bool extract_bool_field(const std::string& body, const char* key, bool* value_out) {
+  if (key == nullptr || value_out == nullptr) return false;
+  const size_t pos = json_value_start(body, key);
+  if (pos == std::string::npos) return false;
+  if (body.compare(pos, 4, "true") == 0) {
+    *value_out = true;
+    return true;
+  }
+  if (body.compare(pos, 5, "false") == 0) {
+    *value_out = false;
+    return true;
+  }
+  return false;
+}
+
+bool extract_number_field(const std::string& body, const char* key, double* value_out) {
+  if (key == nullptr || value_out == nullptr) return false;
+  const size_t pos = json_value_start(body, key);
+  if (pos == std::string::npos) return false;
+  const char* begin = body.c_str() + pos;
+  char* end = nullptr;
+  const double value = std::strtod(begin, &end);
+  if (end == begin || !std::isfinite(value)) return false;
+  *value_out = value;
+  return true;
+}
+
+// Owner-only: these are where and how this comma drives.
+bool write_file_atomic(const std::string& path, const std::string& value) {
+  const std::string tmp = path + ".tmp";
+  if (!write_file(tmp, value, 0600)) {
+    unlink(tmp.c_str());
+    return false;
+  }
+  return rename(tmp.c_str(), path.c_str()) == 0;
+}
+
+bool location_sharing_enabled() {
+  bool enabled = false;
+  return extract_bool_field(read_file_raw(drivelog_path("config/location.json")), "enabled", &enabled) && enabled;
+}
+
+// A position sunnypilot saved ({"latitude": .., "longitude": .., "bearing": ..}) as this API's
+// position, dated by when it was saved; null when it isn't a real position.
+std::string sunnypilot_position_json(const std::string& path, int max_age_sec) {
+  const int64_t saved_ms = file_mtime_ms(path);
+  if (saved_ms <= 0 || (max_age_sec > 0 && wall_ms_now() - saved_ms > static_cast<int64_t>(max_age_sec) * 1000)) {
+    return "null";
+  }
+  const std::string raw = read_file_raw(path);
+  double lat = 0.0, lon = 0.0, bearing = 0.0;
+  if (!extract_number_field(raw, "latitude", &lat) || !extract_number_field(raw, "longitude", &lon) ||
+      lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0 || (std::fabs(lat) < 1e-6 && std::fabs(lon) < 1e-6)) {
+    return "null";
+  }
+  std::ostringstream out;
+  out.setf(std::ios::fixed);
+  out << "{\"lat\":" << std::setprecision(6) << lat << ",\"lon\":" << lon;
+  if (extract_number_field(raw, "bearing", &bearing)) out << ",\"bearingDeg\":" << std::setprecision(1) << bearing;
+  out << ",\"fixMs\":" << saved_ms << ",\"source\":\"sunnypilot\"}";
+  return out.str();
+}
+
+std::string comma_fix_json(const commaview::gps::Fix& fix, const std::string& extra = "") {
+  std::ostringstream out;
+  out.setf(std::ios::fixed);
+  out << "{\"lat\":" << std::setprecision(6) << fix.lat << ",\"lon\":" << fix.lon
+      << ",\"accuracyM\":" << std::setprecision(1) << fix.accuracy_m
+      << ",\"bearingDeg\":" << fix.bearing_deg
+      << ",\"speedMs\":" << std::setprecision(2) << fix.speed_ms
+      << ",\"fixMs\":" << fix.fix_ms << extra << ",\"source\":\"comma\"}";
+  return out.str();
+}
+
+enum class RoadState { kOnroad, kOffroad, kUnknown };
+
+RoadState road_state() {
+  const std::string offroad = read_param("IsOffroad");
+  if (offroad == "0") return RoadState::kOnroad;
+  if (offroad == "1") return RoadState::kOffroad;
+  const std::string onroad = read_param("IsOnroad");
+  if (onroad == "1") return RoadState::kOnroad;
+  if (onroad == "0") return RoadState::kOffroad;
+  return RoadState::kUnknown;
+}
+
+// ---- The drive watcher: notices each drive from the onroad flag and runs the script afterwards.
+
+using SteadyClock = std::chrono::steady_clock;
+
+struct DriveScriptRun {
+  std::vector<std::string> args;
+  SteadyClock::time_point not_before;
+};
+
+struct DriveWatch {
+  bool driving = false;
+  SteadyClock::time_point started_at;
+  int64_t started_wall_ms = 0;
+  std::string route;
+  std::string last_route;  // the previous drive's, so a stale CurrentRoute is never taken for this one
+  pid_t script_pid = -1;
+  SteadyClock::time_point script_started;
+  std::vector<DriveScriptRun> queued;
+  SteadyClock::time_point next_totals;
+  SteadyClock::time_point last_totals_request;
+  SteadyClock::time_point last_position_run;
+  std::optional<commaview::gps::Fix> last_fix;  // the comma's newest fix this drive, while location is on
+  bool started = false;
+};
+
+std::mutex g_drive_mutex;
+DriveWatch g_drive;
+
+// Caller holds g_drive_mutex.
+commaview::gps::GpsPeek& gps_peek_locked() {
+  static commaview::gps::GpsPeek peek(msgq_dir());
+  return peek;
+}
+
+int drive_poll_ms() {
+#if !defined(__aarch64__)
+  if (const char* test_ms = std::getenv("COMMAVIEWD_TEST_DRIVE_POLL_MS")) {
+    const int ms = std::atoi(test_ms);
+    if (ms > 0) return ms;
+  }
+#endif
+  return 5000;
+}
+
+int after_drive_delay_sec() {
+#if !defined(__aarch64__)
+  if (std::getenv("COMMAVIEWD_TEST_DRIVE_SCRIPT") != nullptr) return 0;
+#endif
+  return kAfterDriveDelaySec;
+}
+
+// Where python3 is, searched now rather than in the child after fork.
+std::string python_path() {
+  if (access("/usr/local/venv/bin/python3", X_OK) == 0) return "/usr/local/venv/bin/python3";
+  const char* path_env = std::getenv("PATH");
+  std::stringstream dirs(path_env != nullptr ? path_env : "/usr/local/bin:/usr/bin:/bin");
+  std::string dir;
+  while (std::getline(dirs, dir, ':')) {
+    const std::string candidate = (dir.empty() ? "." : dir) + "/python3";
+    if (access(candidate.c_str(), X_OK) == 0) return candidate;
+  }
+  return "/usr/bin/python3";
+}
+
+// openpilot's own Python at the lowest priority, so the script reads the fork's logs and identity.
+// Everything is prepared before fork: the child of this threaded process only makes async-signal-
+// safe calls before exec.
+pid_t spawn_drive_script(const std::vector<std::string>& args) {
+  std::vector<std::string> argv;
+  bool test_script = false;
+#if !defined(__aarch64__)
+  if (const char* script = std::getenv("COMMAVIEWD_TEST_DRIVE_SCRIPT")) {
+    argv.push_back(script);
+    test_script = true;
+  }
+#endif
+  if (!test_script) {
+    argv.push_back(python_path());
+    argv.push_back(std::string(kInstallDir) + "/src/commaview_drive_stats.py");
+  }
+  argv.insert(argv.end(), args.begin(), args.end());
+  std::vector<char*> argv_ptrs;
+  for (auto& a : argv) argv_ptrs.push_back(const_cast<char*>(a.c_str()));
+  argv_ptrs.push_back(nullptr);
+
+  std::vector<std::string> env;
+  for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
+    if (!test_script && std::strncmp(*e, "PYTHONPATH=", 11) == 0) continue;
+    env.emplace_back(*e);
+  }
+  if (!test_script) env.emplace_back("PYTHONPATH=/data/openpilot");
+  std::vector<char*> env_ptrs;
+  for (auto& e : env) env_ptrs.push_back(const_cast<char*>(e.c_str()));
+  env_ptrs.push_back(nullptr);
+
+  const std::string log_path = drivelog_path("logs/commaview-drive-stats.log");
+  const char* workdir = test_script ? nullptr : "/data/openpilot";
+
+  const pid_t pid = fork();
+  if (pid != 0) return pid;  // the parent, or -1
+  setsid();
+  const int log_fd = open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+  if (log_fd >= 0) {
+    dup2(log_fd, STDOUT_FILENO);
+    dup2(log_fd, STDERR_FILENO);
+    close(log_fd);
+  }
+  if (workdir != nullptr && chdir(workdir) != 0) _exit(126);
+  if (nice(19) == -1) {
+    // Normal priority still beats not running.
+  }
+  execve(argv_ptrs[0], argv_ptrs.data(), env_ptrs.data());
+  _exit(127);
+}
+
+// Caller holds g_drive_mutex.
+void queue_drive_script_locked(std::vector<std::string> args, int delay_sec = 0) {
+  for (const auto& run : g_drive.queued) {
+    if (run.args == args) return;
+  }
+  g_drive.queued.push_back({std::move(args), SteadyClock::now() + std::chrono::seconds(delay_sec)});
+}
+
+void drive_watch_tick() {
+  std::lock_guard<std::mutex> lk(g_drive_mutex);
+  const auto now = SteadyClock::now();
+  if (!g_drive.started) {
+    g_drive.started = true;
+    g_drive.next_totals = now + std::chrono::seconds(90);
+  }
+  if (g_drive.script_pid > 0) {
+    int status = 0;
+    if (waitpid(g_drive.script_pid, &status, WNOHANG) != 0) {
+      g_drive.script_pid = -1;
+    } else if (now - g_drive.script_started > std::chrono::seconds(kDriveScriptTimeoutSec)) {
+      // A run stuck on the network (say) never holds up the next ones.
+      kill(g_drive.script_pid, SIGKILL);
+      waitpid(g_drive.script_pid, &status, 0);
+      g_drive.script_pid = -1;
+    }
+  }
+
+  const RoadState road = road_state();
+  if (road == RoadState::kOnroad) {
+    if (!g_drive.driving) {
+      g_drive.driving = true;
+      g_drive.started_at = now;
+      const int64_t wall = wall_ms_now();
+      g_drive.started_wall_ms = wall >= kValidWallMs ? wall : 0;
+      g_drive.route.clear();
+    }
+    // loggerd names the route a moment after the drive starts; the latest new name is this drive's.
+    const std::string route = read_param("CurrentRoute");
+    if (!route.empty() && route != g_drive.last_route) g_drive.route = route;
+    if (location_sharing_enabled()) {
+      if (auto fix = gps_peek_locked().latest()) {
+        if (g_drive.started_wall_ms == 0 || fix->fix_ms >= g_drive.started_wall_ms - 60000) g_drive.last_fix = fix;
+      }
+    } else {
+      g_drive.last_fix.reset();
+    }
+  } else if (road == RoadState::kOffroad && g_drive.driving) {
+    g_drive.driving = false;
+    const int64_t duration_sec = std::chrono::duration_cast<std::chrono::seconds>(now - g_drive.started_at).count();
+    // Where this drive ended: the comma's last fix, kept only while location is on.
+    if (g_drive.last_fix && location_sharing_enabled()) {
+      mkdir(drivelog_path("data").c_str(), 0700);
+      write_file_atomic(drivelog_path("data/location-last.json"),
+                        comma_fix_json(*g_drive.last_fix, ",\"endedMs\":" + std::to_string(wall_ms_now())) + "\n");
+    }
+    g_drive.last_fix.reset();
+    if (duration_sec >= kMinDriveSec) {
+      const int64_t end_wall = wall_ms_now();
+      queue_drive_script_locked({"after-drive", "--route", g_drive.route,
+                                 "--start-ms", std::to_string(g_drive.started_wall_ms),
+                                 "--end-ms", std::to_string(end_wall >= kValidWallMs ? end_wall : 0),
+                                 "--duration-s", std::to_string(duration_sec)},
+                                after_drive_delay_sec());
+      g_drive.next_totals = now + std::chrono::seconds(kTotalsRefreshSec);
+    }
+    if (!g_drive.route.empty()) g_drive.last_route = g_drive.route;
+  }
+
+  if (road == RoadState::kOffroad && now >= g_drive.next_totals) {
+    queue_drive_script_locked({"totals"});
+    g_drive.next_totals = now + std::chrono::seconds(kTotalsRefreshSec);
+  }
+
+  // One run at a time, in order. While the car is on only the position fallback runs, so reading a
+  // drive's logs or asking comma never competes with driving; parked, a leftover position run is dropped.
+  for (auto it = g_drive.queued.begin(); g_drive.script_pid <= 0 && it != g_drive.queued.end();) {
+    const bool position_run = !it->args.empty() && it->args.front() == "position";
+    if (road == RoadState::kOffroad && position_run) {
+      it = g_drive.queued.erase(it);
+      continue;
+    }
+    if (now < it->not_before || (road != RoadState::kOffroad && !position_run)) {
+      ++it;
+      continue;
+    }
+    const DriveScriptRun run = *it;
+    g_drive.queued.erase(it);
+    g_drive.script_pid = spawn_drive_script(run.args);
+    g_drive.script_started = now;
+    break;
+  }
+}
+
+void start_drive_watcher() {
+  std::thread([] {
+    while (true) {
+      drive_watch_tick();
+      std::this_thread::sleep_for(std::chrono::milliseconds(drive_poll_ms()));
+    }
+  }).detach();
+}
+
+// A phone looking at stats that are half an hour old asks for comma's totals again (while parked).
+void request_totals_if_stale() {
+  if (road_state() != RoadState::kOffroad) return;
+  const int64_t updated_ms = file_mtime_ms(drivelog_path("data/drive-stats.json"));
+  if (updated_ms > 0 && wall_ms_now() - updated_ms < static_cast<int64_t>(kTotalsStaleSec) * 1000) return;
+  std::lock_guard<std::mutex> lk(g_drive_mutex);
+  const auto now = SteadyClock::now();
+  if (g_drive.last_totals_request.time_since_epoch().count() != 0 &&
+      now - g_drive.last_totals_request < std::chrono::seconds(kTotalsRequestGapSec)) {
+    return;
+  }
+  g_drive.last_totals_request = now;
+  queue_drive_script_locked({"totals"});
+}
+
+std::string drive_stats_response_json() {
+  request_totals_if_stale();
+  std::string current = "null";
+  {
+    std::lock_guard<std::mutex> lk(g_drive_mutex);
+    if (g_drive.driving) {
+      const int64_t duration_sec = std::chrono::duration_cast<std::chrono::seconds>(SteadyClock::now() - g_drive.started_at).count();
+      const int64_t wall = wall_ms_now();
+      const int64_t start_ms = g_drive.started_wall_ms > 0 ? g_drive.started_wall_ms : (wall >= kValidWallMs ? wall - duration_sec * 1000 : 0);
+      if (start_ms > 0) {
+        current = "{\"startMs\":" + std::to_string(start_ms) + ",\"durationS\":" + std::to_string(duration_sec) + "}";
+      }
+    }
+  }
+  std::ostringstream out;
+  out << "{\"ok\":true,\"onroad\":" << (road_state() == RoadState::kOnroad ? "true" : "false")
+      << ",\"current\":" << current
+      << ",\"ledger\":" << embedded_json_object(drivelog_path("data/drives.json"))
+      << ",\"totals\":" << embedded_json_object(drivelog_path("data/drive-stats.json")) << "}";
+  return out.str();
+}
+
+// While driving: sunnypilot's current position, else the comma's own newest GPS fix read from
+// openpilot's msgq ring without subscribing. If neither answers (say msgq's layout changed), the
+// position at the end of the drive's last finished log minute, asked for about once a minute.
+std::string live_location_json() {
+  const std::string sunnypilot = sunnypilot_position_json(memory_params_dir() + "/LastGPSPosition", kLivePositionMaxAgeSec);
+  if (sunnypilot != "null") return sunnypilot;
+  {
+    std::lock_guard<std::mutex> lk(g_drive_mutex);
+    if (auto fix = gps_peek_locked().latest()) {
+      const int64_t age_ms = wall_ms_now() - fix->fix_ms;
+      if (age_ms >= -5000 && age_ms <= static_cast<int64_t>(kLivePositionMaxAgeSec) * 1000) return comma_fix_json(*fix);
+    }
+    const auto now = SteadyClock::now();
+    if (g_drive.driving && !g_drive.route.empty() &&
+        (g_drive.last_position_run.time_since_epoch().count() == 0 ||
+         now - g_drive.last_position_run >= std::chrono::seconds(kPositionRunGapSec))) {
+      g_drive.last_position_run = now;
+      queue_drive_script_locked({"position", "--route", g_drive.route});
+    }
+  }
+  return embedded_json_object(drivelog_live_dir() + "/location-log.json");
+}
+
+// Where the last drive ended: from its log, else the position sunnypilot saves once a minute.
+std::string last_location_json() {
+  const std::string from_log = embedded_json_object(drivelog_path("data/location-last.json"));
+  if (from_log != "null") return from_log;
+  return sunnypilot_position_json(params_path("LastGPSPositionLLK"), 0);
+}
+
+std::string location_response_json() {
+  const bool enabled = location_sharing_enabled();
+  const bool onroad = road_state() == RoadState::kOnroad;
+  std::ostringstream out;
+  out << "{\"ok\":true,\"enabled\":" << (enabled ? "true" : "false")
+      << ",\"onroad\":" << (onroad ? "true" : "false")
+      << ",\"live\":" << (enabled && onroad ? live_location_json() : "null")
+      << ",\"last\":" << (enabled ? last_location_json() : "null") << "}";
+  return out.str();
+}
+
+std::string location_set_response(const std::string& body) {
+  bool enabled = false;
+  if (!extract_bool_field(body, "enabled", &enabled)) {
+    return "{\"ok\":false,\"error\":\"enabled must be true or false\"}";
+  }
+  mkdir(drivelog_path("config").c_str(), 0755);
+  if (!write_file_atomic(drivelog_path("config/location.json"),
+                         enabled ? "{\"enabled\":true}\n" : "{\"enabled\":false}\n")) {
+    return "{\"ok\":false,\"error\":\"Could not save the location setting\"}";
+  }
+  if (!enabled) {
+    unlink((drivelog_live_dir() + "/location-log.json").c_str());
+    unlink(drivelog_path("data/location-last.json").c_str());
+  }
+  return std::string("{\"ok\":true,\"enabled\":") + (enabled ? "true" : "false") + "}";
+}
+
 bool extract_pair_code(const std::string& body, std::string* code_out) {
   return extract_raw_string_field(body, "pairCode", code_out) ||
          extract_raw_string_field(body, "code", code_out);
@@ -979,6 +1489,13 @@ commaview::api::HttpResponse handle_get(const commaview::api::HttpRequest& req, 
     }
     return make_json(200, support_logs_response_json());
   }
+  if (req.path == "/commaview/drive-stats" || req.path == "/commaview/location") {
+    // Where and how this comma drives is private: only a paired phone may ask.
+    if (api_token.empty() || !is_authorized(req, api_token)) {
+      return make_json(401, kUnauthorizedJson);
+    }
+    return make_json(200, req.path == "/commaview/location" ? location_response_json() : drive_stats_response_json());
+  }
   return make_json(404, "{\"error\":\"not found\"}");
 }
 
@@ -1000,6 +1517,14 @@ commaview::api::HttpResponse handle_post(const commaview::api::HttpRequest& req,
 
   if (req.path == "/pairing/create") {
     return make_json(200, pairing_create(api_token));
+  }
+
+  if (req.path == "/commaview/location") {
+    if (api_token.empty()) {
+      return make_json(401, kUnauthorizedJson);
+    }
+    const std::string body = location_set_response(req.body);
+    return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 400, body);
   }
 
   if (req.path == "/commaview/wifi/power-save") {
@@ -1073,6 +1598,7 @@ int run_control_mode(int argc, char* argv[]) {
   std::printf("commaviewd control: listening on :%d\n", port);
   std::fflush(stdout);
   start_discovery_responder();
+  start_drive_watcher();
 
   server.serve_forever();
   return 0;

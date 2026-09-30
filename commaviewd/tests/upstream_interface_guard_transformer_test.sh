@@ -18,6 +18,21 @@ manifest="$tmpdir/manifest.json"
 source_root="$op_root/cereal"
 mkdir -p "$source_root"
 
+# The lines of openpilot's msgq ring that live location's read-only GPS reader relies on.
+write_msgq_fixture() {
+  mkdir -p "$1/msgq_repo/msgq"
+  cat > "$1/msgq_repo/msgq/msgq.h" <<'H'
+struct msgq_header_t { uint64_t num_readers; uint64_t write_pointer; };
+H
+  cat > "$1/msgq_repo/msgq/msgq.cc" <<'CC'
+  q->data = mem + sizeof(msgq_header_t);
+  uint64_t total_msg_size = ALIGN(msg->size + sizeof(int64_t));
+    *(int64_t*)p = -1;
+  PACK64(*q->write_pointer, write_cycles, new_ptr);
+CC
+}
+write_msgq_fixture "$op_root"
+
 cat > "$source_root/services.py" <<'PY'
 roadEncodeData = None
 wideRoadEncodeData = None
@@ -43,6 +58,8 @@ carParams = None
 roadCameraState = None
 pandaStates = None
 wideRoadCameraState = None
+gpsLocationExternal = None
+gpsLocation = None
 PY
 
 cat > "$source_root/log.capnp" <<'CAPNP'
@@ -87,6 +104,12 @@ frameId
 timestampEof
 timestampSof
 sensor
+gpsLocationExternal
+gpsLocation
+hasFix
+horizontalAccuracy
+bearingDeg
+unixTimestampMillis
 CAPNP
 
 git -C "$op_root" init -q
@@ -146,6 +169,7 @@ sed -e 's/liveCalibration/extrinsicsCalibration/g' \
     -e 's/roadEncodeData/narrowRoadEncodeData/g' \
     -e 's/driverEncodeData/cabinEncodeData/g' \
     "$source_root/log.capnp" > "$current_op_root/cereal/log.capnp"
+write_msgq_fixture "$current_op_root"
 git -C "$current_op_root" init -q
 git -C "$current_op_root" remote add origin https://github.com/commaai/openpilot.git
 
@@ -181,10 +205,26 @@ fi
 
 echo "PASS: upstream interface guard rejects a missing encoded-video alias"
 
+ring_op_root="$tmpdir/openpilot-ring"
+cp -a "$current_op_root" "$ring_op_root"
+sed -i 's/\*(int64_t\*)p = -1;/*(int64_t*)p = WRAP_TAG;/' "$ring_op_root/msgq_repo/msgq/msgq.cc"
+if ring_output="$(OP_ROOT="$ring_op_root" "$GUARD" --manifest "$tmpdir/ring-manifest.json" 2>&1)"; then
+  echo "FAIL: guard accepted a msgq ring whose wrap tag changed" >&2
+  exit 1
+fi
+printf '%s\n' "$ring_output" | grep -Fq 'msgq-ring:*(int64_t*)p = -1;' || {
+  printf '%s\n' "$ring_output" >&2
+  echo "FAIL: guard did not name the changed msgq ring line" >&2
+  exit 1
+}
+
+echo "PASS: upstream interface guard rejects a changed msgq ring"
+
 nested_op_root="$tmpdir/openpilot-nested"
 nested_manifest="$tmpdir/nested-manifest.json"
 mkdir -p "$nested_op_root/openpilot"
 cp -a "$op_root/cereal" "$nested_op_root/openpilot/cereal"
+write_msgq_fixture "$nested_op_root/openpilot"
 git -C "$nested_op_root" init -q
 git -C "$nested_op_root" remote add origin https://github.com/commaai/openpilot.git
 
