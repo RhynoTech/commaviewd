@@ -50,5 +50,6 @@ assert_contains "device-test-manifest.json" "$WORKFLOW" "device-test workflow sh
 assert_contains "sha256sum" "$WORKFLOW" "device-test workflow should print checksum information"
 assert_not_contains "gh release" "$WORKFLOW" "device-test workflow must not create or edit GitHub releases"
 assert_not_contains "update-firebase-current-release" "$WORKFLOW" "device-test workflow must not update current release pointers"
+assert_not_contains "publish-current-release" "$WORKFLOW" "device-test workflow must not update current release pointers"
 
 printf 'PASS: device-test workflow contract validates non-release RC artifacts\n'

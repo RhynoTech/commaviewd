@@ -16,13 +16,15 @@ on:
         default: false
         type: boolean
       promote_current:
-        description: 'Promote this runtime tag to Firebase current-release after publishing assets'
+        description: 'Promote this runtime tag to the current release after publishing assets'
         required: false
         default: false
         type: boolean
 
 permissions:
   contents: write
+  # Keyless sign-in to Google Cloud as the release account (publish-current-release.mjs).
+  id-token: write
 
 concurrency:
   group: commaviewd-release-${{ github.ref }}
@@ -221,18 +223,28 @@ jobs:
           ref: master
           path: release-control
 
-      - name: Promote Firebase current runtime release
+      # No key: GitHub's OIDC token signs in as the release account (RhynoTech/commaview-web,
+      # account/terraform/releases.tf), which may only get ID tokens for the account services.
+      - name: Sign in to Google Cloud (release account)
+        id: gcp
+        if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/263004041190/locations/global/workloadIdentityPools/commaview-github/providers/commaview-releases
+          service_account: commaview-release@commaview.iam.gserviceaccount.com
+          token_format: access_token
+
+      - name: Promote current runtime release
         if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true
         env:
-          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
-          # The account services' /api/current-release, replacing Firestore (RhynoTech/commaview-web,
-          # account/): production (commaview.com/api/current-release) and staging. Firestore is still
-          # written until Firebase is retired; until then a failure here only warns.
+          GOOGLE_ACCESS_TOKEN: ${{ steps.gcp.outputs.access_token }}
+          RELEASE_ACCOUNT: commaview-release@commaview.iam.gserviceaccount.com
+          # The account services' /api/current-release (RhynoTech/commaview-web, account/):
+          # production (commaview.com/api/current-release) first, then staging.
           ACCOUNT_SERVICE_URLS: https://my.commaview.com,https://my-staging.commaview.com
         run: |
           set -euo pipefail
           TAG='${{ steps.vars.outputs.tag }}'
-          node release-control/scripts/update-firebase-current-release.mjs \
+          node release-control/scripts/publish-current-release.mjs \
             --runtime-tag "$TAG" \
-            --project commaview \
             --publish-url "$ACCOUNT_SERVICE_URLS"
