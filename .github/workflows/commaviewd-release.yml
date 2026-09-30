@@ -281,7 +281,11 @@ jobs:
           RELEASE_ACCOUNT: commaview-release@commaview.iam.gserviceaccount.com
           # The account services' /api/current-release (RhynoTech/commaview-web, account/):
           # production (commaview.com/api/current-release) first, then staging.
-          ACCOUNT_SERVICE_URLS: https://my.commaview.com,https://my-staging.commaview.com
+          # Each service's public address (the ID token's audience) | its Cloud Run address, which
+          # CI calls directly: Cloudflare's bot challenge stops GitHub's runners at the public one.
+          ACCOUNT_SERVICE_URLS: >-
+            https://my.commaview.com|https://commaview-account-xpdgughraq-uk.a.run.app,
+            https://my-staging.commaview.com|https://commaview-account-staging-xpdgughraq-uk.a.run.app
         run: |
           set -euo pipefail
           TAG='${{ steps.vars.outputs.tag }}'

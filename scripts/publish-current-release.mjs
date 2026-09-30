@@ -51,11 +51,20 @@ function compareRuntimeTags(left, right) {
   return 0;
 }
 
+/**
+ * The account services: "https://my.commaview.com", or "https://my.commaview.com|https://<service>.run.app"
+ * to send requests to the service's own address (past Cloudflare, whose bot challenge stops CI)
+ * while the ID token still names the public address, which the service checks.
+ */
 function publishOrigins(value) {
-  return (value ?? '').split(',').map((item) => item.trim()).filter(Boolean).map((item) => {
+  const https = (item) => {
     const url = new URL(item);
     if (url.protocol !== 'https:' || url.username || url.password) throw new Error(`Invalid publish URL: ${item}`);
     return url.origin;
+  };
+  return (value ?? '').split(',').map((item) => item.trim()).filter(Boolean).map((item) => {
+    const [audience, direct] = item.split('|').map((part) => part.trim());
+    return { audience: https(audience), url: https(direct || audience) };
   });
 }
 
@@ -78,9 +87,9 @@ async function idToken(accessToken, account, audience) {
 
 /** The runtime tag the account service serves now, or null before its first release. */
 async function currentRuntimeTag(origin) {
-  const response = await fetch(`${origin}/api/current-release`, { headers: { Accept: 'application/json' } });
+  const response = await fetch(`${origin.url}/api/current-release`, { headers: { Accept: 'application/json' } });
   if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`GET ${origin}/api/current-release failed with ${response.status}`);
+  if (!response.ok) throw new Error(`GET ${origin.audience}/api/current-release failed with ${response.status}`);
   return (await response.json()).runtimeTag ?? null;
 }
 
@@ -93,7 +102,7 @@ async function main() {
   const body = { runtimeTag: tag };
 
   if (args['dry-run'] === 'true') {
-    for (const origin of origins) console.log(`Would publish to ${origin}/api/current-release: ${JSON.stringify(body)}`);
+    for (const origin of origins) console.log(`Would publish to ${origin.audience}/api/current-release (via ${origin.url}): ${JSON.stringify(body)}`);
     return;
   }
 
@@ -112,16 +121,16 @@ async function main() {
 
 async function publishToAccountServices(origins, accessToken, account, body) {
   for (const origin of origins) {
-    const token = await idToken(accessToken, account, origin);
-    const response = await fetch(`${origin}/api/current-release`, {
+    const token = await idToken(accessToken, account, origin.audience);
+    const response = await fetch(`${origin.url}/api/current-release`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      throw new Error(`Publishing to ${origin} failed with ${response.status}: ${await response.text()}`);
+      throw new Error(`Publishing to ${origin.audience} failed with ${response.status}: ${await response.text()}`);
     }
-    console.log(`Published runtime ${body.runtimeTag} to ${origin}`);
+    console.log(`Published runtime ${body.runtimeTag} to ${origin.audience}`);
   }
 }
 
