@@ -1,5 +1,8 @@
 name: commaviewd-ci
 
+# CI is the last check before a change lands, not the way to test it: run scripts/ci-local.sh
+# while you work. A pull request runs once it's ready for review (drafts don't); master runs on
+# every push.
 on:
   push:
     branches: [master]
@@ -10,8 +13,9 @@ on:
       - 'tools/**'
       - 'scripts/**'
       - 'ci/**'
-      - '.github/workflows/**'
+      - '.github/workflows/commaviewd-ci.yml'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'commaviewd/**'
       - 'comma/**'
@@ -19,9 +23,12 @@ on:
       - 'tools/**'
       - 'scripts/**'
       - 'ci/**'
-      - '.github/workflows/**'
+      - '.github/workflows/commaviewd-ci.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
 
 concurrency:
   group: commaviewd-ci-${{ github.ref }}
@@ -31,56 +38,67 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # The targets are in ci/targets.json. Targets on the same upstream commit share one
+  # verification build (ci/plan-targets.py); every target checks its UI export patch applies.
+  plan:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      passed: ${{ steps.earlier.outputs.passed }}
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      # A fast-forwarded pull request lands on master as the very commit its run already
+      # passed: say so and skip the verification.
+      - name: Skip if this commit already passed
+        id: earlier
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          passed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/commaviewd-ci.yml/runs?head_sha=$GITHUB_SHA&status=success&per_page=1" --jq '.total_count')"
+          if [[ "$passed" != "0" ]]; then
+            echo "::notice::commaviewd-ci already passed for $GITHUB_SHA; skipping the verification."
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout CommaView
+        if: steps.earlier.outputs.passed != 'true'
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: ci
+
+      - name: Plan the targets
+        id: plan
+        if: steps.earlier.outputs.passed != 'true'
+        run: |
+          set -euo pipefail
+          targets="$(ci/plan-targets.py)"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          {
+            echo "### commaviewd-ci targets"
+            jq -r '.[] | "- \(.name): `\(.upstream_repo)@\(.upstream_ref)` `\(.sha)`, " + (if .run_verification then "verification build" else "patch applicability only (\(.why))" end)' <<<"$targets"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
   verify:
     name: verify (${{ matrix.target.name }})
+    needs: plan
+    if: needs.plan.outputs.passed != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        # Every target runs the full verification pipeline unless it sets run_verification: false.
-        target:
-          - name: openpilot-release-mici
-            upstream_repo: commaai/openpilot
-            upstream_ref: release-mici
-            ui_platform: mici
-          - name: openpilot-release-tizi
-            upstream_repo: commaai/openpilot
-            upstream_ref: release-tizi
-            ui_platform: tizi
-          # openpilot releases for devices with the chestnut external GPU (0.11.2 onward).
-          - name: openpilot-release-chestnut-mici
-            upstream_repo: commaai/openpilot
-            upstream_ref: release-chestnut
-            ui_platform: mici
-          - name: openpilot-release-chestnut-tizi
-            upstream_repo: commaai/openpilot
-            upstream_ref: release-chestnut
-            ui_platform: tizi
-          - name: openpilot-release-tici
-            upstream_repo: commaai/openpilot
-            upstream_ref: release-tici
-            ui_platform: tici
-            run_verification: false
-          - name: sunnypilot-release-mici
-            upstream_repo: sunnypilot/sunnypilot
-            upstream_ref: release-mici
-            ui_platform: mici
-          - name: sunnypilot-release-tizi
-            upstream_repo: sunnypilot/sunnypilot
-            upstream_ref: release-tizi
-            ui_platform: tizi
-          # The exact sunnypilot source the release workflow builds from (ci/upstream-refs.env).
-          - name: sunnypilot-release-pin
-            upstream_repo: sunnypilot/openpilot
-            upstream_ref: release-pin
-            ui_platform: mici
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
 
     steps:
       - name: Checkout CommaView
         uses: actions/checkout@v6
 
+      # The cross toolchain is for the verification build; the patch check needs none.
       - name: Restore apt package cache
+        if: matrix.target.run_verification
         uses: actions/cache@v5
         with:
           path: ~/.cache/commaview-apt/archives
@@ -89,41 +107,23 @@ jobs:
             apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-
 
       - name: Install toolchain + deps
+        if: matrix.target.run_verification
         id: armcapnp
         run: ./scripts/install-commaviewd-toolchain.sh
-
-      - name: Resolve upstream SHA
-        id: upstream
-        run: |
-          set -euo pipefail
-          REPO='${{ matrix.target.upstream_repo }}'
-          REF='${{ matrix.target.upstream_ref }}'
-          if [[ "$REF" == "release-pin" ]]; then
-            . ci/upstream-refs.env
-            REF="${COMMAVIEWD_RELEASE_SUNNYPILOT_REF:?missing COMMAVIEWD_RELEASE_SUNNYPILOT_REF in ci/upstream-refs.env}"
-          fi
-          SHA="$(git ls-remote "https://github.com/${REPO}.git" "refs/heads/${REF}" | awk '{print $1}')"
-          if [[ -z "$SHA" ]]; then
-            SHA="$(git ls-remote "https://github.com/${REPO}.git" "refs/tags/${REF}" | awk '{print $1}')"
-          fi
-          if [[ -z "$SHA" ]]; then
-            SHA="$REF"
-          fi
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Restore upstream source cache
         id: upstream-cache
         uses: actions/cache@v5
         with:
           path: openpilot-src
-          key: upstream-src-sparse-${{ runner.os }}-${{ matrix.target.upstream_repo }}-${{ steps.upstream.outputs.sha }}
+          key: upstream-src-sparse-${{ runner.os }}-${{ matrix.target.upstream_repo }}-${{ matrix.target.sha }}
 
       - name: Checkout upstream source
         if: steps.upstream-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v6
         with:
           repository: ${{ matrix.target.upstream_repo }}
-          ref: ${{ steps.upstream.outputs.sha }}
+          ref: ${{ matrix.target.sha }}
           path: openpilot-src
           submodules: recursive
           # commaviewd never reads the driving models, which are most of a release tree (1.8 of
@@ -147,9 +147,7 @@ jobs:
 
 
       - name: Run commaviewd verification pipeline
-        # toJSON keeps an unset run_verification ("null") running; a bare != false comparison
-        # coerces null to false and silently skipped verification for every target.
-        if: ${{ toJSON(matrix.target.run_verification) != 'false' }}
+        if: matrix.target.run_verification
         env:
           OP_ROOT: ${{ github.workspace }}/openpilot-src
           ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
@@ -167,7 +165,7 @@ jobs:
           {
             echo "### commaviewd verification (${{ matrix.target.name }})"
             echo "- Upstream: \`${{ matrix.target.upstream_repo }}@${{ matrix.target.upstream_ref }}\`"
-            echo "- Upstream SHA: \`${{ steps.upstream.outputs.sha }}\`"
+            echo "- Upstream SHA: \`${{ matrix.target.sha }}\`"
             echo "- Upstream source cache hit: \`${{ steps.upstream-cache.outputs.cache-hit || 'false' }}\`"
             if [[ -f dist/upstream-interface-manifest.json ]]; then
               echo "- Interface manifest: dist/upstream-interface-manifest.json"
@@ -182,7 +180,7 @@ jobs:
               echo "- Onroad UI export status: dist/onroad-ui-export-status.json"
             fi
             if [[ '${{ matrix.target.run_verification }}' == 'false' ]]; then
-              echo "- Runtime verification: skipped for legacy upstream ABI; patch applicability only"
+              echo "- Runtime verification: skipped (${{ matrix.target.why }}); patch applicability only"
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 

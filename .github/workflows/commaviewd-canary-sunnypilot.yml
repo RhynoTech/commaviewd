@@ -36,21 +36,6 @@ jobs:
 
 
     steps:
-      - name: Checkout CommaView
-        uses: actions/checkout@v6
-
-      - name: Restore apt package cache
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/commaview-apt/archives
-          key: apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-v1
-          restore-keys: |
-            apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-
-
-      - name: Install toolchain + deps
-        id: armcapnp
-        run: ./scripts/install-commaviewd-toolchain.sh
-
       - name: Resolve upstream SHA
         id: upstream
         run: |
@@ -65,7 +50,36 @@ jobs:
           fi
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
+      # A canary only has news when upstream or commaviewd moved: the pair it last passed with
+      # leaves a marker, and an unchanged pair skips the run.
+      - name: Check for an earlier pass
+        id: earlier
+        uses: actions/cache/restore@v5
+        with:
+          path: .canary-pass
+          key: canary-pass-v1-sunnypilot-sunnypilot-${{ matrix.target.upstream_ref }}-${{ matrix.target.ui_platform }}-${{ steps.upstream.outputs.sha }}-${{ github.sha }}
+          lookup-only: true
+
+      - name: Checkout CommaView
+        if: steps.earlier.outputs.cache-hit != 'true'
+        uses: actions/checkout@v6
+
+      - name: Restore apt package cache
+        if: steps.earlier.outputs.cache-hit != 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/commaview-apt/archives
+          key: apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-v1
+          restore-keys: |
+            apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-
+
+      - name: Install toolchain + deps
+        if: steps.earlier.outputs.cache-hit != 'true'
+        id: armcapnp
+        run: ./scripts/install-commaviewd-toolchain.sh
+
       - name: Restore upstream source cache
+        if: steps.earlier.outputs.cache-hit != 'true'
         id: upstream-cache
         uses: actions/cache@v5
         with:
@@ -73,7 +87,7 @@ jobs:
           key: upstream-src-sparse-${{ runner.os }}-sunnypilot-sunnypilot-${{ steps.upstream.outputs.sha }}
 
       - name: Checkout sunnypilot source
-        if: steps.upstream-cache.outputs.cache-hit != 'true'
+        if: ${{ (steps.upstream-cache.outputs.cache-hit != 'true') && steps.earlier.outputs.cache-hit != 'true' }}
         uses: actions/checkout@v6
         with:
           repository: sunnypilot/sunnypilot
@@ -90,6 +104,7 @@ jobs:
             !/openpilot/selfdrive/modeld/models/
           sparse-checkout-cone-mode: false
       - name: Transformer onroad UI export applicability check
+        if: steps.earlier.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
           mkdir -p dist
@@ -102,6 +117,7 @@ jobs:
 
 
       - name: Run commaviewd verification pipeline
+        if: steps.earlier.outputs.cache-hit != 'true'
         env:
           OP_ROOT: ${{ github.workspace }}/openpilot-src
           ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
@@ -112,6 +128,7 @@ jobs:
           commaviewd/scripts/run-verification.sh
 
       - name: "CI guard: enforce telemetry mode is production-hardening safe"
+        if: steps.earlier.outputs.cache-hit != 'true'
         run: ./scripts/verify-telemetry-hardening.sh
 
       - name: Verification summary
@@ -120,6 +137,9 @@ jobs:
           {
             echo "### early drift canary verification (sunnypilot/${{ matrix.target.upstream_ref }})"
             echo "- Upstream SHA: \`${{ steps.upstream.outputs.sha }}\`"
+            if [[ '${{ steps.earlier.outputs.cache-hit }}' == 'true' ]]; then
+              echo "- Skipped: this upstream SHA already passed with commaviewd \`${{ github.sha }}\`"
+            fi
             echo "- Upstream source cache hit: \`${{ steps.upstream-cache.outputs.cache-hit || 'false' }}\`"
             if [[ -f dist/upstream-interface-manifest.json ]]; then
               echo "- Interface manifest: dist/upstream-interface-manifest.json"
@@ -148,3 +168,14 @@ jobs:
             dist/onroad-ui-export-status.json
           if-no-files-found: warn
           retention-days: 3
+
+      - name: Record this pass
+        if: success() && steps.earlier.outputs.cache-hit != 'true'
+        run: mkdir -p .canary-pass && echo '${{ steps.upstream.outputs.sha }}' > .canary-pass/sha
+
+      - name: Save the pass marker
+        if: success() && steps.earlier.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .canary-pass
+          key: canary-pass-v1-sunnypilot-sunnypilot-${{ matrix.target.upstream_ref }}-${{ matrix.target.ui_platform }}-${{ steps.upstream.outputs.sha }}-${{ github.sha }}
