@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 WORKFLOW="$REPO_ROOT/.github/workflows/commaviewd-ci.yml"
+VERIFY="$REPO_ROOT/.github/workflows/commaviewd-verify.yml"
 
 assert_file() {
   [[ -f "$1" ]] || { echo "FAIL: missing $1" >&2; exit 1; }
@@ -20,6 +21,7 @@ TARGETS="$REPO_ROOT/ci/targets.json"
 PLAN="$REPO_ROOT/ci/plan-targets.py"
 
 assert_file "$WORKFLOW"
+assert_file "$VERIFY"
 assert_file "$TARGETS"
 assert_file "$PLAN"
 python3 -m json.tool "$TARGETS" >/dev/null || { echo "FAIL: ci/targets.json is not valid JSON" >&2; exit 1; }
@@ -43,16 +45,18 @@ assert_contains '"name": "sunnypilot-release-pin"' "$TARGETS" "commaviewd CI sho
 assert_contains 'upstream-refs.env' "$PLAN" "commaviewd CI should resolve the release pin from ci/upstream-refs.env"
 assert_contains 'COMMAVIEWD_RELEASE_SUNNYPILOT_REF' "$PLAN" "commaviewd CI should resolve the release pin from ci/upstream-refs.env"
 # An unset run_verification means "verify": only an explicit false opts a target out.
-assert_contains 't.get("run_verification", True) is False' "$PLAN" "commaviewd CI should run verification unless a target opts out"
+assert_contains 't.get("run_verification", True) is not False' "$PLAN" "commaviewd CI should run verification unless a target opts out"
 
-# The workflow.
+# The workflows: commaviewd-ci runs commaviewd-verify on ci/targets.json.
 assert_contains "comma4/install.sh" "$WORKFLOW" "commaviewd CI should run when the legacy install shim changes"
-assert_contains "ci/plan-targets.py" "$WORKFLOW" "commaviewd CI should plan its targets with ci/plan-targets.py"
-assert_contains 'target: ${{ fromJSON(needs.plan.outputs.targets) }}' "$WORKFLOW" "commaviewd CI matrix should come from the plan"
-assert_contains '--platform "${{ matrix.target.ui_platform }}"' "$WORKFLOW" "commaviewd CI should pass explicit MICI/TICI/TIZI platform"
-assert_contains 'ref: ${{ matrix.target.sha }}' "$WORKFLOW" "commaviewd CI upstream checkout should be pinned to the planned SHA"
-assert_contains 'if: matrix.target.run_verification' "$WORKFLOW" "commaviewd CI should run verification for the targets the plan picks"
-if grep -Fq 'run_verification != false }}' "$WORKFLOW"; then
+assert_contains "uses: ./.github/workflows/commaviewd-verify.yml" "$WORKFLOW" "commaviewd CI should run the shared verification workflow"
+assert_contains "targets: ci/targets.json" "$WORKFLOW" "commaviewd CI should verify ci/targets.json"
+assert_contains "ci/plan-targets.py" "$VERIFY" "commaviewd CI should plan its targets with ci/plan-targets.py"
+assert_contains 'target: ${{ fromJSON(needs.plan.outputs.targets) }}' "$VERIFY" "commaviewd CI matrix should come from the plan"
+assert_contains '--platform "${{ matrix.target.ui_platform }}"' "$VERIFY" "commaviewd CI should pass explicit MICI/TICI/TIZI platform"
+assert_contains 'ref: ${{ matrix.target.sha }}' "$VERIFY" "commaviewd CI upstream checkout should be pinned to the planned SHA"
+assert_contains 'if: matrix.target.run_verification' "$VERIFY" "commaviewd CI should run verification for the targets the plan picks"
+if grep -Fq 'run_verification != false }}' "$VERIFY"; then
   echo "FAIL: 'run_verification != false' treats an unset key as false and skips verification" >&2
   exit 1
 fi

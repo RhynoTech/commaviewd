@@ -1,189 +1,25 @@
 name: commaviewd-canary-openpilot
 
+# Early warning that upstream openpilot branches (ci/canary-openpilot.json) drifted away from
+# commaviewd.
+# The checks are commaviewd-verify.yml's: a target whose upstream commit already passed with the
+# same commaviewd content (here, in CI, or in another canary) is skipped, so a quiet week costs
+# only the plan.
 on:
   schedule:
     - cron: '23 7 * * 1,4'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
   group: commaviewd-canary-openpilot
   cancel-in-progress: false
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   verify:
-    name: Early drift canary verify (${{ matrix.target.upstream_ref }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - upstream_ref: nightly
-            ui_platform: tizi
-            run_verification: false
-          - upstream_ref: nightly-dev
-            ui_platform: tizi
-            run_verification: false
-          - upstream_ref: master
-            ui_platform: mici
-            run_verification: false
-          - upstream_ref: release-mici-staging
-            ui_platform: mici
-          - upstream_ref: release-tizi-staging
-            ui_platform: tizi
-          - upstream_ref: release-chestnut-staging
-            ui_platform: mici
-
-
-    steps:
-      - name: Resolve upstream SHA
-        id: upstream
-        run: |
-          set -euo pipefail
-          REF='${{ matrix.target.upstream_ref }}'
-          SHA="$(git ls-remote "https://github.com/commaai/openpilot.git" "refs/heads/${REF}" | awk '{print $1}')"
-          if [[ -z "$SHA" ]]; then
-            SHA="$(git ls-remote "https://github.com/commaai/openpilot.git" "refs/tags/${REF}" | awk '{print $1}')"
-          fi
-          if [[ -z "$SHA" ]]; then
-            SHA="$REF"
-          fi
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-
-      # A canary only has news when upstream or commaviewd moved: the pair it last passed with
-      # leaves a marker, and an unchanged pair skips the run.
-      - name: Check for an earlier pass
-        id: earlier
-        uses: actions/cache/restore@v5
-        with:
-          path: .canary-pass
-          key: canary-pass-v1-commaai-openpilot-${{ matrix.target.upstream_ref }}-${{ matrix.target.ui_platform }}-${{ steps.upstream.outputs.sha }}-${{ github.sha }}
-          lookup-only: true
-
-      - name: Checkout CommaView
-        if: steps.earlier.outputs.cache-hit != 'true'
-        uses: actions/checkout@v6
-
-      - name: Restore apt package cache
-        if: ${{ toJSON(matrix.target.run_verification) != 'false' && steps.earlier.outputs.cache-hit != 'true' }}
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/commaview-apt/archives
-          key: apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-v1
-          restore-keys: |
-            apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-
-
-      - name: Install toolchain + deps
-        if: ${{ toJSON(matrix.target.run_verification) != 'false' && steps.earlier.outputs.cache-hit != 'true' }}
-        id: armcapnp
-        run: ./scripts/install-commaviewd-toolchain.sh
-
-      - name: Restore upstream source cache
-        if: steps.earlier.outputs.cache-hit != 'true'
-        id: upstream-cache
-        uses: actions/cache@v5
-        with:
-          path: openpilot-src
-          key: upstream-src-sparse-${{ runner.os }}-commaai-openpilot-${{ steps.upstream.outputs.sha }}
-
-      - name: Checkout openpilot source
-        if: ${{ (steps.upstream-cache.outputs.cache-hit != 'true') && steps.earlier.outputs.cache-hit != 'true' }}
-        uses: actions/checkout@v6
-        with:
-          repository: commaai/openpilot
-          ref: ${{ steps.upstream.outputs.sha }}
-          path: openpilot-src
-          submodules: recursive
-          # commaviewd never reads the driving models, which are most of a release tree (1.8 of
-          # 2.0 GB on release-chestnut). A blobless sparse checkout leaves them out, which keeps the
-          # cached source small; the cache key says "sparse" so full-tree caches are never mixed in.
-          filter: blob:none
-          sparse-checkout: |
-            /*
-            !/selfdrive/modeld/models/
-            !/openpilot/selfdrive/modeld/models/
-          sparse-checkout-cone-mode: false
-      - name: Transformer onroad UI export applicability check
-        if: steps.earlier.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
-          mkdir -p dist
-          OP_ROOT="${{ github.workspace }}/openpilot-src" ./commaviewd/scripts/upstream-interface-guard.sh --telemetry-only
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/apply_onroad_ui_export_patch.sh --platform "${{ matrix.target.ui_platform }}"
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/verify_onroad_ui_export_patch.sh --json --platform "${{ matrix.target.ui_platform }}" >/dev/null
-          cp "${{ github.workspace }}/comma/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
-          git -C "${{ github.workspace }}/openpilot-src" reset --hard -q HEAD
-          git -C "${{ github.workspace }}/openpilot-src" clean -fdq
-
-
-      - name: Run commaviewd verification pipeline
-        # toJSON keeps an unset run_verification ("null") running; a bare != false comparison
-        # coerces null to false and silently skipped verification for every target.
-        if: ${{ (toJSON(matrix.target.run_verification) != 'false') && steps.earlier.outputs.cache-hit != 'true' }}
-        env:
-          OP_ROOT: ${{ github.workspace }}/openpilot-src
-          ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
-          ARM_KJ_SO: ${{ steps.armcapnp.outputs.arm_kj_so }}
-          RELEASE_SMOKE_TAG: canary-openpilot-${{ matrix.target.upstream_ref }}-${{ github.run_id }}
-        run: |
-          set -euxo pipefail
-          commaviewd/scripts/run-verification.sh
-
-      - name: "CI guard: enforce telemetry mode is production-hardening safe"
-        if: steps.earlier.outputs.cache-hit != 'true'
-        run: ./scripts/verify-telemetry-hardening.sh
-
-      - name: Verification summary
-        if: always()
-        run: |
-          {
-            echo "### early drift canary verification (openpilot/${{ matrix.target.upstream_ref }})"
-            echo "- Upstream SHA: \`${{ steps.upstream.outputs.sha }}\`"
-            if [[ '${{ steps.earlier.outputs.cache-hit }}' == 'true' ]]; then
-              echo "- Skipped: this upstream SHA already passed with commaviewd \`${{ github.sha }}\`"
-            fi
-            echo "- Upstream source cache hit: \`${{ steps.upstream-cache.outputs.cache-hit || 'false' }}\`"
-            if [[ -f dist/upstream-interface-manifest.json ]]; then
-              echo "- Interface manifest: dist/upstream-interface-manifest.json"
-            fi
-            if [[ -f dist/binary-contract.json ]]; then
-              echo "- Binary contract: dist/binary-contract.json"
-            fi
-            if [[ -f dist/release-smoke-manifest.json ]]; then
-              echo "- Release smoke: dist/release-smoke-manifest.json"
-            fi
-            if [[ -f dist/onroad-ui-export-status.json ]]; then
-              echo "- Onroad UI export status: dist/onroad-ui-export-status.json"
-            fi
-            if [[ '${{ matrix.target.run_verification }}' == 'false' ]]; then
-              echo "- Runtime verification: skipped for bleeding-edge upstream ABI; semantic interface, payload smoke, projection, and patch applicability still checked"
-            fi
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload verification manifests on failure
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: commaviewd-canary-openpilot-${{ matrix.target.upstream_ref }}-${{ github.run_id }}
-          path: |
-            dist/reproducible-build-manifest.json
-            dist/upstream-interface-manifest.json
-            dist/binary-contract.json
-            dist/release-smoke-manifest.json
-            dist/onroad-ui-export-status.json
-          if-no-files-found: warn
-          retention-days: 3
-
-      - name: Record this pass
-        if: success() && steps.earlier.outputs.cache-hit != 'true'
-        run: mkdir -p .canary-pass && echo '${{ steps.upstream.outputs.sha }}' > .canary-pass/sha
-
-      - name: Save the pass marker
-        if: success() && steps.earlier.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: .canary-pass
-          key: canary-pass-v1-commaai-openpilot-${{ matrix.target.upstream_ref }}-${{ matrix.target.ui_platform }}-${{ steps.upstream.outputs.sha }}-${{ github.sha }}
+    uses: ./.github/workflows/commaviewd-verify.yml
+    with:
+      targets: ci/canary-openpilot.json

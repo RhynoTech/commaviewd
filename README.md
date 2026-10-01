@@ -158,7 +158,7 @@ Apply safety rules:
 
 ## Verification scripts
 
-Test on your machine while you work (`scripts/ci-local.sh`); CI is the last check before a change lands. `commaviewd-ci` runs on pushes to `master` and on pull requests once they're ready for review (drafts and other branches run nothing; "Run workflow" checks one by hand). Its targets are in `ci/targets.json`; `ci/plan-targets.py` resolves them, and targets on the same upstream commit share one verification build (the rest check only that their UI export patch applies). The canaries skip a target whose upstream SHA already passed with the same `master` commit.
+Test on your machine while you work (`scripts/ci-local.sh`); CI is the last check before a change lands. `commaviewd-ci` runs on pushes to `master` and on pull requests once they're ready for review (drafts and other branches run nothing; "Run workflow" checks one by hand). It and the two canaries run `.github/workflows/commaviewd-verify.yml` on their target lists (`ci/targets.json`, `ci/canary-*.json`): `ci/plan-targets.py` resolves them, targets on the same upstream commit share one verification build (the rest check only that their UI export patch applies), and a check that already passed for the same content (commaviewd's inputs and the upstream commit) isn't run again, in CI or a canary. For branch protection, require `verify / result`.
 
 | Script | Usage | Flags/env |
 | --- | --- | --- |

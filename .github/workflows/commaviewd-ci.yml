@@ -2,7 +2,9 @@ name: commaviewd-ci
 
 # CI is the last check before a change lands, not the way to test it: run scripts/ci-local.sh
 # while you work. A pull request runs once it's ready for review (drafts don't); master runs on
-# every push.
+# every push. The targets are in ci/targets.json; the checks, in commaviewd-verify.yml, skip
+# whatever already passed for the same content (a merged pull request's commit, for one).
+# For branch protection, require "verify / result": it reports on every run.
 on:
   push:
     branches: [master]
@@ -14,6 +16,8 @@ on:
       - 'scripts/**'
       - 'ci/**'
       - '.github/workflows/commaviewd-ci.yml'
+      - '.github/workflows/commaviewd-verify.yml'
+      - '.github/scripts/**'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
@@ -24,6 +28,8 @@ on:
       - 'scripts/**'
       - 'ci/**'
       - '.github/workflows/commaviewd-ci.yml'
+      - '.github/workflows/commaviewd-verify.yml'
+      - '.github/scripts/**'
   workflow_dispatch:
 
 permissions:
@@ -34,166 +40,9 @@ concurrency:
   group: commaviewd-ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
-  # The targets are in ci/targets.json. Targets on the same upstream commit share one
-  # verification build (ci/plan-targets.py); every target checks its UI export patch applies.
-  plan:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      passed: ${{ steps.earlier.outputs.passed }}
-      targets: ${{ steps.plan.outputs.targets }}
-    steps:
-      # A fast-forwarded pull request lands on master as the very commit its run already
-      # passed: say so and skip the verification.
-      - name: Skip if this commit already passed
-        id: earlier
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          passed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/commaviewd-ci.yml/runs?head_sha=$GITHUB_SHA&status=success&per_page=1" --jq '.total_count')"
-          if [[ "$passed" != "0" ]]; then
-            echo "::notice::commaviewd-ci already passed for $GITHUB_SHA; skipping the verification."
-            echo "passed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout CommaView
-        if: steps.earlier.outputs.passed != 'true'
-        uses: actions/checkout@v6
-        with:
-          sparse-checkout: ci
-
-      - name: Plan the targets
-        id: plan
-        if: steps.earlier.outputs.passed != 'true'
-        run: |
-          set -euo pipefail
-          targets="$(ci/plan-targets.py)"
-          echo "targets=$targets" >> "$GITHUB_OUTPUT"
-          {
-            echo "### commaviewd-ci targets"
-            jq -r '.[] | "- \(.name): `\(.upstream_repo)@\(.upstream_ref)` `\(.sha)`, " + (if .run_verification then "verification build" else "patch applicability only (\(.why))" end)' <<<"$targets"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-
   verify:
-    name: verify (${{ matrix.target.name }})
-    needs: plan
-    if: needs.plan.outputs.passed != 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        target: ${{ fromJSON(needs.plan.outputs.targets) }}
-
-    steps:
-      - name: Checkout CommaView
-        uses: actions/checkout@v6
-
-      # The cross toolchain is for the verification build; the patch check needs none.
-      - name: Restore apt package cache
-        if: matrix.target.run_verification
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/commaview-apt/archives
-          key: apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-v1
-          restore-keys: |
-            apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-
-
-      - name: Install toolchain + deps
-        if: matrix.target.run_verification
-        id: armcapnp
-        run: ./scripts/install-commaviewd-toolchain.sh
-
-      - name: Restore upstream source cache
-        id: upstream-cache
-        uses: actions/cache@v5
-        with:
-          path: openpilot-src
-          key: upstream-src-sparse-${{ runner.os }}-${{ matrix.target.upstream_repo }}-${{ matrix.target.sha }}
-
-      - name: Checkout upstream source
-        if: steps.upstream-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ matrix.target.upstream_repo }}
-          ref: ${{ matrix.target.sha }}
-          path: openpilot-src
-          submodules: recursive
-          # commaviewd never reads the driving models, which are most of a release tree (1.8 of
-          # 2.0 GB on release-chestnut). A blobless sparse checkout leaves them out, which keeps the
-          # cached source small; the cache key says "sparse" so full-tree caches are never mixed in.
-          filter: blob:none
-          sparse-checkout: |
-            /*
-            !/selfdrive/modeld/models/
-            !/openpilot/selfdrive/modeld/models/
-          sparse-checkout-cone-mode: false
-      - name: Direct v2 onroad UI export patch applicability check
-        run: |
-          set -euxo pipefail
-          mkdir -p dist
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/apply_onroad_ui_export_patch.sh --platform "${{ matrix.target.ui_platform }}"
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/verify_onroad_ui_export_patch.sh --json --platform "${{ matrix.target.ui_platform }}" >/dev/null
-          cp "${{ github.workspace }}/comma/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
-          git -C "${{ github.workspace }}/openpilot-src" reset --hard -q HEAD
-          git -C "${{ github.workspace }}/openpilot-src" clean -fdq
-
-
-      - name: Run commaviewd verification pipeline
-        if: matrix.target.run_verification
-        env:
-          OP_ROOT: ${{ github.workspace }}/openpilot-src
-          ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
-          ARM_KJ_SO: ${{ steps.armcapnp.outputs.arm_kj_so }}
-          RELEASE_SMOKE_TAG: ci-${{ matrix.target.name }}-${{ github.run_id }}
-        run: |
-          set -euxo pipefail
-          commaviewd/scripts/run-verification.sh
-
-      - name: "CI guard: enforce telemetry mode is production-hardening safe"
-        run: ./scripts/verify-telemetry-hardening.sh
-      - name: Verification summary
-        if: always()
-        run: |
-          {
-            echo "### commaviewd verification (${{ matrix.target.name }})"
-            echo "- Upstream: \`${{ matrix.target.upstream_repo }}@${{ matrix.target.upstream_ref }}\`"
-            echo "- Upstream SHA: \`${{ matrix.target.sha }}\`"
-            echo "- Upstream source cache hit: \`${{ steps.upstream-cache.outputs.cache-hit || 'false' }}\`"
-            if [[ -f dist/upstream-interface-manifest.json ]]; then
-              echo "- Interface manifest: dist/upstream-interface-manifest.json"
-            fi
-            if [[ -f dist/binary-contract.json ]]; then
-              echo "- Binary contract: dist/binary-contract.json"
-            fi
-            if [[ -f dist/release-smoke-manifest.json ]]; then
-              echo "- Release smoke: dist/release-smoke-manifest.json"
-            fi
-            if [[ -f dist/onroad-ui-export-status.json ]]; then
-              echo "- Onroad UI export status: dist/onroad-ui-export-status.json"
-            fi
-            if [[ '${{ matrix.target.run_verification }}' == 'false' ]]; then
-              echo "- Runtime verification: skipped (${{ matrix.target.why }}); patch applicability only"
-            fi
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload verification manifests on failure
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: commaviewd-dist-${{ matrix.target.name }}-${{ github.sha }}
-          path: |
-            dist/reproducible-build-manifest.json
-            dist/upstream-interface-manifest.json
-            dist/binary-contract.json
-            dist/release-smoke-manifest.json
-            dist/onroad-ui-export-status.json
-          if-no-files-found: warn
-          retention-days: 3
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    uses: ./.github/workflows/commaviewd-verify.yml
+    with:
+      targets: ci/targets.json
