@@ -81,6 +81,12 @@ inline bool telemetry_policy_allows_emit(const ServicePolicy& policy,
   return last_emit_wall_ms == 0 || now_ms >= last_emit_wall_ms + min_interval_ms;
 }
 
+// The car's identity (carParams) is offered only when it changes, so its latest frame stays true
+// however old: each new client is sent it once. Other services are sent only while fresh.
+inline bool telemetry_service_is_latched(const char* service_name) {
+  return service_name != nullptr && std::strcmp(service_name, "carParams") == 0;
+}
+
 inline bool telemetry_send_failure_is_droppable(const commaview::net::SendResult& result) {
   return result.status == commaview::net::SendStatus::Backpressure && result.bytes_sent == 0;
 }

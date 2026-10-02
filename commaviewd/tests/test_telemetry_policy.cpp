@@ -49,7 +49,17 @@ static void test_disconnected_telemetry_send_is_fatal() {
   assert(!commaview::telemetry::telemetry_send_failure_is_droppable(result));
 }
 
+void test_only_car_params_is_latched() {
+  // The car's identity is offered only when it changes, so a client connecting later must get the
+  // latest one however old; everything else is sent only while fresh.
+  assert(commaview::telemetry::telemetry_service_is_latched("carParams"));
+  assert(!commaview::telemetry::telemetry_service_is_latched("deviceState"));
+  assert(!commaview::telemetry::telemetry_service_is_latched("modelV2"));
+  assert(!commaview::telemetry::telemetry_service_is_latched(nullptr));
+}
+
 int main() {
+  test_only_car_params_is_latched();
   test_off_policy_does_not_fetch_or_emit();
   test_pass_policy_emits_new_frame_once();
   test_sample_policy_obeys_rate();

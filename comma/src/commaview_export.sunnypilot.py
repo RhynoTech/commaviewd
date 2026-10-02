@@ -369,10 +369,10 @@ class _CommaViewSocketExporter:
       (COMMAVIEW_CAR_CONTROL_SERVICE_INDEX, self._car_control_payload, ("carControl",)),
       (COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX, self._live_parameters_payload, ("@vehicle_parameters",)),
       (COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX, self._longitudinal_plan_payload, ("longitudinalPlan",)),
-      # CarParams has no message of its own here (the UI loads it from params a moment after it
-      # starts) and commaviewd relays only fresh frames, so it is offered again with each deviceState
-      # (2 Hz, onroad and off): an app that connects later still learns the car.
-      (COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload, ("deviceState",)),
+      # CarParams has no message of its own here: the UI loads it from params a moment after it
+      # starts. It is offered when what it says changes (loaded, or another car), and commaviewd
+      # keeps the latest for each client that connects later.
+      (COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload, ("#carParams",)),
       (COMMAVIEW_DEVICE_STATE_SERVICE_INDEX, self._device_state_payload, ("deviceState",)),
       (COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX, self._road_camera_state_payload, ("@road_camera",)),
       (COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX, self._panda_states_summary_payload, ("pandaStates",)),
@@ -465,6 +465,9 @@ class _CommaViewSocketExporter:
   def _generation(self, ui_state, dependencies) -> tuple:
     generation = []
     for dependency in dependencies:
+      if dependency == "#carParams":
+        generation.append((dependency, self._car_params_identity(ui_state)))
+        continue
       service = self._service_resolver.resolve(ui_state, dependency[1:]) if dependency.startswith("@") else dependency
       try:
         recv_frame = int(ui_state.sm.recv_frame.get(service, -1))
@@ -1077,6 +1080,13 @@ class _CommaViewSocketExporter:
     if ui_state.sm.recv_frame["longitudinalPlan"] >= ui_state.started_frame:
       payload["allowThrottle"] = bool(getattr(ui_state.sm["longitudinalPlan"], "allowThrottle", False))
     return payload
+
+  def _car_params_identity(self, ui_state) -> tuple:
+    car_params = getattr(ui_state, "CP", None)
+    if car_params is None:
+      return ()
+    return tuple(_safe_str(getattr(car_params, field, "")) for field in (
+      "carFingerprint", "carName", "carVin", "openpilotLongitudinalControl", "maxLateralAccel"))
 
   def _car_params_payload(self, ui_state) -> dict:
     car_params = getattr(ui_state, "CP", None)

@@ -435,9 +435,10 @@ def test_unchanged_publish_path_stays_below_host_timing_gate(template, flavor):
 
 
 @pytest.mark.parametrize("template,flavor", TEMPLATES)
-def test_car_params_are_offered_again_so_a_viewer_connecting_later_learns_the_car(template, flavor):
-  # The UI loads CarParams from params a moment after it starts, and commaviewd relays only frames
-  # fresher than 750 ms: offered once at start, the car never reached an app (no car picture).
+def test_car_params_are_offered_once_when_the_car_is_known_and_again_only_when_it_changes(template, flavor):
+  # The UI loads CarParams from params a moment after it starts. Offered only at start, the car
+  # never reached an app (no car picture); offered with every deviceState, it cost the comma work
+  # for nothing. commaviewd keeps the latest frame for clients that connect later.
   module = load_exporter(template)
   exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
   values = alias_values(current=True)
@@ -453,12 +454,29 @@ def test_car_params_are_offered_again_so_a_viewer_connecting_later_learns_the_ca
     carFingerprint="HYUNDAI_IONIQ_5", carName="hyundai", carVin="KMHKN81AFNU000000",
     openpilotLongitudinalControl=True, maxLateralAccel=2.5,
   )
-  for _ in range(2):
+  time.sleep(module.COMMAVIEW_MIN_EXPORT_INTERVAL_SEC)
+  exporter.publish(ui_state)
+  payload = exporter._pending_payload(module.COMMAVIEW_CAR_PARAMS_SERVICE_INDEX)
+  assert payload is not None
+  assert payload["carFingerprint"] == "HYUNDAI_IONIQ_5"
+  assert payload["carName"] == "hyundai"
+  exporter._pending.clear()
+
+  # Other services moving on (deviceState at 2 Hz) don't offer the unchanged car again.
+  for _ in range(3):
     ui_state.sm.recv_frame["deviceState"] += 1
     time.sleep(module.COMMAVIEW_MIN_EXPORT_INTERVAL_SEC)
     exporter.publish(ui_state)
-    payload = exporter._pending_payload(module.COMMAVIEW_CAR_PARAMS_SERVICE_INDEX)
-    assert payload is not None
-    assert payload["carFingerprint"] == "HYUNDAI_IONIQ_5"
-    assert payload["carName"] == "hyundai"
+    assert exporter._pending_payload(module.COMMAVIEW_CAR_PARAMS_SERVICE_INDEX) is None
     exporter._pending.clear()
+
+  # A reloaded CarParams with the same content is the same car.
+  ui_state.CP = types.SimpleNamespace(**vars(ui_state.CP))
+  time.sleep(module.COMMAVIEW_MIN_EXPORT_INTERVAL_SEC)
+  exporter.publish(ui_state)
+  assert exporter._pending_payload(module.COMMAVIEW_CAR_PARAMS_SERVICE_INDEX) is None
+
+  ui_state.CP = types.SimpleNamespace(**{**vars(ui_state.CP), "carFingerprint": "KIA_EV6"})
+  time.sleep(module.COMMAVIEW_MIN_EXPORT_INTERVAL_SEC)
+  exporter.publish(ui_state)
+  assert exporter._pending_payload(module.COMMAVIEW_CAR_PARAMS_SERVICE_INDEX)["carFingerprint"] == "KIA_EV6"

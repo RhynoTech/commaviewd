@@ -1048,9 +1048,10 @@ static void telemetry_loop(int client_fd,
         }
 
         commaview::ui_export::LatestFrame frame;
-        if (!g_ui_export_socket->latest_frame(static_cast<uint8_t>(i),
-                                              commaview::ui_export::kFreshFrameWindowMs,
-                                              &frame)) {
+        const uint64_t fresh_within_ms = commaview::telemetry::telemetry_service_is_latched(service_name)
+            ? 0
+            : commaview::ui_export::kFreshFrameWindowMs;
+        if (!g_ui_export_socket->latest_frame(static_cast<uint8_t>(i), fresh_within_ms, &frame)) {
           continue;
         }
         const uint64_t now_ms = runtime_now_ms();
