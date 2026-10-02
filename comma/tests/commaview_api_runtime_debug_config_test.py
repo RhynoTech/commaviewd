@@ -510,7 +510,7 @@ def test_revert_patch_script_resets_every_transformer_managed_target():
     assert "pkill" not in text
     assert "COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups" in text
     assert "ensure_offroad_ready" in text
-    assert "socket UI export transformer revert blocked while onroad" in text
+    assert "socket UI export transformer revert blocked while driving" in text
     assert "--force-offroad" in text
     assert "selfdrive/ui/commaview_export.py" in text
     assert "selfdrive/ui/ui_state.py" in text

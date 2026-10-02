@@ -326,7 +326,7 @@ def test_apply_before_openpilot_keeps_onroad_guard_when_openpilot_is_running(tmp
 
     assert result.returncode == 42
     assert "openpilot is already running" in result.stderr
-    assert "blocked while onroad" in result.stderr
+    assert "blocked while driving" in result.stderr
     assert git_status(op_root) == ""
 
 

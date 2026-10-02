@@ -7,6 +7,8 @@ namespace commaview::runtime {
 enum class RuntimeMode {
   kBridge,
   kControl,
+  // One-shot: prints the road phase and exits (the maintenance gate scripts read).
+  kRoadPhase,
 };
 
 struct ParsedMode {

@@ -20,9 +20,12 @@ std::string mode_usage(const char* argv0) {
   usage += "Usage:\n";
   usage += "  "; usage += prog; usage += " bridge [bridge flags]\n";
   usage += "  "; usage += prog; usage += " control [control flags]\n";
+  usage += "  "; usage += prog; usage += " road-phase\n";
   usage += "\nModes:\n";
   usage += "  bridge   Run streaming bridge runtime\n";
   usage += "  control  Run control/API runtime\n";
+  usage += "  road-phase  Print offroad, parked or driving and why, then exit\n";
+  usage += "              (exit 0 offroad or parked: safe for maintenance; 1 driving)\n";
   return usage;
 }
 
@@ -55,6 +58,13 @@ ParsedMode parse_mode(int argc, char* argv[]) {
   if (std::strcmp(mode, "control") == 0) {
     parsed.ok = true;
     parsed.mode = RuntimeMode::kControl;
+    parsed.mode_arg_index = 1;
+    return parsed;
+  }
+
+  if (std::strcmp(mode, "road-phase") == 0) {
+    parsed.ok = true;
+    parsed.mode = RuntimeMode::kRoadPhase;
     parsed.mode_arg_index = 1;
     return parsed;
   }

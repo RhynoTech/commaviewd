@@ -28,6 +28,16 @@ static void test_explicit_control_mode() {
   assert(parsed.mode_arg_index == 1);
 }
 
+static void test_road_phase_mode() {
+  char arg0[] = "commaviewd";
+  char arg1[] = "road-phase";
+  char* argv[] = {arg0, arg1};
+
+  ParsedMode parsed = commaview::runtime::parse_mode(2, argv);
+  assert(parsed.ok);
+  assert(parsed.mode == RuntimeMode::kRoadPhase);
+}
+
 static void test_missing_mode_fails_even_with_legacy_name() {
   char arg0[] = "commaview-bridge";
   char* argv[] = {arg0};
@@ -50,6 +60,7 @@ static void test_unknown_mode_fails() {
 int main() {
   test_explicit_bridge_mode();
   test_explicit_control_mode();
+  test_road_phase_mode();
   test_missing_mode_fails_even_with_legacy_name();
   test_unknown_mode_fails();
   return 0;

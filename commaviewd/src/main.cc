@@ -18,5 +18,9 @@ int main(int argc, char* argv[]) {
     return commaview::runtime::run_bridge_mode(argc, argv);
   }
 
+  if (parsed.mode == commaview::runtime::RuntimeMode::kRoadPhase) {
+    return commaview::runtime::run_road_phase_mode();
+  }
+
   return commaview::runtime::run_control_mode(argc, argv);
 }

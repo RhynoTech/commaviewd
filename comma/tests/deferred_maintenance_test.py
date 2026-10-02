@@ -1,5 +1,5 @@
-"""run_when_offroad.sh: maintenance asked for while onroad waits for openpilot to be offroad, and
-never asks openpilot to go offroad itself."""
+"""run_when_offroad.sh: maintenance asked for while driving waits for the car to be parked or
+openpilot offroad, and never asks openpilot to go offroad itself."""
 
 import json
 import os
@@ -19,6 +19,9 @@ def env_for(tmp_path):
         COMMAVIEWD_DEFERRED_POLL_SEC="1",
         COMMAVIEWD_DEFERRED_OFFROAD_STABLE_SEC="2",
         COMMAVIEWD_DEFERRED_REQUIRE_MANAGER="0",
+        COMMAVIEWD_DEFERRED_PARKED_STABLE_SEC="2",
+        # No road-phase: onroad is driving, as on a runtime that predates it.
+        COMMAVIEWD_ROAD_PHASE_BIN=str(tmp_path / "no-commaviewd"),
     )
     (tmp_path / "params").mkdir(exist_ok=True)
     return env
@@ -53,7 +56,7 @@ def test_job_waits_for_offroad_then_runs_once(tmp_path):
     script.write_text(f'#!/usr/bin/env bash\necho "$COMMAVIEWD_DEFERRED_JOB $1" >> "{marker}"\n')
     try:
         queued = json.loads(run(env, "queue", "install", "--file", str(script), "--", "bash", "@JOB@/job.sh", "v9").stdout)
-        assert queued["state"] == "waiting" and queued["action"] == "install" and queued["waitsFor"] == "offroad"
+        assert queued["state"] == "waiting" and queued["action"] == "install" and queued["waitsFor"] == "parked"
         time.sleep(3.5)
         assert not marker.exists(), "ran while onroad"
         assert status(env)["state"] == "waiting"
@@ -67,6 +70,59 @@ def test_job_waits_for_offroad_then_runs_once(tmp_path):
         assert not (tmp_path / "deferred" / "job").exists()
         # Never asked openpilot to go offroad.
         assert not (tmp_path / "params" / "OffroadMode").exists()
+    finally:
+        run(env, "cancel", check=False)
+
+
+def fake_road_phase(tmp_path, env):
+    """A commaviewd stand-in whose road-phase answer is the contents of tmp_path/phase."""
+    phase_file = tmp_path / "phase"
+    phase_file.write_text("driving not-in-park")
+    fake = tmp_path / "commaviewd"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        '[ "$1" = road-phase ] || exit 2\n'
+        f'read -r phase reason < "{phase_file}"\n'
+        'echo "$phase $reason"\n'
+        '[ "$phase" != driving ]\n'
+    )
+    fake.chmod(0o755)
+    env["COMMAVIEWD_ROAD_PHASE_BIN"] = str(fake)
+    return phase_file
+
+
+def test_job_runs_while_parked_onroad(tmp_path):
+    env = env_for(tmp_path)
+    set_offroad(tmp_path, "0")
+    phase = fake_road_phase(tmp_path, env)
+    marker = tmp_path / "ran"
+    try:
+        run(env, "queue", "install", "--", "touch", str(marker))
+        time.sleep(3.5)
+        assert not marker.exists(), "ran while driving"
+        phase.write_text("parked parked")
+        assert wait_for(lambda: status(env)["state"] == "done")
+        assert marker.exists()
+        assert not (tmp_path / "params" / "OffroadMode").exists()
+    finally:
+        run(env, "cancel", check=False)
+
+
+def test_parked_blink_is_not_enough(tmp_path):
+    env = env_for(tmp_path)
+    env["COMMAVIEWD_DEFERRED_PARKED_STABLE_SEC"] = "4"
+    set_offroad(tmp_path, "0")
+    phase = fake_road_phase(tmp_path, env)
+    marker = tmp_path / "ran"
+    try:
+        run(env, "queue", "repair", "--", "touch", str(marker))
+        phase.write_text("parked parked")
+        time.sleep(1.5)
+        phase.write_text("driving engaged")
+        time.sleep(2.5)
+        assert not marker.exists()
+        phase.write_text("parked parked")
+        assert wait_for(lambda: marker.exists())
     finally:
         run(env, "cancel", check=False)
 
@@ -117,7 +173,7 @@ def test_onroad_again_at_start_goes_back_to_waiting(tmp_path):
     env = env_for(tmp_path)
     counter = tmp_path / "count"
     script = tmp_path / "job.sh"
-    # Exits 42 (blocked while onroad) the first time, succeeds the second.
+    # Exits 42 (blocked while driving) the first time, succeeds the second.
     script.write_text(f'#!/usr/bin/env bash\necho x >> "{counter}"\n[ "$(wc -l < "{counter}")" -ge 2 ] || exit 42\n')
     set_offroad(tmp_path, "1")
     try:
@@ -167,7 +223,8 @@ def test_install_while_onroad_refuses_or_queues_never_forces(tmp_path):
     (companions / "scripts" / "run_when_offroad.sh").write_text(RUNNER.read_text())
     text = (REPO_ROOT / "comma" / "install.sh").read_text()
     functions = "".join(shell_function(text, name) for name in (
-        "read_is_onroad", "queue_install_until_offroad", "cancel_deferred_maintenance", "ensure_offroad_ready"))
+        "read_is_onroad", "read_is_driving", "queue_install_until_offroad", "cancel_deferred_maintenance",
+        "ensure_offroad_ready"))
 
     def ensure(force):
         script = f"""
@@ -178,6 +235,7 @@ COMPANION_DIR={companions}
 DEFERRED_DIR={tmp_path / 'deferred'}
 DEFERRED_EXIT=75
 RELEASE_TAG=v9.9.9
+ROAD_PHASE_BIN="$COMMAVIEWD_ROAD_PHASE_BIN"
 FORCE_OFFROAD={1 if force else 0}
 {functions}
 ensure_offroad_ready
@@ -196,11 +254,17 @@ echo proceeding
         args = (tmp_path / "deferred" / "job" / "args").read_bytes().split(b"\0")
         assert args[:4] == [b"bash", str(tmp_path / "deferred" / "job" / "install.sh").encode(), b"--tag", b"v9.9.9"]
         assert not (tmp_path / "params" / "OffroadMode").exists()
-        # Run directly once offroad, the install drops the queued one.
-        set_offroad(tmp_path, "1")
+        # Run directly once parked (still onroad), the install drops the queued one.
+        phase = fake_road_phase(tmp_path, env)
+        phase.write_text("parked parked")
         direct = ensure(True)
-        assert direct.returncode == 0 and "proceeding" in direct.stdout
+        assert direct.returncode == 0 and "proceeding" in direct.stdout, direct.stdout + direct.stderr
         assert status(env)["state"] == "cancelled"
+        # Engaged in Park is driving.
+        phase.write_text("driving engaged")
+        assert ensure(False).returncode == 42
+        set_offroad(tmp_path, "1")
+        assert ensure(False).returncode == 0
     finally:
         run(env, "cancel", check=False)
 
@@ -217,7 +281,7 @@ def test_uninstall_while_onroad_refuses_or_queues(tmp_path):
     env["COMMAVIEWD_INSTALL_DIR"] = str(install_dir)
     try:
         refused = subprocess.run(["bash", str(install_dir / "uninstall.sh")], env=env, capture_output=True, text=True, timeout=30)
-        assert refused.returncode == 42 and "blocked while onroad" in refused.stderr
+        assert refused.returncode == 42 and "blocked while driving" in refused.stderr
         queued = subprocess.run(["bash", str(install_dir / "uninstall.sh"), "--force-offroad"], env=env,
                                 capture_output=True, text=True, timeout=30)
         assert queued.returncode == 75, queued.stdout + queued.stderr
@@ -241,3 +305,36 @@ def test_a_direct_run_clears_a_finished_jobs_status(tmp_path):
     finally:
         run(env, "cancel", check=False)
     assert status(env) == {"state": "none"}
+
+
+def test_installer_hands_over_to_the_release_it_installs(tmp_path):
+    # The comma's own update queues the installed install.sh with --tag; it runs that release's
+    # installer (fetched with its companions) instead of its own logic, once.
+    text = (REPO_ROOT / "comma" / "install.sh").read_text()
+    handoff = shell_function(text, "handoff_to_release_installer")
+    companions = tmp_path / "companions"
+    companions.mkdir()
+    (companions / "install.sh").write_text('echo "next installer $* handoff=$COMMAVIEWD_INSTALLER_HANDOFF"\n')
+    old = tmp_path / "old-install.sh"
+    old.write_text(f"""
+set -euo pipefail
+COMPANION_DIR={companions}
+RELEASE_TAG=v9.9.9
+FORCE_OFFROAD=1
+tmpdir={tmp_path / 'tmp'}
+mkdir -p "$tmpdir"
+trap 'echo cleanup ran' EXIT
+{handoff}
+handoff_to_release_installer
+echo "old installer kept going"
+""")
+    result = subprocess.run(["bash", str(old)], capture_output=True, text=True, timeout=30,
+                            env={k: v for k, v in os.environ.items() if not k.startswith("COMMAVIEWD_INSTALLER")})
+    assert result.returncode == 0, result.stderr
+    assert "next installer --tag v9.9.9 --force-offroad handoff=1" in result.stdout
+    assert "old installer kept going" not in result.stdout
+    assert "cleanup ran" not in result.stdout and not (tmp_path / "tmp").exists()
+    # The same installer (or one already handed over to) carries on itself.
+    (companions / "install.sh").write_text(old.read_text())
+    same = subprocess.run(["bash", str(old)], capture_output=True, text=True, timeout=30)
+    assert "old installer kept going" in same.stdout

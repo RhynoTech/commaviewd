@@ -37,6 +37,20 @@ read_is_onroad() {
   esac
 }
 
+# Prints 1 while the car is being driven: onroad and not parked. Parked is in Park, at a standstill
+# and not engaged (sunnypilot's MADS included), as commaviewd road-phase reads it from openpilot's
+# queues without subscribing. A runtime without road-phase, or one that can't tell, leaves onroad
+# as driving.
+ROAD_PHASE_BIN="${COMMAVIEWD_ROAD_PHASE_BIN:-$INSTALL_DIR/commaviewd}"
+read_is_driving() {
+  [ "$(read_is_onroad)" = "1" ] || { echo 0; return 0; }
+  if [ -x "$ROAD_PHASE_BIN" ] && timeout 5 "$ROAD_PHASE_BIN" road-phase >/dev/null 2>&1; then
+    echo 0
+  else
+    echo 1
+  fi
+}
+
 
 # openpilot cannot reload its UI in place, so CommaView never signals it:
 # - openpilot's manager never restarts a process that exits. PythonProcess.start()
@@ -151,7 +165,6 @@ clear_openpilot_ui_reload_if_not_running() {
 
 
 ensure_offroad_ready() {
-  local is_onroad
   if [ "$BEFORE_OPENPILOT" = "1" ]; then
     if ! openpilot_running; then
       # Before manager starts nothing drives, and IsOffroad still holds the last
@@ -161,14 +174,13 @@ ensure_offroad_ready() {
     fi
     echo "WARN: --before-openpilot given but openpilot is already running; applying the onroad check" >&2
   fi
-  is_onroad="$(read_is_onroad)"
-  if [ "$is_onroad" != "1" ]; then
+  if [ "$(read_is_driving)" != "1" ]; then
     return 0
   fi
 
   # CommaView never asks openpilot to go offroad (no OffroadMode), --force-offroad included:
   # a change asked for while driving waits in run_when_offroad.sh until the car is parked.
-  echo "ERROR: socket UI export transformer apply blocked while onroad" >&2
+  echo "ERROR: socket UI export transformer apply blocked while driving" >&2
   exit 42
 }
 
