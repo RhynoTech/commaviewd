@@ -4,8 +4,9 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <sys/types.h>
 #include <vector>
+
+#include "msgq_ring_reader.h"
 
 namespace commaview::gps {
 
@@ -38,14 +39,7 @@ class QueuePeek {
   std::optional<std::vector<uint8_t>> newest();
 
  private:
-  bool ensure_mapped();
-  void unmap();
-
-  std::string path_;
-  const char* mem_ = nullptr;
-  size_t map_size_ = 0;
-  size_t data_size_ = 0;
-  ino_t inode_ = 0;
+  commaview::ipc::RingMap ring_;
 };
 
 // The newest fix from openpilot's GPS queues (u-blox and Qualcomm), read without subscribing, and

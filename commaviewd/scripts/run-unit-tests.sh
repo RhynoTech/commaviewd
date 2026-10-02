@@ -113,8 +113,17 @@ MSGQ_ROOT_DIR="$OP_SOURCE_ROOT/msgq_repo"
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" -I"$MSGQ_ROOT_DIR" \
   "$ROOT/tests/test_gps_peek.cpp" \
   "$ROOT/src/gps_peek.cpp" \
+  "$ROOT/src/msgq_ring_reader.cpp" \
   "${CEREAL_SRCS[@]}" \
   -lcapnp -lkj -lpthread -o "$TMP/test_gps_peek"
+
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" -I"$MSGQ_ROOT_DIR" \
+  "$ROOT/tests/test_road_phase.cpp" \
+  "$ROOT/src/road_phase.cpp" \
+  "$ROOT/src/gps_peek.cpp" \
+  "$ROOT/src/msgq_ring_reader.cpp" \
+  "${CEREAL_SRCS[@]}" \
+  -lcapnp -lkj -lpthread -o "$TMP/test_road_phase"
 
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
   "$ROOT/tests/test_support_bundle.cpp" \
@@ -125,22 +134,26 @@ MSGQ_ROOT_DIR="$OP_SOURCE_ROOT/msgq_repo"
   "$ROOT/tests/test_manager_state_peek.cpp" \
   "$ROOT/src/manager_state_peek.cpp" \
   "$ROOT/src/gps_peek.cpp" \
+  "$ROOT/src/msgq_ring_reader.cpp" \
   "${CEREAL_SRCS[@]}" \
   -lcapnp -lkj -lpthread -o "$TMP/test_manager_state_peek"
+"$TMP/test_road_phase"
 
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_msgq_header_recovery.cpp" \
   "$DIST_DIR/msgq-commaviewd.cc" \
   -lpthread -o "$TMP/test_msgq_header_recovery"
 
-# Real msgq (commaviewd's linked copy) on private queues: reader slots must not leak per client.
+# Real msgq (commaviewd's linked copy) on private queues: the encoder queues are read without a
+# reader slot, so no number of bridge restarts or reconnects can evict loggerd.
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" -I"$MSGQ_ROOT_DIR" \
-  "$ROOT/tests/test_msgq_service_reader.cpp" \
-  "$ROOT/src/msgq_service_reader.cpp" \
+  "$ROOT/tests/test_msgq_ring_reader.cpp" \
+  "$ROOT/src/msgq_ring_reader.cpp" \
+  "$ROOT/src/video_transport_policy.cpp" \
   "$DIST_DIR/msgq-commaviewd.cc" \
   "$MSGQ_ROOT_DIR/msgq/impl_msgq.cc" "$MSGQ_ROOT_DIR/msgq/ipc.cc" \
   "$MSGQ_ROOT_DIR/msgq/event.cc" "$MSGQ_ROOT_DIR/msgq/impl_fake.cc" \
-  -lpthread -o "$TMP/test_msgq_service_reader"
+  -lpthread -o "$TMP/test_msgq_ring_reader"
 
 "$TMP/test_net_framing"
 "$TMP/test_runtime_mode"
@@ -153,7 +166,7 @@ MSGQ_ROOT_DIR="$OP_SOURCE_ROOT/msgq_repo"
 "$TMP/test_ui_export_socket"
 "$TMP/test_source_recording_archive"
 "$TMP/test_msgq_header_recovery"
-"$TMP/test_msgq_service_reader"
+"$TMP/test_msgq_ring_reader"
 "$TMP/test_gps_peek"
 "$TMP/test_support_bundle"
 "$TMP/test_manager_state_peek"
@@ -162,6 +175,7 @@ MSGQ_ROOT_DIR="$OP_SOURCE_ROOT/msgq_repo"
 "$ROOT/tests/control_mode_pairing_integration_test.sh"
 python3 "$ROOT/tests/source_archive_endpoint_integration_test.py"
 python3 "$ROOT/tests/wifi_power_save_api_integration_test.py"
+COMMAVIEWD_ROAD_QUEUE_TOOL="$TMP/test_road_phase" python3 "$ROOT/tests/runtime_control_integration_test.py"
 COMMAVIEWD_GPS_QUEUE_TOOL="$TMP/test_gps_peek" python3 "$ROOT/tests/drive_stats_api_integration_test.py"
 python3 "$ROOT/tests/leaderboard_api_integration_test.py"
 "$ROOT/tests/leaderboard_contract_test.sh"

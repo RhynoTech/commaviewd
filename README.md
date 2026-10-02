@@ -78,11 +78,21 @@ Reinstall the currently installed release:
 ssh comma@<comma-ip> 'bash /data/commaview/install.sh --current'
 ```
 
-Force offroad before install/update:
+Install/update while the car is on: queue it until openpilot is offroad (nothing ever asks
+openpilot to go offroad):
 
 ```bash
 ssh comma@<comma-ip> 'bash /data/commaview/install.sh --force-offroad'
 ```
+
+Installing, updating, uninstalling and repairing the UI export restart the runtime or rewrite
+openpilot's UI files, so they run only while openpilot is offroad (`IsOffroad` is `1`). Asked for
+while onroad, they exit 42 (refused), or with `--force-offroad` (the app's Safe Update / Safe
+Repair) they are queued and the command exits 75 after printing `COMMAVIEW_MAINTENANCE_DEFERRED=<action>`.
+`comma/scripts/run_when_offroad.sh` keeps the queue in `/data/commaview-deferred` (one job; a new
+one replaces it) and runs it once openpilot's manager is up and `IsOffroad` has read `1` for 60 s
+in a row; `start.sh` resumes the waiter after a reboot. `/commaview/status` shows it as
+`deferredMaintenance`.
 
 `comma/install.sh` flags and release env:
 
@@ -90,7 +100,7 @@ ssh comma@<comma-ip> 'bash /data/commaview/install.sh --force-offroad'
 | --- | --- |
 | `--tag <release-tag>` | Install/update to a specific GitHub release tag. |
 | `--current` | Reinstall the currently installed release from `/data/commaview/version.env`. |
-| `--force-offroad` | Set `OffroadMode` and wait for a real offroad transition before changing files. |
+| `--force-offroad` | While onroad, queue the install until openpilot is offroad (exit 75) instead of refusing it (exit 42). Never sets `OffroadMode`. |
 | `-h`, `--help` | Print installer usage. |
 | `COMMAVIEWD_RELEASE_REPO` | Override release repo; default `RhynoTech/commaviewd`. |
 | `COMMAVIEWD_RELEASE_TAG` | Override resolved release tag. |
@@ -118,7 +128,15 @@ Installer safety behavior:
 | --- | --- | --- |
 | `comma/start.sh` | `bash /data/commaview/start.sh [--before-openpilot]` | Verifies/repairs the UI export patch when safe (offroad only), stops stale processes, then starts `commaviewd bridge` and `commaviewd control`. Never signals openpilot's UI. `--before-openpilot` is the boot hook: it first runs `apply_onroad_ui_export_patch.sh --before-openpilot` synchronously (bounded by `COMMAVIEWD_ONROAD_UI_EXPORT_PREPARE_TIMEOUT_SEC`, default 60), then starts the runtime in the background and returns so `continue.sh` can exec `launch_openpilot.sh`. Uses runtime env listed above. |
 | `comma/stop.sh` | `bash /data/commaview/stop.sh` | Stops pidfile-tracked bridge/control processes and cleans stray `/data/commaview/commaviewd` processes. No flags. |
-| `comma/uninstall.sh` | `bash /data/commaview/uninstall.sh [--force-offroad]` | Reverts the onroad UI export transformer first and stops without changing anything else if that fails; then stops the runtime, removes the `/data/continue.sh` boot hook, and deletes `/data/commaview`. `--force-offroad` is passed to the revert helper (the app uses it). |
+| `comma/scripts/run_when_offroad.sh` | `queue ACTION [--file PATH]... -- COMMAND...`, `resume`, `status`, `cancel` | The maintenance queue above. `COMMAVIEWD_DEFERRED_DIR`, `COMMAVIEWD_PARAMS_DIR`, `COMMAVIEWD_PROC_ROOT`, `COMMAVIEWD_DEFERRED_POLL_SEC` (10), `COMMAVIEWD_DEFERRED_OFFROAD_STABLE_SEC` (60) override its paths and timing (tests). |
+
+`start.sh` supervises bridge and control: one that crashes (a signal, or an error exit) is started
+again after 5 s, then 10, 20, ... up to 300 s, and given up on after 8 crashes in a row (a run of
+10 minutes starts the count over); each restart is a `process_restart_scheduled` line in
+`logs/runtime-run-events.jsonl`. A clean exit, SIGTERM, or a supervisor whose pid file `stop.sh` or
+an install has removed never restarts. Restarts can't disturb openpilot: the bridge reads the
+encoder queues without a msgq reader slot (`commaviewd/src/msgq_ring_reader.h`).
+| `comma/uninstall.sh` | `bash /data/commaview/uninstall.sh [--force-offroad]` | Offroad only (see above): while onroad it exits 42, or with `--force-offroad` (the app uses it) queues itself and exits 75. Reverts the onroad UI export transformer first and stops without changing anything else if that fails; then stops the runtime, removes the `/data/continue.sh` boot hook, and deletes `/data/commaview` and any queued maintenance. |
 
 Uninstall from workstation:
 
@@ -126,7 +144,7 @@ Uninstall from workstation:
 ssh comma@<comma-ip> 'bash /data/commaview/uninstall.sh'
 ```
 
-Without `--force-offroad`, uninstall refuses while onroad (exit 42). To force the device offroad first:
+Without `--force-offroad`, uninstall refuses while onroad (exit 42). To uninstall once the car is parked:
 
 ```bash
 ssh comma@<comma-ip> 'bash /data/commaview/uninstall.sh --force-offroad'
@@ -139,8 +157,8 @@ These scripts install the direct v2 socket exporter into upstream openpilot/sunn
 | Script | Usage | Flags/env |
 | --- | --- | --- |
 | `comma/scripts/verify_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/verify_onroad_ui_export_patch.sh [--json] [--platform auto\|mici\|tizi\|tici]` | Always prints the status JSON (`--json` is accepted for callers), including `uiReloadPending`/`uiReloadAction`/`uiReloadReason` (below). `COMMAVIEWD_INSTALL_DIR` overrides `/data/commaview`; `COMMAVIEWD_OP_ROOT` overrides `/data/openpilot`; `COMMAVIEWD_PROC_ROOT` overrides `/proc` (tests). |
-| `comma/scripts/apply_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair] [--before-openpilot] [--platform auto\|mici\|tizi\|tici]` | `--force-offroad` waits for offroad before changing files. `--force-repair` is the only destructive repair path; it backs up targets before reset/reapply. `--before-openpilot` is for the boot hook: when no openpilot manager or UI process is running it skips the onroad check (`IsOffroad` still holds the last session's value until manager clears it) and patches the tree `launch_chffrplus.sh` is about to run, which is `/data/safe_staging/finalized` when a staged openpilot update is about to be installed; when openpilot is running it keeps the onroad check. `COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART=1` skips the UI reload bookkeeping. `COMMAVIEWD_PARAMS_DIR`, `COMMAVIEWD_PROC_ROOT`, `COMMAVIEWD_STAGING_ROOT` override `/data/params/d`, `/proc`, `/data/safe_staging` (tests). |
-| `comma/scripts/revert_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/revert_onroad_ui_export_patch.sh [--force-offroad] [--preflight-only]` | Restores the upstream files (used by `uninstall.sh`). `--preflight-only` checks without changing anything. |
+| `comma/scripts/apply_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair] [--before-openpilot] [--platform auto\|mici\|tizi\|tici]` | Refuses while onroad (exit 42); `--force-offroad` is accepted from older callers and changes nothing. `--force-repair` is the only destructive repair path; it backs up targets before reset/reapply. `--before-openpilot` is for the boot hook: when no openpilot manager or UI process is running it skips the onroad check (`IsOffroad` still holds the last session's value until manager clears it) and patches the tree `launch_chffrplus.sh` is about to run, which is `/data/safe_staging/finalized` when a staged openpilot update is about to be installed; when openpilot is running it keeps the onroad check. `COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART=1` skips the UI reload bookkeeping. `COMMAVIEWD_PARAMS_DIR`, `COMMAVIEWD_PROC_ROOT`, `COMMAVIEWD_STAGING_ROOT` override `/data/params/d`, `/proc`, `/data/safe_staging` (tests). |
+| `comma/scripts/revert_onroad_ui_export_patch.sh` | `bash /data/commaview/scripts/revert_onroad_ui_export_patch.sh [--force-offroad] [--preflight-only]` | Restores the upstream files (used by `uninstall.sh`). Refuses while onroad (exit 42; `--force-offroad` changes nothing). `--preflight-only` checks without changing anything. |
 
 Why the scripts never restart openpilot's UI: openpilot cannot reload its UI in place.
 
@@ -210,6 +228,11 @@ These are mostly CI-facing but useful for targeted local checks.
 | `comma/tests/openpilot_ui_reload_test.py` | The patch lifecycle never signals openpilot's UI; reload status, `--before-openpilot` boot step (staged updates, timeout) and continue.sh hook upgrade. |
 | `comma/tests/onroad_ui_export_canary_applicability_test.sh` | Applies/verifies patch against real openpilot/sunnypilot canary refs. |
 | `commaviewd/tests/control_mode_api_contract_test.sh` | Verifies control API routes/contract are present. |
+| `commaviewd/tests/msgq_reader_slot_contract_test.sh` | commaviewd creates no msgq subscriber and maps queues read-only. |
+| `commaviewd/tests/test_msgq_ring_reader.cpp` | The slot-free encoder queue reader against real msgq: restarts and reconnects never evict loggerd, a lapped reader resumes on a keyframe, nothing torn; `--cpu-bench IDLE_POLL_US SECONDS` measures its polling. |
+| `commaviewd/tests/runtime_control_integration_test.py` | runtime-debug apply in place (SIGHUP), `roadPhase`, Safe Repair queued while onroad. |
+| `comma/tests/deferred_maintenance_test.py` | `run_when_offroad.sh`: queued maintenance runs only after a stable offroad stretch. |
+| `comma/tests/runtime_supervisor_restart_test.py` | `start.sh` restarts a crashed process with a bounded backoff, never a deliberate stop. |
 | `commaviewd/tests/local_discovery_contract_test.sh` | Verifies local discovery responder contract. |
 | `commaviewd/tests/onroad_ui_export_ci_contract_test.sh` | Ensures workflows align to direct v2 validation. |
 | `commaviewd/tests/raw_only_runtime_contract_test.sh` | Guards raw-only runtime behavior. |

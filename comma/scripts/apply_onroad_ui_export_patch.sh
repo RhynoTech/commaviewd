@@ -11,9 +11,6 @@ RESTART_MARKER="$INSTALL_DIR/run/onroad-ui-export-ui-restart-needed"
 PARAMS_DIR="${COMMAVIEWD_PARAMS_DIR:-/data/params/d}"
 PROC_ROOT="${COMMAVIEWD_PROC_ROOT:-/proc}"
 STAGING_ROOT="${COMMAVIEWD_STAGING_ROOT:-/data/safe_staging}"
-FORCE_OFFROAD=0
-FORCE_OFFROAD_OWNED=0
-FORCE_OFFROAD_PREV=""
 FORCE_REPAIR=0
 BEFORE_OPENPILOT=0
 UI_PREFIX=""
@@ -40,10 +37,6 @@ read_is_onroad() {
   esac
 }
 
-write_param() {
-  mkdir -p "$PARAMS_DIR"
-  printf '%s' "$2" > "$PARAMS_DIR/$1"
-}
 
 # openpilot cannot reload its UI in place, so CommaView never signals it:
 # - openpilot's manager never restarts a process that exits. PythonProcess.start()
@@ -154,30 +147,8 @@ clear_openpilot_ui_reload_if_not_running() {
   rm -f "$RESTART_MARKER"
 }
 
-restore_force_offroad_mode() {
-  if [ "$FORCE_OFFROAD_OWNED" = "1" ]; then
-    write_param "OffroadMode" "${FORCE_OFFROAD_PREV:-0}"
-  fi
-}
 
-cleanup() {
-  restore_force_offroad_mode
-}
 
-wait_until_offroad() {
-  local timeout_sec="${1:-45}"
-  local elapsed=0
-  local is_onroad=""
-  while [ "$elapsed" -lt "$timeout_sec" ]; do
-    is_onroad="$(read_is_onroad)"
-    if [ "$is_onroad" != "1" ]; then
-      return 0
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
-  return 1
-}
 
 ensure_offroad_ready() {
   local is_onroad
@@ -195,28 +166,16 @@ ensure_offroad_ready() {
     return 0
   fi
 
-  if [ "$FORCE_OFFROAD" != "1" ]; then
-    echo "ERROR: socket UI export transformer apply blocked while onroad" >&2
-    exit 42
-  fi
-
-  FORCE_OFFROAD_PREV="$(read_param OffroadMode)"
-  if [ "$FORCE_OFFROAD_PREV" != "1" ]; then
-    echo "INFO: requesting OffroadMode for transformer apply" >&2
-    write_param "OffroadMode" "1"
-    FORCE_OFFROAD_OWNED=1
-  fi
-
-  echo "INFO: waiting for actual offroad transition" >&2
-  if ! wait_until_offroad 45; then
-    echo "ERROR: device did not transition offroad in time" >&2
-    exit 42
-  fi
+  # CommaView never asks openpilot to go offroad (no OffroadMode), --force-offroad included:
+  # a change asked for while driving waits in run_when_offroad.sh until the car is parked.
+  echo "ERROR: socket UI export transformer apply blocked while onroad" >&2
+  exit 42
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --force-offroad) FORCE_OFFROAD=1; shift ;;
+    # Accepted from older callers; it changes nothing (nothing forces openpilot offroad).
+    --force-offroad) shift ;;
     --force-repair) FORCE_REPAIR=1; shift ;;
     --before-openpilot) BEFORE_OPENPILOT=1; shift ;;
     --platform) REQUESTED_UI_PLATFORM="${2:-}"; shift 2 ;;
@@ -226,7 +185,6 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-trap cleanup EXIT
 ensure_offroad_ready
 
 if [ "$BEFORE_OPENPILOT" = "1" ] && ! openpilot_running; then

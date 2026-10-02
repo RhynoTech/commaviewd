@@ -239,7 +239,6 @@ ONROAD_UI_EXPORT_APPLIED=1
 INSTALL_SUCCESS=0
 INSTALL_MUTATED=1
 FORCE_OFFROAD=0
-restore_force_offroad_mode() {{ :; }}
 restore_previous_install_tree() {{ printf 'restore-install\\n' >> {shlex.quote(str(order_file))}; }}
 {revert_definition}
 {cleanup_definition}
@@ -302,7 +301,11 @@ def test_install_script_preserves_patch_flavor_state_and_supports_explicit_curre
     assert "USE_CURRENT_RELEASE" in text
     assert 'RELEASE_TAG="$(resolve_latest_release_tag)"' in text
     assert "--force-offroad" in text
-    assert 'write_param "OffroadMode" "1"' in text
+    # Never asks openpilot to go offroad: an install asked for while driving is queued instead.
+    assert 'write_param' not in text
+    assert 'queue_install_until_offroad' in text
+    assert 'bash "$runner" queue install --file "$COMPANION_DIR/install.sh"' in text
+    assert '"scripts/run_when_offroad.sh"' in text
     assert 'ensure_offroad_ready' in text
     assert 'apply_onroad_ui_export_patch.sh" --force-repair' in text
 
@@ -388,7 +391,7 @@ def test_apply_patch_script_refuses_implicit_destructive_repair_and_backs_up_for
     assert 'git -C "$OP_ROOT" checkout -- "$rel"' in text
     assert 'rm -f "$OP_ROOT/$rel"' in text
     assert '--force-offroad' in text
-    assert 'write_param "OffroadMode" "1"' in text
+    assert 'write_param' not in text
 
 
 def test_transformer_state_files_are_parsed_without_sourcing_shell():
@@ -564,9 +567,7 @@ def test_control_mode_routes_present_for_runtime_debug_config():
 # duplicated on purpose; this guard keeps the copies from drifting apart.
 DUPLICATED_SHELL_HELPERS = {
     "commaview_pids": (INSTALL_SH, STOP_SH),
-    "write_param": (INSTALL_SH, APPLY_PATCH_SH, REVERT_PATCH_SH),
-    "restore_force_offroad_mode": (INSTALL_SH, APPLY_PATCH_SH, REVERT_PATCH_SH),
-    "wait_until_offroad": (INSTALL_SH, APPLY_PATCH_SH, REVERT_PATCH_SH),
+    "read_is_onroad": (INSTALL_SH, UNINSTALL_SH),
     "read_param": (APPLY_PATCH_SH, REVERT_PATCH_SH),
     "openpilot_process_kind": (APPLY_PATCH_SH, VERIFY_PATCH_SH),
     "current_boot_id": (APPLY_PATCH_SH, VERIFY_PATCH_SH),

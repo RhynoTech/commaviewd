@@ -2,7 +2,8 @@
 """The leaderboard endpoints, end to end (docs/plans/leaderboard.md in RhynoTech/commaview-web, "The
 comma"): POST /commaview/leaderboard/register and /statement answer only a paired phone, run the real
 drive stats script to sign with this comma's own key, and the key never leaves its 0600 file: not in
-an answer, the script's log, or a support bundle.
+an answer, the script's log, or a support bundle. While the drive list and the key are unchanged, a
+statement is the last one again, from its 0600 cache, without running the script.
 """
 
 import base64
@@ -101,16 +102,22 @@ def main():
             folder.mkdir(parents=True)
         (params / "IsOffroad").write_text("1")
         (params / "DongleId").write_text(DONGLE)
-        (params / "HardwareModel").write_text("comma 3X")
+        (root / "devicetree-model").write_bytes(b"comma tizi\x00")  # a comma 3X, as openpilot reads it
         (params / "HardwareSerial").write_text("c0ffee12")
         (install / "VERSION").write_text("v0.0.60\n")
         (root / "kernel.log").write_text("")
         # A Python without cryptography (as an openpilot that dropped it would be).
         (no_crypto / "cryptography" / "__init__.py").write_text("raise ImportError('no cryptography here')\n")
         wrapper = root / "drive-stats.sh"
-        wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{SCRIPT}" "$@"\n')
+        runs = root / "script-runs.txt"
+        wrapper.write_text(f'#!/bin/sh\necho "$1" >> "{runs}"\nexec "{sys.executable}" "{SCRIPT}" "$@"\n')
         wrapper.chmod(0o755)
         key_file = install / "data" / "leaderboard-key.json"
+        drive_list = install / "data" / "drives.json"
+        cache_file = install / "data" / "leaderboard-statement.json"
+
+        def statement_runs():
+            return runs.read_text().split().count("leaderboard-statement") if runs.exists() else 0
         script_log = install / "logs" / "commaview-drive-stats.log"
 
         base_env = dict(os.environ, COMMAVIEWD_TEST_PARAMS_DIR=str(params), COMMAVIEWD_TEST_DATA_ROOT=str(install),
@@ -118,7 +125,8 @@ def main():
                         COMMAVIEWD_TEST_MSGQ_DIR=str(msgq), COMMAVIEWD_TEST_SWAGLOG_DIR=str(swaglog),
                         COMMAVIEWD_TEST_KERNEL_LOG_FILE=str(root / "kernel.log"),
                         COMMAVIEWD_TEST_DRIVE_SCRIPT=str(wrapper), COMMAVIEW_DRIVE_ROOT=str(install),
-                        COMMAVIEW_DRIVE_PARAMS_DIR=str(params))
+                        COMMAVIEW_DRIVE_PARAMS_DIR=str(params),
+                        COMMAVIEW_DRIVE_DEVICE_MODEL_FILE=str(root / "devicetree-model"))
         base_env.pop("PYTHONPATH", None)
 
         # A runtime that hasn't been paired never signs.
@@ -158,7 +166,8 @@ def main():
             verify(answer["registration"], payload["publicKey"])
             device_hash = b64u(hashlib.sha256(("commaview-leaderboard-device/v1:" + DONGLE).encode()).digest())
             assert payload["challenge"] == CHALLENGE and payload["deviceHash"] == device_hash
-            assert payload["model"] == "comma 3X" and payload["runtimeVersion"] == "v0.0.60" and payload["v"] == 1
+            assert payload["deviceType"] == "tizi" and "model" not in payload
+            assert payload["runtimeVersion"] == "v0.0.60" and payload["v"] == 1
             assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
             seed = json.loads(key_file.read_text())["seed"]
             public_x = payload["publicKey"]
@@ -175,19 +184,51 @@ def main():
                        "durationS": 600, "distanceM": 9000, "route": "0000002a--8f1e2d3c4b"},
                       {"startMs": today - 2 * day_ms + 7_200_000, "endMs": today - 2 * day_ms + 7_500_000,
                        "durationS": 300, "distanceM": 3000}]
-            (install / "data" / "drives.json").write_text(json.dumps({"version": 1, "sinceMs": drives[0]["startMs"],
-                                                                      "drives": drives}))
-            for seq in (1, 2):
-                status, statement = request(port, "/commaview/leaderboard/statement", token=TOKEN)
-                assert status == 200 and set(statement) == {"ok", "statement", "keyId", "seq"}, statement
-                assert statement["seq"] == seq and statement["keyId"] == answer["keyId"]
-                header, payload, _ = parts(statement["statement"])
-                assert header == {"alg": "EdDSA", "kid": answer["keyId"], "typ": "cv-lb-stats+jwt"}
-                assert payload["seq"] == seq and payload["v"] == 1 and payload["runtimeVersion"] == "v0.0.60"
-                day = time.strftime("%Y-%m-%d", time.gmtime((today - 2 * day_ms) / 1000))
-                assert payload["days"] == [{"day": day, "distanceM": 12000, "durationS": 900, "drives": 2}]
-                verify(statement["statement"], public_x)
+            def write_drives(listed):
+                drive_list.write_text(json.dumps({"version": 1, "sinceMs": listed[0]["startMs"], "drives": listed}))
+
+            write_drives(drives)
+            runs_before = statement_runs()  # the "no key" answer above ran it once
+            day = time.strftime("%Y-%m-%d", time.gmtime((today - 2 * day_ms) / 1000))
+            status, statement = request(port, "/commaview/leaderboard/statement", token=TOKEN)
+            assert status == 200 and set(statement) == {"ok", "statement", "keyId", "seq"}, statement
+            assert statement["seq"] == 1 and statement["keyId"] == answer["keyId"]
+            header, payload, _ = parts(statement["statement"])
+            assert header == {"alg": "EdDSA", "kid": answer["keyId"], "typ": "cv-lb-stats+jwt"}
+            assert payload["seq"] == 1 and payload["v"] == 1 and payload["runtimeVersion"] == "v0.0.60"
+            assert payload["deviceType"] == "tizi"
+            assert payload["days"] == [{"day": day, "distanceM": 12000, "durationS": 900, "drives": 2}]
+            verify(statement["statement"], public_x)
+            assert statement_runs() == runs_before + 1
+            assert stat.S_IMODE(cache_file.stat().st_mode) == 0o600
+
+            # Nothing changed on the comma (mid-drive, say): the same statement, and no script runs.
+            for _ in range(3):
+                assert request(port, "/commaview/leaderboard/statement", token=TOKEN) == (200, statement)
+            assert statement_runs() == runs_before + 1
+            # The cache never answers without the pairing token.
+            assert request(port, "/commaview/leaderboard/statement", token="wrong")[0] == 401
+
+            # A drive ended (the after-drive script rewrote the list): signed again, seq one higher.
+            write_drives(drives + [{"startMs": today - day_ms + 3_600_000, "endMs": today - day_ms + 3_900_000,
+                                    "durationS": 300, "distanceM": 2500}])
+            status, statement = request(port, "/commaview/leaderboard/statement", token=TOKEN)
+            assert status == 200 and statement["seq"] == 2 and statement_runs() == runs_before + 2
+            payload = parts(statement["statement"])[1]
+            assert payload["seq"] == 2 and payload["days"][0] == {"day": day, "distanceM": 12000, "durationS": 900, "drives": 2}
+            assert payload["days"][1]["distanceM"] == 2500
+            verify(statement["statement"], public_x)
+            assert request(port, "/commaview/leaderboard/statement", token=TOKEN) == (200, statement)
+            assert statement_runs() == runs_before + 2
             assert json.loads((install / "data" / "leaderboard-seq.json").read_text())["seq"] == 2
+
+            # The key gone (an uninstall that kept the drive list): no key, as before, and no cache left.
+            key_file.rename(root / "key-aside.json")
+            assert request(port, "/commaview/leaderboard/statement", token=TOKEN) == (409, {"ok": False, "error": "no key"})
+            assert not cache_file.exists()
+            (root / "key-aside.json").rename(key_file)
+            status, statement = request(port, "/commaview/leaderboard/statement", token=TOKEN)
+            assert status == 200 and statement["seq"] == 3
 
             # Rotating makes a new key, whose counter starts again.
             status, rotated = request(port, "/commaview/leaderboard/register", token=TOKEN,
@@ -197,7 +238,7 @@ def main():
             new_seed = json.loads(key_file.read_text())["seed"]
             assert new_seed != seed
             status, statement = request(port, "/commaview/leaderboard/statement", token=TOKEN)
-            assert status == 200 and statement["seq"] == 1 and statement["keyId"] == rotated["keyId"]
+            assert status == 200 and statement["seq"] == 1 and statement["keyId"] == rotated["keyId"], statement
             verify(statement["statement"], parts(rotated["registration"])[1]["publicKey"])
 
             # A support bundle never carries the key, even from a log that somehow held it.
@@ -220,7 +261,9 @@ def main():
         finally:
             stop(process)
 
-        # Without cryptography in openpilot's Python, or without that Python, the runtime says so.
+        # Without cryptography in openpilot's Python, or without that Python, the runtime says so when
+        # it has something new to sign (the last statement needs neither).
+        write_drives(drives[:1])
         for env in (dict(base_env, COMMAVIEWD_API_TOKEN=TOKEN, PYTHONPATH=str(no_crypto)),
                     dict(base_env, COMMAVIEWD_API_TOKEN=TOKEN, COMMAVIEWD_TEST_DRIVE_SCRIPT=str(root / "missing.sh"))):
             process, port = start_control(binary, env)

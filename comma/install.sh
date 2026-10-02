@@ -97,8 +97,9 @@ MARKER="# commaview-hook"
 BOOT_HOOK_CMD="/data/commaview/start.sh --before-openpilot"
 PARAMS_DIR="/data/params/d"
 FORCE_OFFROAD=0
-FORCE_OFFROAD_OWNED=0
-FORCE_OFFROAD_PREV=""
+# Exit status of an install queued until openpilot is offroad (EX_TEMPFAIL).
+DEFERRED_EXIT=75
+DEFERRED_DIR="${COMMAVIEWD_DEFERRED_DIR:-/data/commaview-deferred}"
 tmpdir=""
 COMPANION_DIR=""  # set to "$tmpdir/companions" by refresh_required_files
 BACKUP_ROOT="${COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups}"
@@ -118,7 +119,8 @@ Usage:
 Options:
   --tag <release-tag>            Install or update to a specific release tag.
   --current                      Reinstall the installed release instead of looking one up.
-  --force-offroad                Set OffroadMode and wait for an actual offroad transition before changing files.
+  --force-offroad                While onroad, queue the install to run once openpilot is offroad (exit 75)
+                                 instead of refusing it (exit 42). Never asks openpilot to go offroad.
   -h, --help                     Show this help and exit.
 
 Without --tag or --current, installs the runtime paired with the current CommaView app
@@ -182,10 +184,6 @@ read_is_onroad() {
   esac
 }
 
-write_param() {
-  mkdir -p "$PARAMS_DIR"
-  printf '%s' "$2" > "$PARAMS_DIR/$1"
-}
 
 commaview_pids() {
   local proc pid cmd
@@ -222,6 +220,8 @@ wait_for_pids_exit() {
 
 stop_commaview_processes() {
   local pids
+  # start.sh's supervisors restart a crashed process while they still own their pid file.
+  rm -f "$INSTALL_DIR/run/bridge-supervisor.pid" "$INSTALL_DIR/run/control-supervisor.pid"
   pids="$(commaview_pids | tr '\n' ' ')"
   [ -n "$pids" ] || return 0
 
@@ -249,11 +249,6 @@ ensure_commaview_stopped() {
   rm -f "$INSTALL_DIR/run/bridge.pid" "$INSTALL_DIR/run/control.pid"
 }
 
-restore_force_offroad_mode() {
-  if [ "$FORCE_OFFROAD_OWNED" = "1" ]; then
-    write_param "OffroadMode" "${FORCE_OFFROAD_PREV:-0}"
-  fi
-}
 
 preserve_install_rollback_backup() {
   local backup_dir="$1"
@@ -341,7 +336,6 @@ cleanup() {
     restore_ec=$?
     echo "ERROR: skipping previous install restore because upstream UI transformer revert failed" >&2
   fi
-  restore_force_offroad_mode
   if [ "$PRESERVE_TMPDIR" = "1" ]; then
     echo "WARN: preserving installer temporary directory for rollback diagnostics: $tmpdir" >&2
   elif [ -n "${tmpdir:-}" ]; then
@@ -350,45 +344,48 @@ cleanup() {
   return "$restore_ec"
 }
 
-wait_until_offroad() {
-  local timeout_sec="${1:-45}"
-  local elapsed=0
-  local is_onroad=""
-  while [ "$elapsed" -lt "$timeout_sec" ]; do
-    is_onroad="$(read_is_onroad)"
-    if [ "$is_onroad" != "1" ]; then
-      return 0
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
-  return 1
+
+# Queues this install in run_when_offroad.sh, which runs it once openpilot has been offroad for a
+# minute. The queued copy is this release's own installer, pinned to the tag resolved now.
+queue_install_until_offroad() {
+  local runner="$COMPANION_DIR/scripts/run_when_offroad.sh"
+  if [ ! -f "$runner" ]; then
+    echo "ERROR: install blocked while onroad, and this release cannot queue it. Park the vehicle and retry." >&2
+    exit 42
+  fi
+  if ! COMMAVIEWD_DEFERRED_DIR="$DEFERRED_DIR" bash "$runner" queue install --file "$COMPANION_DIR/install.sh" -- \
+      bash @JOB@/install.sh --tag "$RELEASE_TAG" >/dev/null; then
+    echo "ERROR: install blocked while onroad and could not be queued. Park the vehicle and retry." >&2
+    exit 42
+  fi
+  echo "DEFERRED: CommaView ${RELEASE_TAG} will install once the car is parked and switched off (openpilot offroad)."
+  echo "COMMAVIEW_MAINTENANCE_DEFERRED=install"
+  exit "$DEFERRED_EXIT"
 }
 
+# A queued job would undo or repeat what an install run directly does now.
+cancel_deferred_maintenance() {
+  [ "${COMMAVIEWD_DEFERRED_JOB:-0}" = "1" ] && return 0
+  [ -f "$DEFERRED_DIR/runner.sh" ] || return 0
+  COMMAVIEWD_DEFERRED_DIR="$DEFERRED_DIR" bash "$DEFERRED_DIR/runner.sh" cancel >/dev/null 2>&1 || true
+}
+
+# Installing restarts the runtime and rewrites openpilot's UI files, so it only runs offroad.
+# CommaView never asks openpilot to go offroad (no OffroadMode): with --force-offroad an install
+# asked for while driving is queued until the car is parked instead.
 ensure_offroad_ready() {
   local is_onroad
   is_onroad="$(read_is_onroad)"
   if [ "$is_onroad" != "1" ]; then
+    cancel_deferred_maintenance
     return 0
   fi
 
   if [ "$FORCE_OFFROAD" != "1" ]; then
-    echo "ERROR: install blocked while onroad. Park the vehicle or rerun with --force-offroad." >&2
+    echo "ERROR: install blocked while onroad. Park the vehicle, or rerun with --force-offroad to install once it is parked." >&2
     exit 42
   fi
-
-  FORCE_OFFROAD_PREV="$(read_param OffroadMode)"
-  if [ "$FORCE_OFFROAD_PREV" != "1" ]; then
-    echo "Requesting OffroadMode for maintenance..."
-    write_param "OffroadMode" "1"
-    FORCE_OFFROAD_OWNED=1
-  fi
-
-  echo "Waiting for actual offroad transition..."
-  if ! wait_until_offroad 45; then
-    echo "ERROR: device did not transition offroad in time" >&2
-    exit 42
-  fi
+  queue_install_until_offroad
 }
 
 copy_required_file() {
@@ -418,6 +415,7 @@ required_files=(
   "scripts/revert_onroad_ui_export_patch.sh"
   "scripts/smoke_onroad_ui_export_helper.py"
   "scripts/transform_onroad_ui_export.py"
+  "scripts/run_when_offroad.sh"
   "src/commaview_export.openpilot.py"
   "src/commaview_export.sunnypilot.py"
   "src/commaview_drive_stats.py"
@@ -485,6 +483,7 @@ deploy_required_scripts() {
   copy_required_file "scripts/revert_onroad_ui_export_patch.sh" "$INSTALL_DIR/scripts/revert_onroad_ui_export_patch.sh"
   copy_required_file "scripts/smoke_onroad_ui_export_helper.py" "$INSTALL_DIR/scripts/smoke_onroad_ui_export_helper.py"
   copy_required_file "scripts/transform_onroad_ui_export.py" "$INSTALL_DIR/scripts/transform_onroad_ui_export.py"
+  copy_required_file "scripts/run_when_offroad.sh" "$INSTALL_DIR/scripts/run_when_offroad.sh"
   # Remove the retired experimental subprocess helper when upgrading from that build.
   rm -f "$INSTALL_DIR/scripts/commaview_export_worker.py"
   copy_required_file "src/commaview_export.openpilot.py" "$INSTALL_DIR/src/commaview_export.openpilot.py" 644

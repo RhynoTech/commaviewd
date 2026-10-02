@@ -20,6 +20,16 @@ COMMAVIEWD_LOG_MAX_FILES_PER_LOG="${COMMAVIEWD_LOG_MAX_FILES_PER_LOG:-14}"
 COMMAVIEWD_LOG_MAX_AGE_DAYS="${COMMAVIEWD_LOG_MAX_AGE_DAYS:-14}"
 COMMAVIEWD_LOG_TOTAL_MAX_BYTES="${COMMAVIEWD_LOG_TOTAL_MAX_BYTES:-268435456}"
 COMMAVIEWD_LOG_ROTATE_INTERVAL_SEC="${COMMAVIEWD_LOG_ROTATE_INTERVAL_SEC:-600}"
+# A crashed bridge or control process is started again after a backoff that doubles from
+# FIRST_BACKOFF up to MAX_BACKOFF, and given up on after MAX_RESTARTS crashes in a row; a run of
+# HEALTHY_SEC or more starts the count over. Restarts can't disturb openpilot: the bridge reads its
+# queues without a msgq reader slot.
+COMMAVIEWD_SUPERVISOR_FIRST_BACKOFF_SEC="${COMMAVIEWD_SUPERVISOR_FIRST_BACKOFF_SEC:-5}"
+COMMAVIEWD_SUPERVISOR_MAX_BACKOFF_SEC="${COMMAVIEWD_SUPERVISOR_MAX_BACKOFF_SEC:-300}"
+COMMAVIEWD_SUPERVISOR_MAX_RESTARTS="${COMMAVIEWD_SUPERVISOR_MAX_RESTARTS:-8}"
+COMMAVIEWD_SUPERVISOR_HEALTHY_SEC="${COMMAVIEWD_SUPERVISOR_HEALTHY_SEC:-600}"
+COMMAVIEWD_BIN="${COMMAVIEWD_BIN:-/data/commaview/commaviewd}"
+DEFERRED_DIR="${COMMAVIEWD_DEFERRED_DIR:-/data/commaview-deferred}"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR" "$CONFIG_DIR"
 
@@ -228,14 +238,25 @@ append_runtime_run_event() {
   component="$2"
   pid="$3"
   exit_status="${4:-}"
+  restart_in_sec="${5:-}"
   ts_ms="$(runtime_event_ts_ms)"
   {
     printf '{"tsMs":%s,"event":"%s","component":"%s","pid":%s,"restartReason":"%s"' "$ts_ms" "$event" "$component" "$pid" "$RESTART_REASON"
     if [ -n "$exit_status" ]; then
       printf ',"exitStatus":%s' "$exit_status"
     fi
+    if [ -n "$restart_in_sec" ]; then
+      printf ',"restartInSec":%s' "$restart_in_sec"
+    fi
     printf '}\n'
   } >> "$LOG_DIR/runtime-run-events.jsonl" 2>/dev/null || true
+}
+
+# The supervisor's own pid file still names it: stop.sh and install remove the pid files before
+# they stop anything, and a later start.sh writes new ones, so a supervisor that no longer owns its
+# file has been told to stand down and must not restart anything.
+supervisor_owns() {
+  [ "$(cat "$RUN_DIR/$1" 2>/dev/null)" = "$BASHPID" ]
 }
 
 start_runtime_process() {
@@ -246,14 +267,40 @@ start_runtime_process() {
   mode="$5"
   shift 5
   (
-    "$@" /data/commaview/commaviewd "$mode" >> "$log_file" 2>&1 &
-    child_pid="$!"
-    echo "$child_pid" > "$RUN_DIR/$pid_file"
-    append_runtime_run_event process_launch "$component" "$child_pid"
-    wait "$child_pid"
-    exit_status="$?"
-    append_runtime_run_event process_exit "$component" "$child_pid" "$exit_status"
-    exit "$exit_status"
+    crashes=0
+    backoff="$COMMAVIEWD_SUPERVISOR_FIRST_BACKOFF_SEC"
+    while :; do
+      started_at="$(date +%s)"
+      "$@" "$COMMAVIEWD_BIN" "$mode" >> "$log_file" 2>&1 &
+      child_pid="$!"
+      echo "$child_pid" > "$RUN_DIR/$pid_file"
+      append_runtime_run_event process_launch "$component" "$child_pid"
+      wait "$child_pid"
+      exit_status="$?"
+      append_runtime_run_event process_exit "$component" "$child_pid" "$exit_status"
+      # Stopped on purpose (exit, SIGINT, SIGTERM), or by stop.sh / install / a newer start.sh.
+      case "$exit_status" in
+        0|130|143) exit "$exit_status" ;;
+      esac
+      supervisor_owns "$supervisor_pid_file" || exit "$exit_status"
+      # A crash (a signal such as SIGSEGV or the OOM killer's SIGKILL, or an error exit).
+      if [ $(( $(date +%s) - started_at )) -ge "$COMMAVIEWD_SUPERVISOR_HEALTHY_SEC" ]; then
+        crashes=0
+        backoff="$COMMAVIEWD_SUPERVISOR_FIRST_BACKOFF_SEC"
+      fi
+      crashes=$((crashes + 1))
+      if [ "$crashes" -gt "$COMMAVIEWD_SUPERVISOR_MAX_RESTARTS" ]; then
+        append_runtime_run_event process_restart_gave_up "$component" "$child_pid" "$exit_status"
+        exit "$exit_status"
+      fi
+      append_runtime_run_event process_restart_scheduled "$component" "$child_pid" "$exit_status" "$backoff"
+      sleep "$backoff"
+      supervisor_owns "$supervisor_pid_file" || exit "$exit_status"
+      backoff=$((backoff * 2))
+      if [ "$backoff" -gt "$COMMAVIEWD_SUPERVISOR_MAX_BACKOFF_SEC" ]; then
+        backoff="$COMMAVIEWD_SUPERVISOR_MAX_BACKOFF_SEC"
+      fi
+    done
   ) >/dev/null 2>&1 &
   echo $! > "$RUN_DIR/$supervisor_pid_file"
 }
@@ -293,5 +340,11 @@ start_runtime_process control control.pid control-supervisor.pid "$LOG_DIR/comma
   nice -n 19
 
 start_runtime_log_rotation_loop
+
+# An install, uninstall or repair asked for while onroad waits in run_when_offroad.sh's queue until
+# openpilot is offroad. A reboot ends its waiter; start it again.
+if [ -f "$DEFERRED_DIR/runner.sh" ]; then
+  COMMAVIEWD_DEFERRED_DIR="$DEFERRED_DIR" bash "$DEFERRED_DIR/runner.sh" resume >/dev/null 2>&1 || true
+fi
 
 echo "CommaView runtime started (bridge+control)"

@@ -41,6 +41,11 @@ grep -Fq '/commaview/runtime-debug/defaults' "$CONTROL_CPP" || { echo "FAIL: mis
 grep -Fq '/commaview/runtime-debug/apply' "$CONTROL_CPP" || { echo "FAIL: missing /commaview/runtime-debug/apply route"; exit 1; }
 grep -Fq "runtime_debug_write_response" "$CONTROL_CPP" || { echo "FAIL: control mode missing runtime debug write handler"; exit 1; }
 grep -Fq "runtime_debug_apply_response" "$CONTROL_CPP" || { echo "FAIL: control mode missing runtime debug apply handler"; exit 1; }
+# Settings apply in place (SIGHUP to the running bridge); nothing restarts the runtime mid-drive.
+grep -Fq '::kill(bridge, SIGHUP)' "$CONTROL_CPP" || { echo "FAIL: runtime debug apply should reload the bridge in place"; exit 1; }
+! grep -Fq 'runtime-debug-apply bash /data/commaview/start.sh' "$CONTROL_CPP" || { echo "FAIL: runtime debug apply must not restart the runtime"; exit 1; }
+grep -Fq '"\"roadPhase\":\""' "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose roadPhase"; exit 1; }
+grep -Fq '"\"deferredMaintenance\":"' "$CONTROL_CPP" || { echo "FAIL: /commaview/status should expose deferredMaintenance"; exit 1; }
 structured_stats_line="$(grep -nF '{"telemetry-stats.json"' "$CONTROL_CPP" | head -1 | cut -d: -f1)"
 rolling_log_line="$(grep -nF '{"runtime-run-events.jsonl"' "$CONTROL_CPP" | head -1 | cut -d: -f1)"
 [ -n "$structured_stats_line" ] && [ -n "$rolling_log_line" ] && [ "$structured_stats_line" -lt "$rolling_log_line" ] || {

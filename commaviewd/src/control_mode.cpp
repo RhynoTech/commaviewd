@@ -2,6 +2,7 @@
 #include "gps_peek.h"
 #include "http_server.h"
 #include "manager_state_peek.h"
+#include "road_phase.h"
 #include "runtime_debug_config.h"
 #include "source_recording_archive.h"
 #include "support_bundle.h"
@@ -132,6 +133,7 @@ bool run_command(const std::vector<std::string>& args, int* exit_code, std::stri
 bool run_command_with_optional_sudo(const std::vector<std::string>& args, int* exit_code, std::string* stdout_text,
                                     std::string* stderr_text);
 bool is_onroad();
+std::string deferred_maintenance_json();
 
 std::string normalize_code(const std::string& in) {
   std::string out;
@@ -557,10 +559,10 @@ std::string run_onroad_ui_export_verify_json(int* rc_out, std::string* err_out) 
   return onroad_ui_export_status_error_json("error", trim_copy(err));
 }
 
-std::string run_onroad_ui_export_apply_status_json(int* rc_out, std::string* err_out, bool force_offroad = false) {
+std::string run_onroad_ui_export_apply_status_json(int* rc_out, std::string* err_out) {
   if (rc_out) *rc_out = 1;
   if (err_out) err_out->clear();
-  if (is_onroad() && !force_offroad) {
+  if (is_onroad()) {
     if (err_out) *err_out = "repair blocked while onroad";
     return onroad_ui_export_status_error_json("onroad-blocked", "repair blocked while onroad");
   }
@@ -573,7 +575,6 @@ std::string run_onroad_ui_export_apply_status_json(int* rc_out, std::string* err
   std::string out;
   std::string err;
   std::vector<std::string> args{kOnroadUiExportApplyScript};
-  if (force_offroad) args.push_back("--force-offroad");
   const bool ran = run_command(args, &rc, &out, &err);
   const std::string trimmed_err = trim_copy(err);
   const std::string failure = trimmed_err.empty() ? "onroad UI export repair failed" : trimmed_err;
@@ -697,6 +698,13 @@ std::string runtime_status_json() {
   out << "\"roadState\":\"" << (onroad ? "onroad" : "offroad") << "\",";
   out << "\"isOnroad\":" << (onroad ? "true" : "false") << ",";
   out << "\"onroad\":" << (onroad ? "true" : "false") << ",";
+  // roadState stays onroad/offroad (openpilot's own IsOffroad). roadPhase splits onroad into
+  // parked (in Park, at a standstill, not engaged) and driving; anything uncertain is driving.
+  const auto phase = commaview::road::read_road_phase(onroad, msgq_dir());
+  out << "\"roadPhase\":\"" << commaview::road::road_phase_name(phase.phase) << "\",";
+  out << "\"roadPhaseReason\":\"" << json_escape(phase.reason) << "\",";
+  // An install, uninstall or repair asked for while onroad, waiting for offroad (or how it ended).
+  out << "\"deferredMaintenance\":" << deferred_maintenance_json() << ",";
   out << "\"onroadUiExport\":" << live_onroad_ui_export_status_json(false) << ",";
   out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
   out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true) << ",";
@@ -759,27 +767,80 @@ std::string runtime_debug_restore_defaults_response() {
   return runtime_debug_write_response(true, parsed);
 }
 
+// The run directory start.sh writes pid files to: where the bridge writes its effective config.
+std::string runtime_run_dir() {
+  const std::string effective = commaview::runtime_debug::runtime_debug_effective_path();
+  const size_t slash = effective.find_last_of('/');
+  return slash == std::string::npos ? std::string(".") : effective.substr(0, slash);
+}
+
+// The running bridge's pid, or 0. A pid file outlives its process (and reboots) and the pid may
+// since belong to an openpilot process, so it counts only while /proc says it is our bridge.
+pid_t running_bridge_pid() {
+  const std::string text = read_file_trimmed(runtime_run_dir() + "/bridge.pid");
+  if (text.empty() || text.size() > 9 || text.find_first_not_of("0123456789") != std::string::npos) return 0;
+  const pid_t pid = static_cast<pid_t>(std::atoi(text.c_str()));
+  if (pid <= 1) return 0;
+  const std::string cmdline = read_file_raw("/proc/" + std::to_string(pid) + "/cmdline");
+  std::vector<std::string> args;
+  size_t start = 0;
+  while (start < cmdline.size()) {
+    size_t end = cmdline.find('\0', start);
+    if (end == std::string::npos) end = cmdline.size();
+    args.push_back(cmdline.substr(start, end - start));
+    start = end + 1;
+  }
+  if (args.size() < 2 || args[1] != "bridge") return 0;
+  const std::string& exe = args[0];
+  const std::string base = exe.substr(exe.find_last_of('/') == std::string::npos ? 0 : exe.find_last_of('/') + 1);
+  if (base.rfind("commaviewd", 0) != 0) return 0;
+  return pid;
+}
+
+// How many times the running bridge has reloaded its config (its stats file's configReloads).
+uint64_t bridge_config_reload_count() {
+  const std::string stats = read_file_raw(commaview::runtime_debug::runtime_debug_stats_path());
+  const std::string key = "\"configReloads\":";
+  const size_t pos = stats.find(key);
+  if (pos == std::string::npos) return 0;
+  return std::strtoull(stats.c_str() + pos + key.size(), nullptr, 10);
+}
+
 std::string runtime_debug_apply_response() {
   const auto persisted = load_persisted_runtime_debug_config();
   if (!persisted.valid) {
     return runtime_debug_write_response(false, persisted, persisted.error.empty() ? "invalid runtime debug config" : persisted.error);
   }
   ensure_runtime_debug_dirs();
-  const std::string restart_cmd =
-      "(sleep 1; COMMAVIEWD_RESTART_REASON=runtime-debug-apply bash /data/commaview/start.sh >/data/commaview/logs/runtime-debug-apply.log 2>&1) </dev/null &";
-  int restart_rc = -1;
-  std::string restart_out;
-  std::string restart_err;
-  const bool launched = run_command({"/bin/sh", "-lc", restart_cmd}, &restart_rc, &restart_out, &restart_err);
-  const bool restart_ok = launched && restart_rc == 0;
+  // Applied in place: the running bridge re-reads the config on SIGHUP. Nothing restarts, so it is
+  // safe while driving. Every setting in the config is a per-service telemetry policy that the
+  // bridge's telemetry loops pick up on their next pass, so nothing waits for the car to be parked
+  // (appliesWhenParked stays empty). Control mode itself reads the config on every request.
+  const uint64_t reloads_before = bridge_config_reload_count();
+  const pid_t bridge = running_bridge_pid();
+  const bool signalled = bridge > 0 && ::kill(bridge, SIGHUP) == 0;
+  bool applied = false;
+  if (signalled) {
+    for (int i = 0; i < 40 && !applied; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      applied = bridge_config_reload_count() > reloads_before;
+    }
+  }
+  // With no bridge running, the next one starts with the saved config.
+  const bool ok = !signalled || applied;
   auto effective = commaview::runtime_debug::effective_runtime_debug_config(persisted);
   std::ostringstream out;
   out << "{";
-  out << "\"ok\":" << (restart_ok ? "true" : "false") << ",";
-  out << "\"restartScheduled\":" << (restart_ok ? "true" : "false") << ",";
+  out << "\"ok\":" << (ok ? "true" : "false") << ",";
+  out << "\"applied\":" << (applied ? "true" : "false") << ",";
+  out << "\"appliedLive\":" << (applied ? "true" : "false") << ",";
+  out << "\"bridgeRunning\":" << (bridge > 0 ? "true" : "false") << ",";
+  out << "\"appliesOnNextStart\":" << (bridge > 0 ? "false" : "true") << ",";
+  out << "\"appliesWhenParked\":[],";
+  out << "\"restartScheduled\":false,";
   out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
   out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true);
-  if (!restart_ok) out << ",\"error\":\"failed to schedule restart\"";
+  if (!ok) out << ",\"error\":\"the bridge did not confirm the config reload\"";
   out << "}";
   return out.str();
 }
@@ -951,10 +1012,6 @@ bool active_wifi_profile(std::string* profile, std::string* error_json) {
   return true;
 }
 
-bool offroad_and_disengaged() {
-  return read_param("IsOffroad") == "1" && read_param("IsEngaged") == "0";
-}
-
 std::string wifi_power_save_status_response() {
   std::string profile, error_json;
   if (!active_wifi_profile(&profile, &error_json)) return error_json;
@@ -977,15 +1034,10 @@ std::string wifi_power_save_set_response(const std::string& body) {
   if (!extract_raw_string_field(body, "mode", &mode) || (mode != "on" && mode != "off")) {
     return "{\"ok\":false,\"error\":\"mode must be on or off\"}";
   }
-  if (!offroad_and_disengaged()) {
-    return "{\"ok\":false,\"error\":\"offroad and disengaged required\"}";
-  }
+  // Any time, driving included: this only saves the active profile's setting. The live link is
+  // never touched; the choice takes effect at the next normal Wi-Fi reconnect (reconnectRequired).
   std::string profile, error_json;
   if (!active_wifi_profile(&profile, &error_json)) return error_json;
-  // Re-check after the nmcli round trip, right before the write.
-  if (!offroad_and_disengaged()) {
-    return "{\"ok\":false,\"error\":\"offroad and disengaged required\"}";
-  }
   int rc = 0;
   std::string ignored;
   const std::string value = mode == "on" ? "3" : "2";
@@ -1591,8 +1643,17 @@ std::string location_set_response(const std::string& body) {
 // registration or a statement of its drives by UTC day for the paired phone to relay. It signs only
 // when asked here: nothing runs in the background. The key never passes through this process except
 // to be redacted from support bundles.
+//
+// Phones ask for a statement whenever they reach the comma (at most every 15 minutes each), driving
+// or not. While the drive list and the key are as they were, the last statement is handed back
+// unchanged from data/leaderboard-statement.json (0600, beside the counter), checked with two stat()
+// calls: no Python, no new seq. The account service answers the same statement again as a duplicate,
+// a success. The drive list only changes when a drive has ended (the after-drive script), so a
+// statement never covers a drive in progress, and a day's total in it never goes down.
 
 constexpr const char* kLeaderboardKeyFile = "data/leaderboard-key.json";
+constexpr const char* kLeaderboardDriveListFile = "data/drives.json";
+constexpr const char* kLeaderboardStatementCacheFile = "data/leaderboard-statement.json";
 constexpr int kLeaderboardScriptTimeoutSec = 20;
 // The script's exit codes (commaview_drive_stats.py, EXIT_*).
 constexpr int kLeaderboardExitBadRequest = 3;
@@ -1623,17 +1684,46 @@ std::string leaderboard_seed_for_redaction() {
   return seed;
 }
 
-// Runs the script's leaderboard mode and answers with what it signed, or the contract's errors.
-commaview::api::HttpResponse leaderboard_script_response(const std::vector<std::string>& args) {
-  std::lock_guard<std::mutex> lk(g_leaderboard_mutex);
+// One line of JSON that says ok: what the script prints when it signed.
+bool leaderboard_answer_ok(const std::string& answer) {
+  return answer.rfind("{\"ok\":true,", 0) == 0 && answer.back() == '}' && answer.find('\n') == std::string::npos;
+}
+
+// What a statement is made from, cheaply: the drive list's and the key's size, modification time and
+// inode (both are replaced whole when they change), or "none" for one that's missing.
+std::string leaderboard_statement_inputs() {
+  std::ostringstream out;
+  out << "v1";
+  for (const char* relative : {kLeaderboardDriveListFile, kLeaderboardKeyFile}) {
+    struct stat st {};
+    if (stat(drivelog_path(relative).c_str(), &st) != 0) {
+      out << " none";
+      continue;
+    }
+    out << ' ' << st.st_size << ':' << st.st_mtim.tv_sec << '.' << st.st_mtim.tv_nsec << ':' << st.st_ino;
+  }
+  return out.str();
+}
+
+// The last statement, when it was made from these same inputs; empty otherwise.
+std::string leaderboard_cached_statement(const std::string& inputs) {
+  const std::string cached = read_file_raw(drivelog_path(kLeaderboardStatementCacheFile));
+  const size_t newline = cached.find('\n');
+  if (newline == std::string::npos || cached.compare(0, newline, inputs) != 0) return "";
+  const std::string answer = trim_copy(cached.substr(newline + 1));
+  return leaderboard_answer_ok(answer) ? answer : "";
+}
+
+// Runs the script's leaderboard mode and answers with what it signed, or the contract's errors. The
+// caller holds g_leaderboard_mutex.
+commaview::api::HttpResponse leaderboard_script_response_locked(const std::vector<std::string>& args) {
   int rc = 0;
   std::string answer;
   if (!run_drive_script_for_answer(args, kLeaderboardScriptTimeoutSec, &rc, &answer)) {
     return make_json(500, kLeaderboardFailedJson);
   }
   answer = trim_copy(answer);
-  if (rc == 0 && answer.rfind("{\"ok\":true,", 0) == 0 && answer.back() == '}' &&
-      answer.find('\n') == std::string::npos) {
+  if (rc == 0 && leaderboard_answer_ok(answer)) {
     return make_json(200, answer);
   }
   switch (rc) {
@@ -1645,6 +1735,11 @@ commaview::api::HttpResponse leaderboard_script_response(const std::vector<std::
       return make_json(503, kLeaderboardNoCryptoJson);
     default: return make_json(500, kLeaderboardFailedJson);
   }
+}
+
+commaview::api::HttpResponse leaderboard_script_response(const std::vector<std::string>& args) {
+  std::lock_guard<std::mutex> lk(g_leaderboard_mutex);
+  return leaderboard_script_response_locked(args);
 }
 
 // POST /commaview/leaderboard/register {challenge, rotate?} -> {ok, registration, keyId}
@@ -1661,9 +1756,22 @@ commaview::api::HttpResponse leaderboard_register_response(const std::string& bo
   return leaderboard_script_response(args);
 }
 
-// POST /commaview/leaderboard/statement {} -> {ok, statement, keyId, seq}
+// POST /commaview/leaderboard/statement {} -> {ok, statement, keyId, seq}: the last one again while
+// the drive list and the key haven't changed, else a new one (and that one kept for next time).
 commaview::api::HttpResponse leaderboard_statement_response() {
-  return leaderboard_script_response({"leaderboard-statement"});
+  std::lock_guard<std::mutex> lk(g_leaderboard_mutex);
+  // Taken before signing: a drive list that changes meanwhile makes the next request sign again.
+  const std::string inputs = leaderboard_statement_inputs();
+  const std::string cached = leaderboard_cached_statement(inputs);
+  if (!cached.empty()) return make_json(200, cached);
+  commaview::api::HttpResponse response = leaderboard_script_response_locked({"leaderboard-statement"});
+  const std::string cache_path = drivelog_path(kLeaderboardStatementCacheFile);
+  if (response.status == 200) {
+    if (write_file_atomic(cache_path, inputs + "\n" + response.body + "\n")) chmod(cache_path.c_str(), 0600);
+  } else {
+    unlink(cache_path.c_str());  // no key any more, or no way to sign: nothing to hand back
+  }
+  return response;
 }
 
 bool extract_pair_code(const std::string& body, std::string* code_out) {
@@ -1733,11 +1841,65 @@ std::string onroad_ui_export_status_response() {
   return live_onroad_ui_export_status_json(false);
 }
 
+// Maintenance asked for while onroad waits in comma/scripts/run_when_offroad.sh's queue, outside the
+// install directory, until openpilot is offroad.
+std::string deferred_maintenance_dir() {
+#if !defined(__aarch64__)
+  if (const char* test_dir = std::getenv("COMMAVIEWD_DEFERRED_DIR")) {
+    if (*test_dir) return test_dir;
+  }
+#endif
+  return "/data/commaview-deferred";
+}
+
+std::string deferred_runner_path() {
+#if !defined(__aarch64__)
+  if (const char* test_runner = std::getenv("COMMAVIEWD_TEST_DEFERRED_RUNNER")) {
+    if (*test_runner) return test_runner;
+  }
+#endif
+  return std::string(kInstallDir) + "/scripts/run_when_offroad.sh";
+}
+
+// The queue's status JSON: {"state":"none"} when nothing was ever queued, else state
+// waiting / running / done / failed / cancelled, with action, queuedAtMs, startedAtMs,
+// finishedAtMs, attempts and exitStatus.
+std::string deferred_maintenance_json() {
+  const std::string raw = read_file_trimmed(deferred_maintenance_dir() + "/status.json");
+  if (raw.size() < 2 || raw.front() != '{' || raw.back() != '}') return "{\"state\":\"none\"}";
+  return raw;
+}
+
+// A repair asked for while driving ("Safe Repair"): queued to run once the car is parked and off.
+// Nothing asks openpilot to go offroad.
+std::string onroad_ui_export_repair_deferred_response() {
+  int rc = 1;
+  std::string out;
+  std::string err;
+  const std::string runner = deferred_runner_path();
+  const bool queued = file_executable(runner.c_str()) &&
+                      run_command({"/usr/bin/env", "COMMAVIEWD_DEFERRED_DIR=" + deferred_maintenance_dir(), "bash", runner,
+                                   "queue", "repair", "--", "bash", kOnroadUiExportApplyScript},
+                                  &rc, &out, &err) &&
+                      rc == 0;
+  const std::string reason = queued ? "repair queued until the car is parked and switched off (openpilot offroad)"
+                                    : "repair blocked while onroad and could not be queued";
+  std::ostringstream resp;
+  resp << "{\"ok\":false,\"deferred\":" << (queued ? "true" : "false") << ",\"repairNeeded\":true,\"status\":"
+       << onroad_ui_export_status_error_json(queued ? "deferred-until-offroad" : "onroad-blocked", reason)
+       << ",\"deferredMaintenance\":" << deferred_maintenance_json()
+       << ",\"error\":\"" << json_escape(reason) << "\"}";
+  return resp.str();
+}
+
 std::string onroad_ui_export_repair_response(const std::string& request_body) {
   const bool force_offroad = json_field_true(request_body, "forceOffroad");
+  // Repair rewrites openpilot's UI files: offroad only, and never forced. With forceOffroad (the
+  // app's Safe Repair) a repair asked for while onroad is queued instead of refused.
+  if (force_offroad && is_onroad()) return onroad_ui_export_repair_deferred_response();
   int rc = 0;
   std::string err;
-  const std::string status = run_onroad_ui_export_apply_status_json(&rc, &err, force_offroad);
+  const std::string status = run_onroad_ui_export_apply_status_json(&rc, &err);
   std::ostringstream resp;
   resp << "{\"ok\":" << (rc == 0 ? "true" : "false") << ",\"repairNeeded\":" << (rc == 0 ? "false" : "true") << ",\"status\":" << status;
   if (rc != 0) {
@@ -1866,9 +2028,7 @@ commaview::api::HttpResponse handle_post(const commaview::api::HttpRequest& req,
 
   if (req.path == "/commaview/wifi/power-save") {
     const std::string body = wifi_power_save_set_response(req.body);
-    const int code = body.find("\"ok\":true") != std::string::npos ? 200 :
-                     body.find("offroad and disengaged required") != std::string::npos ? 403 : 400;
-    return make_json(code, body);
+    return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 400, body);
   }
 
   if (req.path == "/commaview/runtime-debug/config") {
@@ -1891,7 +2051,8 @@ commaview::api::HttpResponse handle_post(const commaview::api::HttpRequest& req,
   }
   if (req.path == "/commaview/onroad-ui-export/repair") {
     std::string body = onroad_ui_export_repair_response(req.body);
-    int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
+    int code = body.find("\"ok\":true") != std::string::npos ? 200 :
+               body.find("\"deferred\":true") != std::string::npos ? 202 : 500;
     return make_json(code, body);
   }
   return make_json(404, "{\"error\":\"not found\"}");
