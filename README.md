@@ -158,8 +158,11 @@ Apply safety rules:
 
 ## Verification scripts
 
+Test on your machine while you work (`scripts/ci-local.sh`); CI is the last check before a change lands. `commaviewd-ci` runs on pushes to `master` and on pull requests once they're ready for review (drafts and other branches run nothing; "Run workflow" checks one by hand). It and the two canaries run `.github/workflows/commaviewd-verify.yml` on their target lists (`ci/targets.json`, `ci/canary-*.json`): `ci/plan-targets.py` resolves them, targets on the same upstream commit share one verification build (the rest check only that their UI export patch applies), and a check that already passed for the same content (commaviewd's inputs and the upstream commit) isn't run again, in CI or a canary. For branch protection, require `verify / result`.
+
 | Script | Usage | Flags/env |
 | --- | --- | --- |
+| `scripts/ci-local.sh` | `scripts/ci-local.sh [--all \| --list \| <target>...]` | Runs `commaviewd-ci`'s checks locally for the given CI targets (default `sunnypilot-release-pin`, the source releases build from): checks out the upstream source like CI (kept under `CI_LOCAL_SRC_DIR`, default `~/.cache/commaviewd-ci-src`), checks the UI export patch applies, then runs `run-verification.sh` and the telemetry guard. Needs the toolchain above. |
 | `commaviewd/scripts/run-verification.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/run-verification.sh` | Full verification pipeline: upstream interface guard, reproducible build, binary contract check, unit tests, release smoke bundle. Env: `OP_ROOT`, `DIST_DIR`, `RELEASE_SMOKE_TAG`. |
 | `commaviewd/scripts/upstream-interface-guard.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/upstream-interface-guard.sh [--telemetry-only] [--manifest <path>]` | Checks that upstream `cereal/services.py` and `log.capnp` have the services and fields the runtime needs (accepting renamed aliases), and that this repo's transformer, apply/verify scripts and exporter template exist. Apply/verify check applicability. Writes manifest to `DIST_DIR` by default. |
 | `commaviewd/scripts/reproducible-build.sh` | `OP_ROOT=/path/to/openpilot-src commaviewd/scripts/reproducible-build.sh [--manifest <path>]` | Builds twice with fixed `SOURCE_DATE_EPOCH` and compares host/aarch64 digests. |

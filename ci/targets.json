@@ -1,0 +1,10 @@
+[
+  {"name": "openpilot-release-mici", "upstream_repo": "commaai/openpilot", "upstream_ref": "release-mici", "ui_platform": "mici"},
+  {"name": "openpilot-release-tizi", "upstream_repo": "commaai/openpilot", "upstream_ref": "release-tizi", "ui_platform": "tizi"},
+  {"name": "openpilot-release-chestnut-mici", "upstream_repo": "commaai/openpilot", "upstream_ref": "release-chestnut", "ui_platform": "mici"},
+  {"name": "openpilot-release-chestnut-tizi", "upstream_repo": "commaai/openpilot", "upstream_ref": "release-chestnut", "ui_platform": "tizi"},
+  {"name": "openpilot-release-tici", "upstream_repo": "commaai/openpilot", "upstream_ref": "release-tici", "ui_platform": "tici", "run_verification": false, "why": "legacy upstream ABI: patch applicability only"},
+  {"name": "sunnypilot-release-mici", "upstream_repo": "sunnypilot/sunnypilot", "upstream_ref": "release-mici", "ui_platform": "mici"},
+  {"name": "sunnypilot-release-tizi", "upstream_repo": "sunnypilot/sunnypilot", "upstream_ref": "release-tizi", "ui_platform": "tizi"},
+  {"name": "sunnypilot-release-pin", "upstream_repo": "sunnypilot/openpilot", "upstream_ref": "release-pin", "ui_platform": "mici"}
+]
