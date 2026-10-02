@@ -53,6 +53,19 @@ if grep -nE '"leaderboard-(register|statement)"' "$SCRIPT" | grep -vE 'add_parse
   fail "the script signs only for its leaderboard modes"
 fi
 
+# A statement is signed again only when what it's made from changed: the drive list or the key,
+# checked with stat() before the script runs. The last one is kept owner-only beside the counter.
+stmt_block="$(sed -n '/^commaview::api::HttpResponse leaderboard_statement_response() {/,/^}/p' "$CONTROL")"
+[[ -n "$stmt_block" ]] || fail "leaderboard_statement_response() not found"
+require_literal 'kLeaderboardStatementCacheFile = "data/leaderboard-statement.json"' "$CONTROL"
+require_literal 'kLeaderboardDriveListFile = "data/drives.json"' "$CONTROL"
+require_literal '{kLeaderboardDriveListFile, kLeaderboardKeyFile}' "$CONTROL"
+grep -Fq 'leaderboard_cached_statement(inputs)' <<<"$stmt_block" || fail "statements must check the cache first"
+grep -Fq 'chmod(cache_path.c_str(), 0600)' <<<"$stmt_block" || fail "the cached statement must be owner-only"
+cached_at="$(grep -n 'leaderboard_cached_statement(inputs)' <<<"$stmt_block" | cut -d: -f1)"
+script_at="$(grep -n 'leaderboard_script_response_locked(' <<<"$stmt_block" | cut -d: -f1)"
+(( cached_at < script_at )) || fail "the cache must be checked before the script runs"
+
 # The key: its 32-byte seed in data/leaderboard-key.json, owner-only, written on disk before use.
 require_literal 'os.path.join(ROOT, "data", "leaderboard-key.json")' "$SCRIPT"
 require_literal 'os.path.join(ROOT, "data", "leaderboard-seq.json")' "$SCRIPT"

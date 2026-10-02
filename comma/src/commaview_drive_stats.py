@@ -40,6 +40,8 @@ ROOT = os.environ.get("COMMAVIEW_DRIVE_ROOT", "/data/commaview")
 LIVE_DIR = os.environ.get("COMMAVIEW_DRIVE_LIVE_DIR", "/dev/shm/commaview")
 PARAMS_DIR = os.environ.get("COMMAVIEW_DRIVE_PARAMS_DIR", "/data/params/d")
 LOG_ROOT = os.environ.get("COMMAVIEW_DRIVE_LOG_ROOT", "/data/media/0/realdata")
+# Where openpilot reads which comma this is (system/hardware: "comma tici", "comma tizi", "comma mici").
+DEVICE_MODEL_FILE = os.environ.get("COMMAVIEW_DRIVE_DEVICE_MODEL_FILE", "/sys/firmware/devicetree/base/model")
 
 DRIVES_FILE = os.path.join(ROOT, "data", "drives.json")
 STATS_FILE = os.path.join(ROOT, "data", "drive-stats.json")
@@ -364,6 +366,8 @@ LEADERBOARD_MAX_DAYS = 62
 LEADERBOARD_MAX_SEQ = 2_147_483_647
 LEADERBOARD_TEXT_MAX = 40
 DEVICE_HASH_PREFIX = "commaview-leaderboard-device/v1:"
+# The device types openpilot knows (cereal InitData.DeviceType): comma 3, comma 3X, comma four.
+DEVICE_TYPES = ("tici", "tizi", "mici")
 B64URL_32 = re.compile(r"[A-Za-z0-9_-]{43}")
 
 # Exit codes the control service turns into its answers (anything else is a 500).
@@ -448,6 +452,18 @@ def device_identity() -> str:
 def optional_text(value: str) -> str | None:
   value = value.strip()
   return value[:LEADERBOARD_TEXT_MAX] if value else None
+
+
+def device_type() -> str | None:
+  """Which comma this is, as openpilot tells (HARDWARE.get_device_type(): the devicetree model after
+  "comma "): tici, tizi or mici; None on anything else (a PC, a device this script doesn't know)."""
+  try:
+    with open(DEVICE_MODEL_FILE, encoding="ascii", errors="replace") as f:
+      model = f.read(64).strip("\x00\r\n\t ")
+  except OSError:
+    return None
+  name = model.split("comma ")[-1].strip()
+  return name if name in DEVICE_TYPES else None
 
 
 def runtime_version() -> str | None:
@@ -566,9 +582,9 @@ def registration_token(key, challenge: str, issued_ms: int) -> str:
   x = public_x(key)
   payload = {"v": 1, "challenge": challenge, "publicKey": x, "deviceHash": device_hash(device_identity()),
              "issuedAtMs": issued_ms}
-  model = optional_text(read_param("HardwareModel"))
-  if model:
-    payload["model"] = model
+  kind = device_type()
+  if kind:
+    payload["deviceType"] = kind
   version = runtime_version()
   if version:
     payload["runtimeVersion"] = version
@@ -577,6 +593,9 @@ def registration_token(key, challenge: str, issued_ms: int) -> str:
 
 def statement_token(key, seq: int, issued_ms: int, days: list) -> str:
   payload = {"v": 1, "seq": seq, "issuedAtMs": issued_ms, "days": days}
+  kind = device_type()  # also here, so a comma registered before it was sent gets it on its next statement
+  if kind:
+    payload["deviceType"] = kind
   version = runtime_version()
   if version:
     payload["runtimeVersion"] = version

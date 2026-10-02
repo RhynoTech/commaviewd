@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "comma" / "src" / "commaview_drive_stats.py"
 DAY = 86_400_000
 
-# The plan's test vector.
+# The plan's test vectors.
 SEED = bytes(range(1, 33))
 SEED_B64 = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
 X = "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ"
@@ -28,19 +28,38 @@ DONGLE = "0123456789abcdef"
 DEVICE_HASH = "ngxqrv6-OtcYbvZ4Met8VlfnOWc6Kx8uEkKKiAV_ZnQ"
 CHALLENGE = "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqo"
 ISSUED_MS = 1_790_899_200_000  # 2026-10-02 00:00 UTC
-REGISTRATION = (
+# The first registration vector, from before deviceType: model `comma 3X` (a param openpilot never
+# had), no device type. The comma no longer signs it, but the server still accepts it.
+REGISTRATION_V0 = (
   "eyJhbGciOiJFZERTQSIsImtpZCI6IldXcG5fcGZIdWk5WUtSNENadFFzREdNdTdfR2NoMnpZQ2hmU3ZueGd0UGsiLCJ0eXAiOiJjdi1sYi1yZWcrand0In0"
   ".eyJjaGFsbGVuZ2UiOiJxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFvIiwiZGV2aWNlSGFzaCI6Im5neHFydjYtT3RjWWJ2"
   "WjRNZXQ4Vmxmbk9XYzZLeDh1RWtLS2lBVl9ablEiLCJpc3N1ZWRBdE1zIjoxNzkwODk5MjAwMDAwLCJtb2RlbCI6ImNvbW1hIDNYIiwicHVibGljS2V5"
   "IjoiZWJWV0xvX21WUGxBZUxFUzZLbUxwNUFmaFRybWxiN1g0T09SQzYwRWxtUSIsInJ1bnRpbWVWZXJzaW9uIjoidjAuMC42MCIsInYiOjF9"
   ".GYwPk9HZpbwdnJnwsg7Eu3FxnA6a8jRO7dIz_jOPGSCBBiF-iG6RkUz5hLJtI3AUSy5xO3hTSUIyHC28T2ybAw"
 )
+# The comma 3X's (devicetree model "comma tizi"): deviceType `tizi`, no model.
+REGISTRATION = (
+  "eyJhbGciOiJFZERTQSIsImtpZCI6IldXcG5fcGZIdWk5WUtSNENadFFzREdNdTdfR2NoMnpZQ2hmU3ZueGd0UGsiLCJ0eXAiOiJjdi1sYi1yZWcrand0In0"
+  ".eyJjaGFsbGVuZ2UiOiJxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFvIiwiZGV2aWNlSGFzaCI6Im5neHFydjYtT3RjWWJ2"
+  "WjRNZXQ4Vmxmbk9XYzZLeDh1RWtLS2lBVl9ablEiLCJkZXZpY2VUeXBlIjoidGl6aSIsImlzc3VlZEF0TXMiOjE3OTA4OTkyMDAwMDAsInB1YmxpY0tl"
+  "eSI6ImViVldMb19tVlBsQWVMRVM2S21McDVBZmhUcm1sYjdYNE9PUkM2MEVsbVEiLCJydW50aW1lVmVyc2lvbiI6InYwLjAuNjAiLCJ2IjoxfQ"
+  ".u82prZLyWAiO_2uUjOm3nF-6g_1foEkfgunKzbDfRlKNGkMr5xQiUMK6u5a39vM6Qnxo65DAkRhzoKURncWeDQ"
+)
+# A statement from a comma whose device type can't be read (and every comma before deviceType).
 STATEMENT = (
   "eyJhbGciOiJFZERTQSIsImtpZCI6IldXcG5fcGZIdWk5WUtSNENadFFzREdNdTdfR2NoMnpZQ2hmU3ZueGd0UGsiLCJ0eXAiOiJjdi1sYi1zdGF0cytqd3QifQ"
   ".eyJkYXlzIjpbeyJkYXkiOiIyMDI2LTA5LTMwIiwiZGlzdGFuY2VNIjo1MTIzNCwiZHJpdmVzIjoyLCJkdXJhdGlvblMiOjM2MDB9LHsiZGF5IjoiMjAy"
   "Ni0xMC0wMSIsImRpc3RhbmNlTSI6MTIwMCwiZHJpdmVzIjoxLCJkdXJhdGlvblMiOjMwMH1dLCJpc3N1ZWRBdE1zIjoxNzkwODk5MjAwMDAwLCJydW50"
   "aW1lVmVyc2lvbiI6InYwLjAuNjAiLCJzZXEiOjEsInYiOjF9"
   ".KM2SrZb9GWf135AvN7anqi93AzWrfAceWONv5SFXrRq7hjrjlvR0x5GhfQUcN7X247y5sJ9QppaP2VONmHzZBw"
+)
+# The same statement from the comma 3X: deviceType `tizi`.
+STATEMENT_TIZI = (
+  "eyJhbGciOiJFZERTQSIsImtpZCI6IldXcG5fcGZIdWk5WUtSNENadFFzREdNdTdfR2NoMnpZQ2hmU3ZueGd0UGsiLCJ0eXAiOiJjdi1sYi1zdGF0cytqd3QifQ"
+  ".eyJkYXlzIjpbeyJkYXkiOiIyMDI2LTA5LTMwIiwiZGlzdGFuY2VNIjo1MTIzNCwiZHJpdmVzIjoyLCJkdXJhdGlvblMiOjM2MDB9LHsiZGF5IjoiMjAy"
+  "Ni0xMC0wMSIsImRpc3RhbmNlTSI6MTIwMCwiZHJpdmVzIjoxLCJkdXJhdGlvblMiOjMwMH1dLCJkZXZpY2VUeXBlIjoidGl6aSIsImlzc3VlZEF0TXMi"
+  "OjE3OTA4OTkyMDAwMDAsInJ1bnRpbWVWZXJzaW9uIjoidjAuMC42MCIsInNlcSI6MSwidiI6MX0"
+  ".dkwq7gp1Afuop_SGqy44_GhRVOgJszDyfZO0SD7ZTVMmq59RHxOz1Cirn6-4dafG2voWvMXQle5V8epZrSu6Dg"
 )
 
 
@@ -51,10 +70,12 @@ def lb(tmp_path, monkeypatch):
   root.mkdir()
   monkeypatch.setenv("COMMAVIEW_DRIVE_ROOT", str(root))
   monkeypatch.setenv("COMMAVIEW_DRIVE_PARAMS_DIR", str(params))
+  # No devicetree here unless a test writes one: the comma's model is never this machine's.
+  monkeypatch.setenv("COMMAVIEW_DRIVE_DEVICE_MODEL_FILE", str(tmp_path / "devicetree-model"))
   spec = importlib.util.spec_from_file_location(f"commaview_drive_stats_lb_{time.time_ns()}", SCRIPT)
   module = importlib.util.module_from_spec(spec)
   spec.loader.exec_module(module)
-  module.test_root, module.test_params = root, params
+  module.test_root, module.test_params, module.test_model = root, params, tmp_path / "devicetree-model"
   return module
 
 
@@ -63,11 +84,18 @@ def set_params(lb, **values):
     (lb.test_params / key).write_text(value)
 
 
-def the_vector_comma(lb):
-  """The test vector's comma: its key, dongle id, model and runtime."""
+def set_device_model(lb, model: str):
+  """The devicetree model as the kernel gives it: NUL-terminated."""
+  lb.test_model.write_bytes(model.encode("ascii") + b"\x00")
+
+
+def the_vector_comma(lb, model=None):
+  """The test vector's comma: its key, dongle id and runtime, and the devicetree model if given."""
   lb.write_private_json(lb.LEADERBOARD_KEY_FILE, {"version": 1, "seed": SEED_B64, "createdMs": ISSUED_MS})
-  set_params(lb, DongleId=DONGLE, HardwareModel="comma 3X", HardwareSerial="c0ffee12")
+  set_params(lb, DongleId=DONGLE, HardwareSerial="c0ffee12")
   (lb.test_root / "VERSION").write_text("v0.0.60\n")
+  if model is not None:
+    set_device_model(lb, model)
 
 
 def ms(iso: str) -> int:
@@ -117,20 +145,41 @@ def test_the_key_id_and_device_hash_are_the_test_vectors(lb):
 
 
 def test_a_registration_is_the_test_vector_byte_for_byte(lb):
-  the_vector_comma(lb)
+  the_vector_comma(lb, "comma tizi")
   answer = lb.leaderboard_register(CHALLENGE, False, ISSUED_MS)
   assert answer == {"ok": True, "registration": REGISTRATION, "keyId": KID}
+  assert parts(REGISTRATION)[1]["deviceType"] == "tizi" and "model" not in parts(REGISTRATION)[1]
 
 
-def test_a_statement_is_the_test_vector_byte_for_byte(lb):
-  the_vector_comma(lb)
+def test_the_first_registration_vector_is_still_signed_by_the_vector_key(lb):
+  # Kept in the contract for the server; it differs from today's only in model for deviceType.
+  payload = parts(REGISTRATION_V0)[1]
+  assert verify(REGISTRATION_V0, X) and payload["model"] == "comma 3X" and "deviceType" not in payload
+  assert {k: v for k, v in payload.items() if k != "model"} == \
+    {k: v for k, v in parts(REGISTRATION)[1].items() if k != "deviceType"}
+
+
+def the_vector_drives(lb):
   write_drives(lb, [
     drive("2026-09-30T07:15:00", 2000, 30000, "a"),
     drive("2026-09-30T18:40:00", 1600, 21234, "b"),
     drive("2026-10-01T23:50:00", 300, 1200, "c"),  # ends after midnight: counts on the day it started
   ])
+
+
+def test_a_statement_is_the_test_vector_byte_for_byte(lb):
+  the_vector_comma(lb)
+  the_vector_drives(lb)
   answer = lb.leaderboard_statement(ISSUED_MS)
   assert answer == {"ok": True, "statement": STATEMENT, "keyId": KID, "seq": 1}
+
+
+def test_a_statement_carries_the_device_type_byte_for_byte(lb):
+  # So a comma registered before deviceType gets its device on the board with its next statement.
+  the_vector_comma(lb, "comma tizi")
+  the_vector_drives(lb)
+  answer = lb.leaderboard_statement(ISSUED_MS)
+  assert answer == {"ok": True, "statement": STATEMENT_TIZI, "keyId": KID, "seq": 1}
 
 
 # ---------------------------------------------------------------- The key
@@ -198,15 +247,33 @@ def test_the_device_hash_falls_back_to_the_serial_and_the_dongle_id_never_leaves
     assert "c0ffee12" not in json.dumps(payload)
 
 
-def test_model_and_runtime_are_optional_and_short(lb):
-  set_params(lb, DongleId=DONGLE)
+def test_device_type_and_runtime_are_optional_and_short(lb):
+  set_params(lb, DongleId=DONGLE, HardwareModel="comma 3X")  # not openpilot's: never sent
   payload = parts(lb.leaderboard_register(CHALLENGE, False, ISSUED_MS)["registration"])[1]
-  assert "model" not in payload and "runtimeVersion" not in payload
+  assert "deviceType" not in payload and "runtimeVersion" not in payload and "model" not in payload
   assert set(payload) == {"v", "challenge", "publicKey", "deviceHash", "issuedAtMs"}
-  set_params(lb, HardwareModel="m" * 60)
   (lb.test_root / "VERSION").write_text("v" * 60 + "\n")
   payload = parts(lb.leaderboard_register(CHALLENGE, False, ISSUED_MS)["registration"])[1]
-  assert payload["model"] == "m" * 40 and payload["runtimeVersion"] == "v" * 40
+  assert payload["runtimeVersion"] == "v" * 40
+
+
+@pytest.mark.parametrize("model, expected", [
+  ("comma tici", "tici"), ("comma tizi", "tizi"), ("comma mici", "mici"),
+  ("comma tizi\n", "tizi"), ("Comma TIZI", None),  # as openpilot splits it: "comma " exactly
+  ("comma pc", None), ("comma ", None), ("", None), ("comma tizi2", None), ("qcom sdm845", None),
+])
+def test_the_device_type_is_what_openpilot_reads_from_the_devicetree(lb, model, expected):
+  set_device_model(lb, model)
+  assert lb.device_type() == expected
+
+
+def test_the_device_type_goes_in_registrations_and_statements(lb):
+  the_vector_comma(lb, "comma mici")
+  payload = parts(lb.leaderboard_register(CHALLENGE, False, ISSUED_MS)["registration"])[1]
+  assert payload["deviceType"] == "mici"
+  assert parts(lb.leaderboard_statement(ISSUED_MS)["statement"])[1]["deviceType"] == "mici"
+  lb.test_model.unlink()  # a PC, or a devicetree that can't be read: left out
+  assert "deviceType" not in parts(lb.leaderboard_statement(ISSUED_MS)["statement"])[1]
 
 
 # ---------------------------------------------------------------- Requests the comma refuses
