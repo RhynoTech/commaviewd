@@ -105,11 +105,18 @@ def test_start_script_refreshes_and_self_heals_onroad_ui_export_status_offroad_o
     assert "onroad UI export patch verified at startup" in text
     assert "onroad UI export patch repaired at startup" in text
     assert "skipping startup repair" in text
-    assert "restart_openpilot_ui_if_pending" in text
     assert "onroad-ui-export-ui-restart-needed" in text
-    assert "deferred onroad UI export restart still pending while onroad" in text
-    assert "consuming deferred onroad UI export restart" in text
     assert "IsOnroad" in text
+    # openpilot cannot reload its UI in place: start.sh never signals it, and the
+    # boot hook applies the patch before launch_openpilot.sh starts manager.
+    assert "pkill" not in text
+    assert "report_openpilot_ui_reload_pending" in text
+    assert 'if [ "${1:-}" = "--before-openpilot" ]; then' in text
+    assert '"$ONROAD_UI_EXPORT_APPLY" --before-openpilot' in text
+    assert "timeout -k 5" in text
+    assert "COMMAVIEWD_ONROAD_UI_EXPORT_PREPARED=1" in text
+    assert "onroad UI export prepared before openpilot start; skipping startup repair" in text
+    assert text.index('if [ "${1:-}" = "--before-openpilot" ]; then') < text.index("refresh_onroad_ui_export_status\n")
 
 
 def test_install_script_stages_release_and_refreshes_pinned_companions_before_mutating_live_tree():
@@ -496,7 +503,8 @@ def test_revert_patch_script_resets_every_transformer_managed_target():
     assert "managed_targets()" in text
     assert "backup_managed_targets()" in text
     assert "reset_managed_targets()" in text
-    assert "restart_openpilot_ui_if_offroad" in text
+    assert "note_openpilot_ui_keeps_loaded_code" in text
+    assert "pkill" not in text
     assert "COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups" in text
     assert "ensure_offroad_ready" in text
     assert "socket UI export transformer revert blocked while onroad" in text
@@ -510,23 +518,26 @@ def test_revert_patch_script_resets_every_transformer_managed_target():
     assert 'rm -f "$OP_ROOT/$rel"' in text
 
 
-def test_apply_patch_script_restarts_openpilot_ui_after_patch_lifecycle_offroad_only():
+def test_apply_patch_script_records_ui_reload_instead_of_restarting_openpilot_ui():
     text = APPLY_PATCH_SH.read_text()
-    assert "restart_openpilot_ui_if_offroad" in text
+    # openpilot's manager never restarts a UI that exits (sunnypilot release restarts
+    # it from preimported modules), so apply never signals the UI.
+    assert "pkill" not in text
+    assert "pgrep" not in text
+    assert "note_openpilot_ui_reload_needed" in text
     assert "COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART" in text
     assert 'read_param IsOnroad' in text
     assert 'onroad-ui-export-ui-restart-needed' in text
-    assert 'request_openpilot_ui_restart' in text
-    assert 'deferring openpilot UI restart while onroad' in text
-    assert 'pkill unavailable; deferring openpilot UI restart' in text
-    assert 'pkill -INT -f "selfdrive.ui.ui"' in text
-    assert 'restarting openpilot UI to load CommaView onroad UI export transformer output' in text
-    assert text.index('restart_openpilot_ui_if_offroad') < text.index('if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json --platform "$ui_platform" >/dev/null 2>&1; then')
-    assert 'request_openpilot_ui_restart\n  restart_openpilot_ui_if_offroad\n  exit 0' in text
+    assert "printf 'pending\\nbootId=%s\\npatchedAtUptimeCs=%s\\n'" in text
+    assert "--before-openpilot) BEFORE_OPENPILOT=1" in text
+    assert "openpilot_root_after_launch" in text
+    assert "export GIT_OPTIONAL_LOCKS=0" in text
+    assert 'if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json --platform "$ui_platform" >/dev/null 2>&1; then\n  # Already patched: no UI file changes, so nothing new for openpilot to reload.\n  exit 0' in text
     assert '"$VERIFY_SCRIPT" --json --platform "$ui_platform" || verify_ec=$?' in text
     assert 'verification failed; restored managed targets' in text
     assert 'managed_targets_match_backup "$transform_backup_root"' in text
-    assert text.index('"$VERIFY_SCRIPT" --json --platform "$ui_platform" || verify_ec=$?') < text.index('request_openpilot_ui_restart\n    restart_openpilot_ui_if_offroad\n    exit 0')
+    # The reload need is recorded before the post-transform verify prints status.
+    assert text.index('if [ "$(managed_targets_digest)" != "$targets_before" ]; then\n  note_openpilot_ui_reload_needed') < text.index('"$VERIFY_SCRIPT" --json --platform "$ui_platform" || verify_ec=$?')
 
 
 def test_control_mode_routes_present_for_runtime_debug_config():
@@ -557,7 +568,8 @@ DUPLICATED_SHELL_HELPERS = {
     "restore_force_offroad_mode": (INSTALL_SH, APPLY_PATCH_SH, REVERT_PATCH_SH),
     "wait_until_offroad": (INSTALL_SH, APPLY_PATCH_SH, REVERT_PATCH_SH),
     "read_param": (APPLY_PATCH_SH, REVERT_PATCH_SH),
-    "request_openpilot_ui_restart": (APPLY_PATCH_SH, REVERT_PATCH_SH),
+    "openpilot_process_kind": (APPLY_PATCH_SH, VERIFY_PATCH_SH),
+    "current_boot_id": (APPLY_PATCH_SH, VERIFY_PATCH_SH),
     "managed_targets": (APPLY_PATCH_SH, REVERT_PATCH_SH),
     "reset_managed_targets": (APPLY_PATCH_SH, REVERT_PATCH_SH),
     "normalize_ui_platform": (APPLY_PATCH_SH, VERIFY_PATCH_SH),

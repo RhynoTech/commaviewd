@@ -14,6 +14,10 @@ FORCE_OFFROAD_OWNED=0
 FORCE_OFFROAD_PREV=""
 UI_PREFIX=""
 
+# Only the reset/checkout below may write .git/index; status-style reads must
+# not, or launch_chffrplus.sh skips a staged openpilot update.
+export GIT_OPTIONAL_LOCKS=0
+
 read_param() {
   local path="$PARAMS_DIR/$1"
   [[ -f "$path" ]] || return 0
@@ -113,42 +117,13 @@ detect_ui_prefix() {
   fi
 }
 
-request_openpilot_ui_restart() {
-  mkdir -p "$(dirname "$RESTART_MARKER")"
-  printf 'pending\n' > "$RESTART_MARKER"
-}
-
-restart_openpilot_ui_if_offroad() {
-  local is_onroad=""
-
-  if [ "${COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART:-0}" = "1" ]; then
-    echo "INFO: skipping openpilot UI restart by request" >&2
-    return 0
-  fi
-
-  is_onroad="$(read_is_onroad)"
-  if [ "$is_onroad" = "1" ]; then
-    request_openpilot_ui_restart
-    echo "WARN: deferring openpilot UI restart while onroad" >&2
-    return 0
-  fi
-
-  if ! command -v pkill >/dev/null 2>&1; then
-    request_openpilot_ui_restart
-    echo "WARN: pkill unavailable; deferring openpilot UI restart" >&2
-    return 0
-  fi
-
-  if command -v pgrep >/dev/null 2>&1 && ! pgrep -f "selfdrive.ui.ui" >/dev/null 2>&1; then
-    echo "INFO: openpilot UI process not running; no restart needed" >&2
-    rm -f "$RESTART_MARKER"
-    return 0
-  fi
-
-  echo "INFO: restarting openpilot UI to unload CommaView onroad UI export transformer output" >&2
-  pkill -INT -f "selfdrive.ui.ui" 2>/dev/null || true
-  sleep 2
-  rm -f "$RESTART_MARKER"
+# CommaView never signals openpilot's UI: manager never restarts a UI that exits
+# (sunnypilot restarts it from the modules manager imported at startup), so a
+# signalled UI would stay dead or keep the old code until reboot. The running UI
+# keeps the exporter it loaded until openpilot next starts; without the CommaView
+# runtime its socket has no listener and the exporter stays idle.
+note_openpilot_ui_keeps_loaded_code() {
+  echo "INFO: openpilot's running UI keeps the CommaView onroad UI export it loaded until the next reboot; it is idle without the CommaView runtime" >&2
 }
 
 managed_targets() {
@@ -252,6 +227,6 @@ if [ "$reset_ec" -ne 0 ]; then
   exit "$restore_ec"
 fi
 rm -f "$STATE_ENV" "$STATE_JSON" "$RESTART_MARKER"
-restart_openpilot_ui_if_offroad
+note_openpilot_ui_keeps_loaded_code
 
 echo "CommaView onroad UI export transformer reverted"

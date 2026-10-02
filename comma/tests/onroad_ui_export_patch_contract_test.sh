@@ -162,14 +162,14 @@ for template in "$OPENPILOT_TEMPLATE" "$SUNNYPILOT_TEMPLATE"; do
     grep -Fq "$marker" "$template" || fail "$template missing risk-field marker: $marker"
   done
 
-  if [[ "$template" == *'.sunnypilot.py' ]]; then
-    grep -Fq '"rainbowPathEnabled": bool(getattr(ui_state, "rainbow_path", ui_state.params.get_bool("RainbowMode")))' "$template" || fail "$template missing truthful sunnypilot rainbow export"
-    grep -Fq '"speedLimitPreActive": speed_limit_pre_active' "$template" || fail "$template missing sunnypilot speed-limit pre-active export"
-    grep -Fq '"speedLimitPreActiveIcon": speed_limit_pre_active_icon' "$template" || fail "$template missing sunnypilot speed-limit pre-active icon export"
-    grep -Fq 'speed_limit_final_last = ui_state.sm["longitudinalPlanSP"].speedLimit.resolver.speedLimitFinalLast' "$template" || fail "$template missing sunnypilot speed-limit target source"
-  else
-    grep -Fq '"rainbowPathEnabled": False' "$template" || fail "$template should pin rainbowPathEnabled false for openpilot"
-  fi
+  # Both templates share every line but the flavor constant: sunnypilot params are read only for the
+  # SUNNYPILOT flavor (rainbowPathEnabled stays false on openpilot) and sunnypilot services are optional.
+  grep -Fq '"rainbowPathEnabled": bool(sunnypilot_params["RainbowMode"]) if sunnypilot_params else False' "$template" || fail "$template missing truthful rainbow export"
+  grep -Fq '("RainbowMode", "rainbow_path", "bool", False)' "$template" || fail "$template missing sunnypilot rainbow param source"
+  grep -Fq 'if self._flavor != "SUNNYPILOT":' "$template" || fail "$template must gate sunnypilot params on the runtime flavor"
+  grep -Fq '"speedLimitPreActive": speed_limit_pre_active' "$template" || fail "$template missing sunnypilot speed-limit pre-active export"
+  grep -Fq '"speedLimitPreActiveIcon": speed_limit_pre_active_icon' "$template" || fail "$template missing sunnypilot speed-limit pre-active icon export"
+  grep -Fq 'speed_limit_final_last = ui_state.sm["longitudinalPlanSP"].speedLimit.resolver.speedLimitFinalLast' "$template" || fail "$template missing sunnypilot speed-limit target source"
 
   for marker in "${legacy_markers[@]}"; do
     ! grep -Fq "$marker" "$template" || fail "$template still contains legacy marker: $marker"
@@ -186,5 +186,21 @@ grep -Fq 'active_camera="wideRoad" if is_wide_camera else "road"' "$TRANSFORMER"
 grep -Fq 'cloudlog.exception("commaview ui export publish failed")' "$TRANSFORMER" || fail "transformer missing publish guardrail"
 grep -Fq 'parser.add_argument("--platform", default="auto", choices=PLATFORM_CHOICES)' "$TRANSFORMER" || fail "transformer missing platform argument"
 grep -Fq 'NORMALIZED_PLATFORMS = {"mici": "mici", "tizi": "tizi", "tici": "tizi"}' "$TRANSFORMER" || fail "transformer missing tici alias normalization"
+
+# openpilot cannot reload its UI in place: manager never restarts a UI that exits,
+# and sunnypilot's restart_if_crash restarts it from modules manager preimported.
+# So nothing may signal it; the boot hook patches before launch_openpilot.sh, and
+# verify reports a patch applied while openpilot runs as pending a reboot.
+START_SCRIPT="$REPO_ROOT/comma/start.sh"
+REVERT_SCRIPT="$REPO_ROOT/comma/scripts/revert_onroad_ui_export_patch.sh"
+for script in "$APPLY_SCRIPT" "$REVERT_SCRIPT" "$VERIFY_SCRIPT" "$START_SCRIPT" "$INSTALLER"; do
+  ! grep -Eq '^[^#]*\b(pkill|pgrep|killall)\b' "$script" || fail "$script must not signal openpilot processes"
+done
+grep -Fq -- '--before-openpilot) BEFORE_OPENPILOT=1' "$APPLY_SCRIPT" || fail "apply script missing pre-launch mode"
+grep -Fq 'openpilot_root_after_launch "$OP_ROOT"' "$APPLY_SCRIPT" || fail "apply pre-launch mode must patch the tree launch_chffrplus.sh will run"
+grep -Fq '"$ONROAD_UI_EXPORT_APPLY" --before-openpilot' "$START_SCRIPT" || fail "start.sh boot step must apply before openpilot starts"
+grep -Fq 'BOOT_HOOK_CMD="/data/commaview/start.sh --before-openpilot"' "$INSTALLER" || fail "installer must hook start.sh synchronously before launch_openpilot"
+grep -Fq '"uiReloadPending": env_bool("UI_RELOAD_PENDING")' "$VERIFY_SCRIPT" || fail "verify status missing uiReloadPending"
+grep -Fq '"uiReloadAction": os.environ.get("UI_RELOAD_ACTION", "")' "$VERIFY_SCRIPT" || fail "verify status missing uiReloadAction"
 
 echo "PASS: source transformer socket UI export contract present"

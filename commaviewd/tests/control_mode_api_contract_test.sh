@@ -28,6 +28,11 @@ grep -Fq "DongleId" "$CONTROL_CPP" || { echo "FAIL: control mode should read ups
 grep -Fq "dongleId" "$CONTROL_CPP" || { echo "FAIL: control mode should expose dongleId"; exit 1; }
 grep -Fq "dongle_id" "$CONTROL_CPP" || { echo "FAIL: control mode should expose dongle_id compatibility alias"; exit 1; }
 grep -Fq "live_onroad_ui_export_status_json(false)" "$CONTROL_CPP" || { echo "FAIL: /commaview/status should use live onroad UI export verification"; exit 1; }
+# uiReloadPending/uiReloadAction (patch waiting for a reboot, since openpilot cannot
+# reload its UI in place) come from verify_onroad_ui_export_patch.sh's JSON, which
+# the control API must pass through rather than rebuild.
+grep -Fq 'run_command({kOnroadUiExportVerifyScript, "--json"}, &rc, &out, &err)' "$CONTROL_CPP" || { echo "FAIL: onroad UI export status should come from the verify script"; exit 1; }
+grep -Fq 'if (!body.empty()) return body;' "$CONTROL_CPP" || { echo "FAIL: onroad UI export status should pass the verify JSON through"; exit 1; }
 grep -Fq "/commaview/onroad-ui-export/status" "$CONTROL_CPP" || { echo "FAIL: missing /commaview/onroad-ui-export/status route"; exit 1; }
 grep -Fq "/commaview/onroad-ui-export/repair" "$CONTROL_CPP" || { echo "FAIL: missing /commaview/onroad-ui-export/repair route"; exit 1; }
 grep -Fq 'json_field_true(request_body, "forceOffroad")' "$CONTROL_CPP" || { echo "FAIL: repair route should parse forceOffroad"; exit 1; }

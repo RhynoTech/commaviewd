@@ -90,6 +90,11 @@ fi
 INSTALL_DIR="/data/commaview"
 CONTINUE_SH="/data/continue.sh"
 MARKER="# commaview-hook"
+# Runs synchronously before continue.sh execs launch_openpilot.sh: start.sh applies
+# the onroad UI export patch before openpilot's manager loads its UI, then starts
+# the runtime in the background. Earlier installs ran "start.sh &" alongside
+# launch_openpilot.sh, which raced manager loading the UI.
+BOOT_HOOK_CMD="/data/commaview/start.sh --before-openpilot"
 PARAMS_DIR="/data/params/d"
 FORCE_OFFROAD=0
 FORCE_OFFROAD_OWNED=0
@@ -550,6 +555,30 @@ PYPAIR
   fi
 }
 
+# Installs or upgrades the continue.sh boot hook. The hook goes right before
+# continue.sh's "exec ... launch_openpilot" line; without one there is nowhere
+# safe to put it, so an existing hook is left as it is.
+install_boot_hook() {
+  [ -f "$CONTINUE_SH" ] || return 0
+  if ! grep -q '^exec .*launch_openpilot' "$CONTINUE_SH"; then
+    echo "WARN: $CONTINUE_SH has no exec launch_openpilot line; boot hook not changed" >&2
+    return 0
+  fi
+  if grep -qF "$MARKER" "$CONTINUE_SH" && grep -qxF "$BOOT_HOOK_CMD" "$CONTINUE_SH" && \
+     [ "$(grep -c 'commaview/start.sh' "$CONTINUE_SH")" = "1" ]; then
+    echo "Boot hook already present"
+    return 0
+  fi
+  if grep -qF "$MARKER" "$CONTINUE_SH" || grep -q 'commaview/start.sh' "$CONTINUE_SH"; then
+    sed -i '/# commaview-hook/d; /commaview\/start.sh/d' "$CONTINUE_SH"
+    echo "Upgrading boot hook to prepare the onroad UI export before openpilot starts"
+  fi
+  sed -i "/^exec .*launch_openpilot/i\\
+$MARKER\\
+$BOOT_HOOK_CMD" "$CONTINUE_SH"
+  echo "Boot hook installed"
+}
+
 backup_managed_install_tree() {
   local backup_dir="$tmpdir/previous-install"
   mkdir -p "$backup_dir"
@@ -684,15 +713,7 @@ fi
 chmod +x "$INSTALL_DIR/commaviewd"
 BINARY_SIZE=$(ls -lh "$INSTALL_DIR/commaviewd" | awk '{print $5}')
 
-# Hook into continue.sh
-if [ -f "$CONTINUE_SH" ] && ! grep -q "$MARKER" "$CONTINUE_SH"; then
-  sed -i "/^exec .*launch_openpilot/i\\
-$MARKER\\
-/data/commaview/start.sh &" "$CONTINUE_SH"
-  echo "Boot hook installed"
-elif grep -q "$MARKER" "$CONTINUE_SH" 2>/dev/null; then
-  echo "Boot hook already present"
-fi
+install_boot_hook
 
 echo "Starting CommaView runtime..."
 bash "$INSTALL_DIR/start.sh"
@@ -702,6 +723,10 @@ INSTALL_SUCCESS=1
 
 echo ""
 echo "=== CommaView ${VERSION} installed ==="
+if [ -f "$INSTALL_DIR/run/onroad-ui-export-ui-restart-needed" ]; then
+  echo "  Reboot the comma device to load the onroad UI export: openpilot cannot reload"
+  echo "  its running UI, so CommaView leaves it alone until openpilot next starts."
+fi
 echo "  Source:      ${BASE_URL}/${ASSET_NAME}"
 echo "  Binary:      $INSTALL_DIR/commaviewd ($BINARY_SIZE)"
 echo "  Runtime:     commaviewd dual-mode (bridge + control)"

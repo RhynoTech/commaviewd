@@ -14,6 +14,7 @@ ONROAD_UI_EXPORT_VERIFY="$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
 ONROAD_UI_EXPORT_APPLY="$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh"
 ONROAD_UI_EXPORT_LOG="$LOG_DIR/onroad-ui-export-startup.log"
 ONROAD_UI_EXPORT_RESTART_MARKER="$RUN_DIR/onroad-ui-export-ui-restart-needed"
+ONROAD_UI_EXPORT_PREPARE_TIMEOUT_SEC="${COMMAVIEWD_ONROAD_UI_EXPORT_PREPARE_TIMEOUT_SEC:-60}"
 COMMAVIEWD_LOG_MAX_BYTES="${COMMAVIEWD_LOG_MAX_BYTES:-8388608}"
 COMMAVIEWD_LOG_MAX_FILES_PER_LOG="${COMMAVIEWD_LOG_MAX_FILES_PER_LOG:-14}"
 COMMAVIEWD_LOG_MAX_AGE_DAYS="${COMMAVIEWD_LOG_MAX_AGE_DAYS:-14}"
@@ -21,6 +22,37 @@ COMMAVIEWD_LOG_TOTAL_MAX_BYTES="${COMMAVIEWD_LOG_TOTAL_MAX_BYTES:-268435456}"
 COMMAVIEWD_LOG_ROTATE_INTERVAL_SEC="${COMMAVIEWD_LOG_ROTATE_INTERVAL_SEC:-600}"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR" "$CONFIG_DIR"
+
+# The /data/continue.sh boot hook runs "start.sh --before-openpilot" right before
+# it execs launch_openpilot.sh. openpilot cannot reload its UI in place: manager
+# never restarts a UI process that exits (sunnypilot release restarts it, but
+# from the modules manager imported at startup), so patched UI files only take
+# effect when manager starts. Apply the onroad UI export patch here, before
+# manager exists, then start the runtime in the background as the hook used to.
+# The apply step is bounded so a hang can never keep openpilot from starting.
+prepare_onroad_ui_export_before_openpilot() {
+  local ec=0
+  if [ ! -x "$ONROAD_UI_EXPORT_APPLY" ]; then
+    return 0
+  fi
+  set -- "$ONROAD_UI_EXPORT_APPLY" --before-openpilot
+  if command -v timeout >/dev/null 2>&1; then
+    set -- timeout -k 5 "$ONROAD_UI_EXPORT_PREPARE_TIMEOUT_SEC" "$@"
+  fi
+  "$@" >> "$ONROAD_UI_EXPORT_LOG" 2>&1 || ec=$?
+  if [ "$ec" -eq 0 ]; then
+    echo "INFO: onroad UI export prepared before openpilot start" >> "$ONROAD_UI_EXPORT_LOG"
+  else
+    echo "WARN: onroad UI export not prepared before openpilot start (exit $ec); openpilot starts with its UI unchanged" >> "$ONROAD_UI_EXPORT_LOG"
+  fi
+}
+
+if [ "${1:-}" = "--before-openpilot" ]; then
+  prepare_onroad_ui_export_before_openpilot
+  COMMAVIEWD_ONROAD_UI_EXPORT_PREPARED=1 bash "${BASH_SOURCE[0]}" &
+  exit 0
+fi
+
 echo "$RESTART_REASON" > "$RUN_DIR/last-restart-reason.txt"
 
 if [ ! -s "$RUNTIME_DEBUG_CONFIG" ]; then
@@ -55,32 +87,14 @@ read_is_onroad() {
   esac
 }
 
-restart_openpilot_ui_if_pending() {
-  if [ ! -f "$ONROAD_UI_EXPORT_RESTART_MARKER" ]; then
-    return 0
+# CommaView never signals openpilot's UI: a signalled UI stays dead on openpilot
+# (and restarts with its old code on sunnypilot) until reboot. A patch applied
+# while openpilot ran stays pending - verify reports "uiReloadPending" - until
+# openpilot next starts.
+report_openpilot_ui_reload_pending() {
+  if [ -f "$ONROAD_UI_EXPORT_RESTART_MARKER" ]; then
+    echo "INFO: onroad UI export takes effect after the next reboot; openpilot cannot reload its running UI" >> "$ONROAD_UI_EXPORT_LOG"
   fi
-
-  is_onroad="$(read_is_onroad)"
-  if [ "$is_onroad" = "1" ]; then
-    echo "WARN: deferred onroad UI export restart still pending while onroad" >> "$ONROAD_UI_EXPORT_LOG"
-    return 0
-  fi
-
-  if ! command -v pkill >/dev/null 2>&1; then
-    echo "WARN: pkill unavailable; deferred onroad UI export restart remains pending" >> "$ONROAD_UI_EXPORT_LOG"
-    return 0
-  fi
-
-  if command -v pgrep >/dev/null 2>&1 && ! pgrep -f "selfdrive.ui.ui" >/dev/null 2>&1; then
-    echo "INFO: openpilot UI not running; clearing deferred onroad UI export restart" >> "$ONROAD_UI_EXPORT_LOG"
-    rm -f "$ONROAD_UI_EXPORT_RESTART_MARKER"
-    return 0
-  fi
-
-  echo "INFO: consuming deferred onroad UI export restart" >> "$ONROAD_UI_EXPORT_LOG"
-  pkill -INT -f "selfdrive.ui.ui" 2>/dev/null || true
-  sleep 2
-  rm -f "$ONROAD_UI_EXPORT_RESTART_MARKER"
 }
 
 refresh_onroad_ui_export_status() {
@@ -244,8 +258,14 @@ start_runtime_process() {
   echo $! > "$RUN_DIR/$supervisor_pid_file"
 }
 
-refresh_onroad_ui_export_status
-restart_openpilot_ui_if_pending
+if [ "${COMMAVIEWD_ONROAD_UI_EXPORT_PREPARED:-0}" = "1" ]; then
+  # Started by --before-openpilot, which already patched the tree launch_openpilot.sh
+  # runs. Repairing again now would race manager importing the UI files.
+  echo "INFO: onroad UI export prepared before openpilot start; skipping startup repair" >> "$ONROAD_UI_EXPORT_LOG"
+else
+  refresh_onroad_ui_export_status
+fi
+report_openpilot_ui_reload_pending
 rotate_runtime_logs
 
 # Stop stale runtime processes first

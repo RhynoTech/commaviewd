@@ -8,6 +8,8 @@ TRANSFORMER="$INSTALL_DIR/scripts/transform_onroad_ui_export.py"
 SMOKE_SCRIPT="$INSTALL_DIR/scripts/smoke_onroad_ui_export_helper.py"
 STATE_JSON="$INSTALL_DIR/run/onroad-ui-export-status.json"
 STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
+UI_RELOAD_MARKER="$INSTALL_DIR/run/onroad-ui-export-ui-restart-needed"
+PROC_ROOT="${COMMAVIEWD_PROC_ROOT:-/proc}"
 UI_PREFIX=""
 HELPER_PATH=""
 UI_STATE_PATH=""
@@ -25,6 +27,88 @@ while [ "$#" -gt 0 ]; do
 done
 
 mkdir -p "$(dirname "$STATE_JSON")" "$(dirname "$STATE_ENV")"
+
+# Status reads must not rewrite .git/index: launch_chffrplus.sh skips a staged
+# openpilot update when anything under .git is newer than .overlay_init.
+export GIT_OPTIONAL_LOCKS=0
+
+# ---- openpilot UI reload status ----
+# openpilot cannot reload its UI in place (manager never restarts an exited UI;
+# sunnypilot's restart reuses modules manager imported at startup), so UI files
+# patched while openpilot runs take effect when manager next starts. apply
+# writes UI_RELOAD_MARKER with the boot and uptime of that patch; it stays
+# pending until a reboot or a manager started after it.
+marker_value() {
+  { sed -n "s/^$1=//p" "$UI_RELOAD_MARKER" 2>/dev/null || true; } | tail -n 1
+}
+
+current_boot_id() {
+  tr -d '\r\n' < "$PROC_ROOT/sys/kernel/random/boot_id" 2>/dev/null || true
+}
+
+# Process start time in centiseconds since boot (field 22 of /proc/<pid>/stat).
+proc_start_cs() {
+  local stat rest clk
+  local -a fields
+  stat="$(cat "$PROC_ROOT/$1/stat" 2>/dev/null)" || return 1
+  rest="${stat##*) }"
+  read -r -a fields <<< "$rest"
+  [ "${#fields[@]}" -ge 20 ] || return 1
+  case "${fields[19]}" in ''|*[!0-9]*) return 1 ;; esac
+  clk="$(getconf CLK_TCK 2>/dev/null || echo 100)"
+  case "$clk" in ''|*[!0-9]*|0) clk=100 ;; esac
+  printf '%s\n' "$(( ${fields[19]} * 100 / clk ))"
+}
+
+# Sets OPENPILOT_PROCESS_KIND to "ui" or "manager" when <proc dir> is openpilot's
+# UI (setproctitle names it "openpilot.selfdrive.ui.ui" or "selfdrive.ui.ui") or its
+# manager ("python3 ./manager.py"); returns 1 otherwise. Sets a variable instead of
+# printing so scanning every process costs no forks.
+openpilot_process_kind() {
+  local first cmd
+  local -a args=()
+  OPENPILOT_PROCESS_KIND=""
+  { mapfile -t -d '' args < "$1/cmdline"; } 2>/dev/null || return 1
+  [ "${#args[@]}" -gt 0 ] || return 1
+  first="${args[0]%"${args[0]##*[![:space:]]}"}"
+  case "$first" in
+    *selfdrive.ui.ui) OPENPILOT_PROCESS_KIND="ui"; return 0 ;;
+  esac
+  cmd=" ${args[*]} "
+  case "$cmd" in
+    *" ./manager.py "*|*"/system/manager/manager.py "*|*"system.manager.manager "*|*"/selfdrive/manager/manager.py "*|*"selfdrive.manager.manager "*)
+      OPENPILOT_PROCESS_KIND="manager"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# The UI is forked by manager, so its parent is manager. Without a UI process,
+# the oldest process running manager.py.
+openpilot_manager_pid() {
+  local proc pid ppid best="" best_cs="" cs
+  for proc in "$PROC_ROOT"/[0-9]*; do
+    openpilot_process_kind "$proc" || continue
+    pid="${proc##*/}"
+    if [ "$OPENPILOT_PROCESS_KIND" = "ui" ]; then
+      ppid="$(sed -n 's/^PPid:[[:space:]]*//p' "$proc/status" 2>/dev/null || true)"
+      case "$ppid" in
+        ''|*[!0-9]*|0|1) ;;
+        *) if [ -d "$PROC_ROOT/$ppid" ]; then printf '%s\n' "$ppid"; return 0; fi ;;
+      esac
+      continue
+    fi
+    cs="$(proc_start_cs "$pid" || true)"
+    [ -n "$cs" ] || continue
+    if [ -z "$best" ] || [ "$cs" -lt "$best_cs" ]; then
+      best="$pid"
+      best_cs="$cs"
+    fi
+  done
+  [ -n "$best" ] || return 1
+  printf '%s\n' "$best"
+}
 
 check_fixed() {
   local needle="$1"
@@ -451,6 +535,34 @@ PYSMOKE
   fi
 fi
 
+ui_reload_pending=false
+ui_reload_action=""
+ui_reload_reason=""
+if [ -f "$UI_RELOAD_MARKER" ]; then
+  marker_pending=true
+  marker_boot_id="$(marker_value bootId)"
+  marker_patched_cs="$(marker_value patchedAtUptimeCs)"
+  boot_id_value="$(current_boot_id)"
+  manager_pid=""
+  manager_start_cs=""
+  if [ -n "$marker_boot_id" ] && [ -n "$boot_id_value" ] && [ "$marker_boot_id" != "$boot_id_value" ]; then
+    # Rebooted since the patch: this boot's manager loaded the patched files.
+    marker_pending=false
+  elif [[ "$marker_patched_cs" =~ ^[0-9]+$ ]] && manager_pid="$(openpilot_manager_pid)" && \
+       manager_start_cs="$(proc_start_cs "$manager_pid")" && [ "$manager_start_cs" -gt "$marker_patched_cs" ]; then
+    # openpilot was restarted after the patch, so its UI loaded the patched files.
+    marker_pending=false
+  fi
+  if [ "$marker_pending" = "false" ]; then
+    rm -f "$UI_RELOAD_MARKER"
+  elif $patch_verified; then
+    ui_reload_pending=true
+    ui_reload_action="reboot"
+    ui_reload_reason="openpilot's UI was already running when CommaView patched it, and openpilot cannot reload its UI in place, so the onroad UI export takes effect after the next reboot"
+    reason="$reason; $ui_reload_reason"
+  fi
+fi
+
 json="$(
   HEALTHY="$healthy" \
   PATCH_VERIFIED="$patch_verified" \
@@ -496,6 +608,9 @@ json="$(
   UI_PLATFORM="$ui_platform" \
   DEVICE_MODEL="$device_model_value" \
   SELECTED_AUGMENTED_ROAD_TARGETS="$selected_augmented_road_targets" \
+  UI_RELOAD_PENDING="$ui_reload_pending" \
+  UI_RELOAD_ACTION="$ui_reload_action" \
+  UI_RELOAD_REASON="$ui_reload_reason" \
   python3 - <<'PYJSON'
 import json
 import os
@@ -554,6 +669,11 @@ payload = {
     "upstreamBranch": os.environ.get("UPSTREAM_BRANCH", ""),
     "appliedUpstreamHead": os.environ.get("APPLIED_UPSTREAM_HEAD", ""),
     "upstreamChangedSinceApply": env_bool("UPSTREAM_CHANGED_SINCE_APPLY"),
+    # True while openpilot's running UI predates the verified patch; the patch
+    # loads at the next openpilot start, i.e. after uiReloadAction ("reboot").
+    "uiReloadPending": env_bool("UI_RELOAD_PENDING"),
+    "uiReloadAction": os.environ.get("UI_RELOAD_ACTION", ""),
+    "uiReloadReason": os.environ.get("UI_RELOAD_REASON", ""),
 }
 print(json.dumps(payload, separators=(",", ":")))
 PYJSON
