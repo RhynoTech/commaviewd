@@ -10,7 +10,7 @@
 # Save a marker with actions/cache/save (path .pass-marker) in the job's last step, after
 # everything it vouches for passed. A marker counts only from this repository's own branches and
 # pull requests: a fork's pull request runs its own copy of the workflow, which could save any key.
-# Checking needs GH_TOKEN with actions: read.
+# Checking needs GH_TOKEN with actions: read, and pull-requests: read on a private repository.
 set -euo pipefail
 
 usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -46,7 +46,11 @@ case "$cmd" in
         if [[ "$ref" =~ ^refs/pull/([0-9]+)/merge$ ]]; then
           pr="${BASH_REMATCH[1]}"
           if [[ -z "${pr_trusted[$pr]:-}" ]]; then
-            head_repo="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.head.repo.full_name' 2>/dev/null || true)"
+            # Needs pull-requests: read on a private repository.
+            head_repo="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.head.repo.full_name' 2>/dev/null)" || {
+              echo "::warning::Couldn't read pull request #$pr (does the job have pull-requests: read?); its pass markers don't count." >&2
+              head_repo=""
+            }
             pr_trusted[$pr]="$([[ "$head_repo" == "$GITHUB_REPOSITORY" ]] && echo yes || echo no)"
           fi
           if [[ "${pr_trusted[$pr]}" == yes ]]; then
