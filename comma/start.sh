@@ -14,13 +14,55 @@ ONROAD_UI_EXPORT_VERIFY="$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
 ONROAD_UI_EXPORT_APPLY="$INSTALL_DIR/scripts/apply_onroad_ui_export_patch.sh"
 ONROAD_UI_EXPORT_LOG="$LOG_DIR/onroad-ui-export-startup.log"
 ONROAD_UI_EXPORT_RESTART_MARKER="$RUN_DIR/onroad-ui-export-ui-restart-needed"
+ONROAD_UI_EXPORT_PREPARE_TIMEOUT_SEC="${COMMAVIEWD_ONROAD_UI_EXPORT_PREPARE_TIMEOUT_SEC:-60}"
 COMMAVIEWD_LOG_MAX_BYTES="${COMMAVIEWD_LOG_MAX_BYTES:-8388608}"
 COMMAVIEWD_LOG_MAX_FILES_PER_LOG="${COMMAVIEWD_LOG_MAX_FILES_PER_LOG:-14}"
 COMMAVIEWD_LOG_MAX_AGE_DAYS="${COMMAVIEWD_LOG_MAX_AGE_DAYS:-14}"
 COMMAVIEWD_LOG_TOTAL_MAX_BYTES="${COMMAVIEWD_LOG_TOTAL_MAX_BYTES:-268435456}"
 COMMAVIEWD_LOG_ROTATE_INTERVAL_SEC="${COMMAVIEWD_LOG_ROTATE_INTERVAL_SEC:-600}"
+# A crashed bridge or control process is started again after a backoff that doubles from
+# FIRST_BACKOFF up to MAX_BACKOFF, and given up on after MAX_RESTARTS crashes in a row; a run of
+# HEALTHY_SEC or more starts the count over. Restarts can't disturb openpilot: the bridge reads its
+# queues without a msgq reader slot.
+COMMAVIEWD_SUPERVISOR_FIRST_BACKOFF_SEC="${COMMAVIEWD_SUPERVISOR_FIRST_BACKOFF_SEC:-5}"
+COMMAVIEWD_SUPERVISOR_MAX_BACKOFF_SEC="${COMMAVIEWD_SUPERVISOR_MAX_BACKOFF_SEC:-300}"
+COMMAVIEWD_SUPERVISOR_MAX_RESTARTS="${COMMAVIEWD_SUPERVISOR_MAX_RESTARTS:-8}"
+COMMAVIEWD_SUPERVISOR_HEALTHY_SEC="${COMMAVIEWD_SUPERVISOR_HEALTHY_SEC:-600}"
+COMMAVIEWD_BIN="${COMMAVIEWD_BIN:-/data/commaview/commaviewd}"
+DEFERRED_DIR="${COMMAVIEWD_DEFERRED_DIR:-/data/commaview-deferred}"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR" "$CONFIG_DIR"
+
+# The /data/continue.sh boot hook runs "start.sh --before-openpilot" right before
+# it execs launch_openpilot.sh. openpilot cannot reload its UI in place: manager
+# never restarts a UI process that exits (sunnypilot release restarts it, but
+# from the modules manager imported at startup), so patched UI files only take
+# effect when manager starts. Apply the onroad UI export patch here, before
+# manager exists, then start the runtime in the background as the hook used to.
+# The apply step is bounded so a hang can never keep openpilot from starting.
+prepare_onroad_ui_export_before_openpilot() {
+  local ec=0
+  if [ ! -x "$ONROAD_UI_EXPORT_APPLY" ]; then
+    return 0
+  fi
+  set -- "$ONROAD_UI_EXPORT_APPLY" --before-openpilot
+  if command -v timeout >/dev/null 2>&1; then
+    set -- timeout -k 5 "$ONROAD_UI_EXPORT_PREPARE_TIMEOUT_SEC" "$@"
+  fi
+  "$@" >> "$ONROAD_UI_EXPORT_LOG" 2>&1 || ec=$?
+  if [ "$ec" -eq 0 ]; then
+    echo "INFO: onroad UI export prepared before openpilot start" >> "$ONROAD_UI_EXPORT_LOG"
+  else
+    echo "WARN: onroad UI export not prepared before openpilot start (exit $ec); openpilot starts with its UI unchanged" >> "$ONROAD_UI_EXPORT_LOG"
+  fi
+}
+
+if [ "${1:-}" = "--before-openpilot" ]; then
+  prepare_onroad_ui_export_before_openpilot
+  COMMAVIEWD_ONROAD_UI_EXPORT_PREPARED=1 bash "${BASH_SOURCE[0]}" &
+  exit 0
+fi
+
 echo "$RESTART_REASON" > "$RUN_DIR/last-restart-reason.txt"
 
 if [ ! -s "$RUNTIME_DEBUG_CONFIG" ]; then
@@ -40,36 +82,29 @@ if [ $? -ne 0 ]; then
   echo "WARN: invalid runtime debug config JSON; bridge/control will fall back to safe defaults" >> "$LOG_DIR/commaviewd-control.log"
 fi
 
-read_is_onroad() {
-  cat /data/params/d/IsOnroad 2>/dev/null | tr -d "\000\r\n" || echo 0
+read_start_param() {
+  cat "/data/params/d/$1" 2>/dev/null | tr -d "\000\r\n"
 }
 
-restart_openpilot_ui_if_pending() {
-  if [ ! -f "$ONROAD_UI_EXPORT_RESTART_MARKER" ]; then
-    return 0
-  fi
+# openpilot and sunnypilot publish IsOffroad; upstream no longer has an IsOnroad
+# param, so reading only IsOnroad always looked offroad - even while driving -
+# and let startup repair rewrite openpilot's UI files and kill its UI mid-drive.
+read_is_onroad() {
+  case "$(read_start_param IsOffroad)" in
+    0) echo 1 ;;
+    1) echo 0 ;;
+    *) if [ "$(read_start_param IsOnroad)" = "1" ]; then echo 1; else echo 0; fi ;;
+  esac
+}
 
-  is_onroad="$(read_is_onroad)"
-  if [ "$is_onroad" = "1" ]; then
-    echo "WARN: deferred onroad UI export restart still pending while onroad" >> "$ONROAD_UI_EXPORT_LOG"
-    return 0
+# CommaView never signals openpilot's UI: a signalled UI stays dead on openpilot
+# (and restarts with its old code on sunnypilot) until reboot. A patch applied
+# while openpilot ran stays pending - verify reports "uiReloadPending" - until
+# openpilot next starts.
+report_openpilot_ui_reload_pending() {
+  if [ -f "$ONROAD_UI_EXPORT_RESTART_MARKER" ]; then
+    echo "INFO: onroad UI export takes effect after the next reboot; openpilot cannot reload its running UI" >> "$ONROAD_UI_EXPORT_LOG"
   fi
-
-  if ! command -v pkill >/dev/null 2>&1; then
-    echo "WARN: pkill unavailable; deferred onroad UI export restart remains pending" >> "$ONROAD_UI_EXPORT_LOG"
-    return 0
-  fi
-
-  if command -v pgrep >/dev/null 2>&1 && ! pgrep -f "selfdrive.ui.ui" >/dev/null 2>&1; then
-    echo "INFO: openpilot UI not running; clearing deferred onroad UI export restart" >> "$ONROAD_UI_EXPORT_LOG"
-    rm -f "$ONROAD_UI_EXPORT_RESTART_MARKER"
-    return 0
-  fi
-
-  echo "INFO: consuming deferred onroad UI export restart" >> "$ONROAD_UI_EXPORT_LOG"
-  pkill -INT -f "selfdrive.ui.ui" 2>/dev/null || true
-  sleep 2
-  rm -f "$ONROAD_UI_EXPORT_RESTART_MARKER"
 }
 
 refresh_onroad_ui_export_status() {
@@ -203,14 +238,25 @@ append_runtime_run_event() {
   component="$2"
   pid="$3"
   exit_status="${4:-}"
+  restart_in_sec="${5:-}"
   ts_ms="$(runtime_event_ts_ms)"
   {
     printf '{"tsMs":%s,"event":"%s","component":"%s","pid":%s,"restartReason":"%s"' "$ts_ms" "$event" "$component" "$pid" "$RESTART_REASON"
     if [ -n "$exit_status" ]; then
       printf ',"exitStatus":%s' "$exit_status"
     fi
+    if [ -n "$restart_in_sec" ]; then
+      printf ',"restartInSec":%s' "$restart_in_sec"
+    fi
     printf '}\n'
   } >> "$LOG_DIR/runtime-run-events.jsonl" 2>/dev/null || true
+}
+
+# The supervisor's own pid file still names it: stop.sh and install remove the pid files before
+# they stop anything, and a later start.sh writes new ones, so a supervisor that no longer owns its
+# file has been told to stand down and must not restart anything.
+supervisor_owns() {
+  [ "$(cat "$RUN_DIR/$1" 2>/dev/null)" = "$BASHPID" ]
 }
 
 start_runtime_process() {
@@ -221,20 +267,52 @@ start_runtime_process() {
   mode="$5"
   shift 5
   (
-    "$@" /data/commaview/commaviewd "$mode" >> "$log_file" 2>&1 &
-    child_pid="$!"
-    echo "$child_pid" > "$RUN_DIR/$pid_file"
-    append_runtime_run_event process_launch "$component" "$child_pid"
-    wait "$child_pid"
-    exit_status="$?"
-    append_runtime_run_event process_exit "$component" "$child_pid" "$exit_status"
-    exit "$exit_status"
+    crashes=0
+    backoff="$COMMAVIEWD_SUPERVISOR_FIRST_BACKOFF_SEC"
+    while :; do
+      started_at="$(date +%s)"
+      "$@" "$COMMAVIEWD_BIN" "$mode" >> "$log_file" 2>&1 &
+      child_pid="$!"
+      echo "$child_pid" > "$RUN_DIR/$pid_file"
+      append_runtime_run_event process_launch "$component" "$child_pid"
+      wait "$child_pid"
+      exit_status="$?"
+      append_runtime_run_event process_exit "$component" "$child_pid" "$exit_status"
+      # Stopped on purpose (exit, SIGINT, SIGTERM), or by stop.sh / install / a newer start.sh.
+      case "$exit_status" in
+        0|130|143) exit "$exit_status" ;;
+      esac
+      supervisor_owns "$supervisor_pid_file" || exit "$exit_status"
+      # A crash (a signal such as SIGSEGV or the OOM killer's SIGKILL, or an error exit).
+      if [ $(( $(date +%s) - started_at )) -ge "$COMMAVIEWD_SUPERVISOR_HEALTHY_SEC" ]; then
+        crashes=0
+        backoff="$COMMAVIEWD_SUPERVISOR_FIRST_BACKOFF_SEC"
+      fi
+      crashes=$((crashes + 1))
+      if [ "$crashes" -gt "$COMMAVIEWD_SUPERVISOR_MAX_RESTARTS" ]; then
+        append_runtime_run_event process_restart_gave_up "$component" "$child_pid" "$exit_status"
+        exit "$exit_status"
+      fi
+      append_runtime_run_event process_restart_scheduled "$component" "$child_pid" "$exit_status" "$backoff"
+      sleep "$backoff"
+      supervisor_owns "$supervisor_pid_file" || exit "$exit_status"
+      backoff=$((backoff * 2))
+      if [ "$backoff" -gt "$COMMAVIEWD_SUPERVISOR_MAX_BACKOFF_SEC" ]; then
+        backoff="$COMMAVIEWD_SUPERVISOR_MAX_BACKOFF_SEC"
+      fi
+    done
   ) >/dev/null 2>&1 &
   echo $! > "$RUN_DIR/$supervisor_pid_file"
 }
 
-refresh_onroad_ui_export_status
-restart_openpilot_ui_if_pending
+if [ "${COMMAVIEWD_ONROAD_UI_EXPORT_PREPARED:-0}" = "1" ]; then
+  # Started by --before-openpilot, which already patched the tree launch_openpilot.sh
+  # runs. Repairing again now would race manager importing the UI files.
+  echo "INFO: onroad UI export prepared before openpilot start; skipping startup repair" >> "$ONROAD_UI_EXPORT_LOG"
+else
+  refresh_onroad_ui_export_status
+fi
+report_openpilot_ui_reload_pending
 rotate_runtime_logs
 
 # Stop stale runtime processes first
@@ -262,5 +340,11 @@ start_runtime_process control control.pid control-supervisor.pid "$LOG_DIR/comma
   nice -n 19
 
 start_runtime_log_rotation_loop
+
+# An install, uninstall or repair asked for while onroad waits in run_when_offroad.sh's queue until
+# openpilot is offroad. A reboot ends its waiter; start it again.
+if [ -f "$DEFERRED_DIR/runner.sh" ]; then
+  COMMAVIEWD_DEFERRED_DIR="$DEFERRED_DIR" bash "$DEFERRED_DIR/runner.sh" resume >/dev/null 2>&1 || true
+fi
 
 echo "CommaView runtime started (bridge+control)"

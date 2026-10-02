@@ -8,13 +8,17 @@ TRANSFORMER="$INSTALL_DIR/scripts/transform_onroad_ui_export.py"
 VERIFY_SCRIPT="$INSTALL_DIR/scripts/verify_onroad_ui_export_patch.sh"
 STATE_ENV="$INSTALL_DIR/config/onroad-ui-export-patch.env"
 RESTART_MARKER="$INSTALL_DIR/run/onroad-ui-export-ui-restart-needed"
-PARAMS_DIR="/data/params/d"
-FORCE_OFFROAD=0
-FORCE_OFFROAD_OWNED=0
-FORCE_OFFROAD_PREV=""
+PARAMS_DIR="${COMMAVIEWD_PARAMS_DIR:-/data/params/d}"
+PROC_ROOT="${COMMAVIEWD_PROC_ROOT:-/proc}"
+STAGING_ROOT="${COMMAVIEWD_STAGING_ROOT:-/data/safe_staging}"
 FORCE_REPAIR=0
+BEFORE_OPENPILOT=0
 UI_PREFIX=""
 REQUESTED_UI_PLATFORM="auto"
+
+# Read-only git commands must not rewrite .git/index: launch_chffrplus.sh skips a
+# staged openpilot update when anything under .git is newer than .overlay_init.
+export GIT_OPTIONAL_LOCKS=0
 
 read_param() {
   local path="$PARAMS_DIR/$1"
@@ -22,113 +26,176 @@ read_param() {
   tr -d '\000\r\n' < "$path" 2>/dev/null || true
 }
 
-write_param() {
-  mkdir -p "$PARAMS_DIR"
-  printf '%s' "$2" > "$PARAMS_DIR/$1"
+# openpilot and sunnypilot publish IsOffroad; upstream no longer has an IsOnroad
+# param, so reading only IsOnroad always looked offroad - even while driving.
+# IsOnroad stays a fallback for older builds and bench rigs. Prints 1 when onroad.
+read_is_onroad() {
+  case "$(read_param IsOffroad)" in
+    0) echo 1 ;;
+    1) echo 0 ;;
+    *) if [ "$(read_param IsOnroad)" = "1" ]; then echo 1; else echo 0; fi ;;
+  esac
 }
 
-request_openpilot_ui_restart() {
-  mkdir -p "$(dirname "$RESTART_MARKER")"
-  printf 'pending\n' > "$RESTART_MARKER"
-}
 
-restore_force_offroad_mode() {
-  if [ "$FORCE_OFFROAD_OWNED" = "1" ]; then
-    write_param "OffroadMode" "${FORCE_OFFROAD_PREV:-0}"
-  fi
-}
+# openpilot cannot reload its UI in place, so CommaView never signals it:
+# - openpilot's manager never restarts a process that exits. PythonProcess.start()
+#   returns early while self.proc is set, and only stop() clears it, which manager
+#   calls for "ui" (always_run) only when it shuts down. The UI exits 0 on SIGINT
+#   (gui_app's handler calls sys.exit(0)), so a signalled UI stays dead until reboot.
+# - sunnypilot release branches restart a dead "ui" (restart_if_crash=True), but
+#   the manager preimports every process module at startup (PythonProcess.prepare)
+#   and forks the new UI from it, so the restarted UI runs the code it had before.
+# Patched UI files therefore take effect only when the manager starts: at boot,
+# where start.sh --before-openpilot applies the patch before launch_openpilot.sh.
+# A patch applied while openpilot runs records when it was written so
+# verify_onroad_ui_export_patch.sh can report "uiReloadPending" (reboot needed)
+# until openpilot next starts.
 
-restart_openpilot_ui_if_offroad() {
-  local is_onroad=""
-
-  if [ "${COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART:-0}" = "1" ]; then
-    echo "INFO: skipping openpilot UI restart by request" >&2
-    return 0
-  fi
-
-  is_onroad="$(read_param IsOnroad)"
-  if [ "$is_onroad" = "1" ]; then
-    request_openpilot_ui_restart
-    echo "WARN: deferring openpilot UI restart while onroad" >&2
-    return 0
-  fi
-
-  if ! command -v pkill >/dev/null 2>&1; then
-    request_openpilot_ui_restart
-    echo "WARN: pkill unavailable; deferring openpilot UI restart" >&2
-    return 0
-  fi
-
-  if command -v pgrep >/dev/null 2>&1 && ! pgrep -f "selfdrive.ui.ui" >/dev/null 2>&1; then
-    echo "INFO: openpilot UI process not running; no restart needed" >&2
-    rm -f "$RESTART_MARKER"
-    return 0
-  fi
-
-  echo "INFO: restarting openpilot UI to load CommaView onroad UI export transformer output" >&2
-  pkill -INT -f "selfdrive.ui.ui" 2>/dev/null || true
-  sleep 2
-  rm -f "$RESTART_MARKER"
-}
-
-cleanup() {
-  restore_force_offroad_mode
-}
-
-wait_until_offroad() {
-  local timeout_sec="${1:-45}"
-  local elapsed=0
-  local is_onroad=""
-  while [ "$elapsed" -lt "$timeout_sec" ]; do
-    is_onroad="$(read_param IsOnroad)"
-    if [ "$is_onroad" != "1" ]; then
+# Sets OPENPILOT_PROCESS_KIND to "ui" or "manager" when <proc dir> is openpilot's
+# UI (setproctitle names it "openpilot.selfdrive.ui.ui" or "selfdrive.ui.ui") or its
+# manager ("python3 ./manager.py"); returns 1 otherwise. Sets a variable instead of
+# printing so scanning every process costs no forks.
+openpilot_process_kind() {
+  local first cmd
+  local -a args=()
+  OPENPILOT_PROCESS_KIND=""
+  { mapfile -t -d '' args < "$1/cmdline"; } 2>/dev/null || return 1
+  [ "${#args[@]}" -gt 0 ] || return 1
+  first="${args[0]%"${args[0]##*[![:space:]]}"}"
+  case "$first" in
+    *selfdrive.ui.ui) OPENPILOT_PROCESS_KIND="ui"; return 0 ;;
+  esac
+  cmd=" ${args[*]} "
+  case "$cmd" in
+    *" ./manager.py "*|*"/system/manager/manager.py "*|*"system.manager.manager "*|*"/selfdrive/manager/manager.py "*|*"selfdrive.manager.manager "*)
+      OPENPILOT_PROCESS_KIND="manager"
       return 0
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
+      ;;
+  esac
   return 1
 }
 
+openpilot_process_pids() {
+  local proc
+  for proc in "$PROC_ROOT"/[0-9]*; do
+    openpilot_process_kind "$proc" && printf '%s\n' "${proc##*/}"
+  done
+  return 0
+}
+
+openpilot_running() {
+  [ -n "$(openpilot_process_pids | head -n 1)" ]
+}
+
+current_boot_id() {
+  tr -d '\r\n' < "$PROC_ROOT/sys/kernel/random/boot_id" 2>/dev/null || true
+}
+
+# Centiseconds since boot, the unit verify compares against openpilot's start time.
+current_uptime_cs() {
+  local up sec frac
+  up="$(cut -d' ' -f1 < "$PROC_ROOT/uptime" 2>/dev/null || true)"
+  case "$up" in
+    ''|*[!0-9.]*) return 1 ;;
+  esac
+  sec="${up%%.*}"
+  frac="${up#*.}"
+  [ "$frac" = "$up" ] && frac=""
+  frac="${frac}00"
+  printf '%s\n' "$((10#${sec:-0} * 100 + 10#${frac:0:2}))"
+}
+
+note_openpilot_ui_reload_needed() {
+  if [ "${COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART:-0}" = "1" ]; then
+    echo "INFO: skipping openpilot UI reload bookkeeping by request" >&2
+    return 0
+  fi
+
+  if ! openpilot_running; then
+    rm -f "$RESTART_MARKER"
+    echo "INFO: openpilot is not running; its UI loads the CommaView onroad UI export when it starts" >&2
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$RESTART_MARKER")"
+  printf 'pending\nbootId=%s\npatchedAtUptimeCs=%s\n' "$(current_boot_id)" "$(current_uptime_cs || true)" > "$RESTART_MARKER"
+  echo "INFO: CommaView onroad UI export takes effect after the next reboot; openpilot cannot reload its running UI, so CommaView leaves it alone" >&2
+}
+
+# launch_chffrplus.sh installs a finalized openpilot update (moves it into place)
+# before it starts manager. Mirror its checks so --before-openpilot patches the
+# tree that is about to run rather than the one about to be replaced.
+openpilot_root_after_launch() {
+  local dir="$1"
+  if [ ! -f "$dir/.overlay_init" ] || \
+     [ -n "$(find "$dir/.git" -newer "$dir/.overlay_init" -print -quit 2>/dev/null)" ] || \
+     [ ! -f "$STAGING_ROOT/finalized/.overlay_consistent" ] || \
+     [ -d "$STAGING_ROOT/old_openpilot" ]; then
+    printf '%s\n' "$dir"
+    return 0
+  fi
+  printf '%s\n' "$STAGING_ROOT/finalized"
+}
+
+# Called with --before-openpilot when openpilot has not started: nothing has
+# loaded the UI yet, so whatever is on disk now is what the UI will run.
+clear_openpilot_ui_reload_if_not_running() {
+  [ "$BEFORE_OPENPILOT" = "1" ] || return 0
+  [ "${COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART:-0}" = "1" ] && return 0
+  openpilot_running && return 0
+  rm -f "$RESTART_MARKER"
+}
+
+
+
+
 ensure_offroad_ready() {
   local is_onroad
-  is_onroad="$(read_param IsOnroad)"
+  if [ "$BEFORE_OPENPILOT" = "1" ]; then
+    if ! openpilot_running; then
+      # Before manager starts nothing drives, and IsOffroad still holds the last
+      # session's value (manager clears it at startup), so it is not consulted.
+      echo "INFO: openpilot has not started; applying onroad UI export before its UI loads" >&2
+      return 0
+    fi
+    echo "WARN: --before-openpilot given but openpilot is already running; applying the onroad check" >&2
+  fi
+  is_onroad="$(read_is_onroad)"
   if [ "$is_onroad" != "1" ]; then
     return 0
   fi
 
-  if [ "$FORCE_OFFROAD" != "1" ]; then
-    echo "ERROR: socket UI export transformer apply blocked while onroad" >&2
-    exit 42
-  fi
-
-  FORCE_OFFROAD_PREV="$(read_param OffroadMode)"
-  if [ "$FORCE_OFFROAD_PREV" != "1" ]; then
-    echo "INFO: requesting OffroadMode for transformer apply" >&2
-    write_param "OffroadMode" "1"
-    FORCE_OFFROAD_OWNED=1
-  fi
-
-  echo "INFO: waiting for actual offroad transition" >&2
-  if ! wait_until_offroad 45; then
-    echo "ERROR: device did not transition offroad in time" >&2
-    exit 42
-  fi
+  # CommaView never asks openpilot to go offroad (no OffroadMode), --force-offroad included:
+  # a change asked for while driving waits in run_when_offroad.sh until the car is parked.
+  echo "ERROR: socket UI export transformer apply blocked while onroad" >&2
+  exit 42
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --force-offroad) FORCE_OFFROAD=1; shift ;;
+    # Accepted from older callers; it changes nothing (nothing forces openpilot offroad).
+    --force-offroad) shift ;;
     --force-repair) FORCE_REPAIR=1; shift ;;
+    --before-openpilot) BEFORE_OPENPILOT=1; shift ;;
     --platform) REQUESTED_UI_PLATFORM="${2:-}"; shift 2 ;;
     --platform=*) REQUESTED_UI_PLATFORM="${1#--platform=}"; shift ;;
-    -h|--help) echo "Usage: apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair] [--platform auto|mici|tizi|tici]"; exit 0 ;;
+    -h|--help) echo "Usage: apply_onroad_ui_export_patch.sh [--force-offroad] [--force-repair] [--before-openpilot] [--platform auto|mici|tizi|tici]"; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
-trap cleanup EXIT
 ensure_offroad_ready
+
+if [ "$BEFORE_OPENPILOT" = "1" ] && ! openpilot_running; then
+  launch_root="$(openpilot_root_after_launch "$OP_ROOT")"
+  if [ "$launch_root" != "$OP_ROOT" ]; then
+    echo "INFO: launch_openpilot.sh is about to install the staged openpilot update at $launch_root; patching it instead of $OP_ROOT" >&2
+    OP_ROOT="$launch_root"
+  fi
+fi
+# verify_onroad_ui_export_patch.sh reads the tree from the environment.
+export COMMAVIEWD_OP_ROOT="$OP_ROOT"
 
 if ! git -C "$OP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "ERROR: upstream repo not found at $OP_ROOT" >&2
@@ -289,6 +356,20 @@ dirty_managed_targets() {
   done < <(managed_targets)
 }
 
+# One line per managed target: its sha256, or "absent". Compared before and after
+# a run to tell whether the UI files openpilot loaded have changed.
+managed_targets_digest() {
+  local rel=""
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if [ -f "$OP_ROOT/$rel" ]; then
+      printf '%s %s\n' "$(sha256sum < "$OP_ROOT/$rel" | awk '{print $1}')" "$rel"
+    else
+      printf 'absent %s\n' "$rel"
+    fi
+  done < <(managed_targets)
+}
+
 reset_managed_targets() {
   local rel=""
   local reset_ec=0
@@ -406,11 +487,14 @@ template="$SRC_ROOT/commaview_export.${flavor}.py"
 [ -f "$template" ] || { echo "ERROR: missing socket UI export helper template: $template" >&2; exit 1; }
 [ -f "$TRANSFORMER" ] || { echo "ERROR: missing socket UI export transformer: $TRANSFORMER" >&2; exit 1; }
 
+clear_openpilot_ui_reload_if_not_running
+
 if [ "$FORCE_REPAIR" != "1" ] && [ -x "$VERIFY_SCRIPT" ] && "$VERIFY_SCRIPT" --json --platform "$ui_platform" >/dev/null 2>&1; then
-  request_openpilot_ui_restart
-  restart_openpilot_ui_if_offroad
+  # Already patched: no UI file changes, so nothing new for openpilot to reload.
   exit 0
 fi
+
+targets_before="$(managed_targets_digest)"
 
 if dirty_targets="$(dirty_managed_targets)" && [ -n "$dirty_targets" ]; then
   if [ "$FORCE_REPAIR" != "1" ]; then
@@ -457,12 +541,22 @@ fi
 
 write_patch_state_env
 
+# Record the reload need before verifying so the status JSON verify prints says
+# whether openpilot's running UI still has the old code.
+reload_marker_backup="$transform_backup_root/onroad-ui-export-ui-restart-needed.before"
+reload_marker_existed=0
+if [ -f "$RESTART_MARKER" ]; then
+  cp "$RESTART_MARKER" "$reload_marker_backup"
+  reload_marker_existed=1
+fi
+if [ "$(managed_targets_digest)" != "$targets_before" ]; then
+  note_openpilot_ui_reload_needed
+fi
+
 if [ -x "$VERIFY_SCRIPT" ]; then
   verify_ec=0
   "$VERIFY_SCRIPT" --json --platform "$ui_platform" || verify_ec=$?
   if [ "$verify_ec" -eq 0 ]; then
-    request_openpilot_ui_restart
-    restart_openpilot_ui_if_offroad
     exit 0
   fi
   reset_ec=0
@@ -480,6 +574,11 @@ if [ -x "$VERIFY_SCRIPT" ]; then
   else
     rm -f "$STATE_ENV" || state_restore_ec=$?
   fi
+  if [ "$reload_marker_existed" -eq 1 ]; then
+    cp "$reload_marker_backup" "$RESTART_MARKER" || state_restore_ec=$?
+  else
+    rm -f "$RESTART_MARKER" || state_restore_ec=$?
+  fi
   if [ "$state_restore_ec" -ne 0 ]; then
     echo "WARN: failed to restore onroad UI export patch state after verification rollback" >&2
   fi
@@ -492,5 +591,3 @@ if [ -x "$VERIFY_SCRIPT" ]; then
 fi
 
 write_patch_state_env
-request_openpilot_ui_restart
-restart_openpilot_ui_if_offroad

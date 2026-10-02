@@ -54,13 +54,37 @@ stop_pids() {
   return 1
 }
 
+# Pid files live on /data and outlive both the processes they name and reboots
+# (power loss never runs this script). A recorded pid may since have been reused
+# by an openpilot process, and manager never restarts a process that dies, so
+# signalling it blindly leaves openpilot with "Process Not Running" and unable to
+# engage. Only signal a recorded pid that is still one of ours: a commaviewd mode
+# or a start.sh subshell (supervisor / log rotation loop), never our own parent.
+tracked_pid_is_runtime() {
+  local pid="$1" cmd
+  [ "$pid" = "$$" ] && return 1
+  [ "$pid" = "$PPID" ] && return 1
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  cmd="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmd" in
+    *"/data/commaview/commaviewd bridge"*|*"/data/commaview/commaviewd control"*|*"/data/commaview/start.sh"*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 tracked_pids=""
 for f in bridge.pid control.pid bridge-supervisor.pid control-supervisor.pid log-rotation.pid; do
   if [ -f "$RUN/$f" ]; then
     pid="$(cat "$RUN/$f" 2>/dev/null)"
     case "$pid" in
       ''|*[!0-9]*) ;;
-      *) tracked_pids="$tracked_pids $pid" ;;
+      *)
+        if tracked_pid_is_runtime "$pid"; then
+          tracked_pids="$tracked_pids $pid"
+        fi
+        ;;
     esac
     rm -f "$RUN/$f"
   fi

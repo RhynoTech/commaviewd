@@ -8,11 +8,12 @@ STATE_JSON="$INSTALL_DIR/run/onroad-ui-export-status.json"
 RESTART_MARKER="$INSTALL_DIR/run/onroad-ui-export-ui-restart-needed"
 BACKUP_ROOT="${COMMAVIEWD_BACKUP_ROOT:-/data/commaview-backups}"
 PARAMS_DIR="${COMMAVIEWD_PARAMS_DIR:-/data/params/d}"
-FORCE_OFFROAD=0
 PREFLIGHT_ONLY=0
-FORCE_OFFROAD_OWNED=0
-FORCE_OFFROAD_PREV=""
 UI_PREFIX=""
+
+# Only the reset/checkout below may write .git/index; status-style reads must
+# not, or launch_chffrplus.sh skips a staged openpilot update.
+export GIT_OPTIONAL_LOCKS=0
 
 read_param() {
   local path="$PARAMS_DIR/$1"
@@ -20,72 +21,44 @@ read_param() {
   tr -d '\000\r\n' < "$path" 2>/dev/null || true
 }
 
-write_param() {
-  mkdir -p "$PARAMS_DIR"
-  printf '%s' "$2" > "$PARAMS_DIR/$1"
+# openpilot and sunnypilot publish IsOffroad; upstream no longer has an IsOnroad
+# param, so reading only IsOnroad always looked offroad - even while driving.
+# IsOnroad stays a fallback for older builds and bench rigs. Prints 1 when onroad.
+read_is_onroad() {
+  case "$(read_param IsOffroad)" in
+    0) echo 1 ;;
+    1) echo 0 ;;
+    *) if [ "$(read_param IsOnroad)" = "1" ]; then echo 1; else echo 0; fi ;;
+  esac
 }
 
-restore_force_offroad_mode() {
-  if [ "$FORCE_OFFROAD_OWNED" = "1" ]; then
-    write_param "OffroadMode" "${FORCE_OFFROAD_PREV:-0}"
-  fi
-}
 
-cleanup() {
-  restore_force_offroad_mode
-}
 
-wait_until_offroad() {
-  local timeout_sec="${1:-45}"
-  local elapsed=0
-  local is_onroad=""
-  while [ "$elapsed" -lt "$timeout_sec" ]; do
-    is_onroad="$(read_param IsOnroad)"
-    if [ "$is_onroad" != "1" ]; then
-      return 0
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
-  return 1
-}
+
 
 ensure_offroad_ready() {
   local is_onroad
-  is_onroad="$(read_param IsOnroad)"
+  is_onroad="$(read_is_onroad)"
   if [ "$is_onroad" != "1" ]; then
     return 0
   fi
 
-  if [ "$FORCE_OFFROAD" != "1" ]; then
-    echo "ERROR: socket UI export transformer revert blocked while onroad" >&2
-    exit 42
-  fi
-
-  FORCE_OFFROAD_PREV="$(read_param OffroadMode)"
-  if [ "$FORCE_OFFROAD_PREV" != "1" ]; then
-    echo "INFO: requesting OffroadMode for transformer revert" >&2
-    write_param "OffroadMode" "1"
-    FORCE_OFFROAD_OWNED=1
-  fi
-
-  echo "INFO: waiting for actual offroad transition" >&2
-  if ! wait_until_offroad 45; then
-    echo "ERROR: device did not transition offroad in time" >&2
-    exit 42
-  fi
+  # CommaView never asks openpilot to go offroad (no OffroadMode), --force-offroad included:
+  # a change asked for while driving waits in run_when_offroad.sh until the car is parked.
+  echo "ERROR: socket UI export transformer revert blocked while onroad" >&2
+  exit 42
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --force-offroad) FORCE_OFFROAD=1; shift ;;
+    # Accepted from older callers; it changes nothing (nothing forces openpilot offroad).
+    --force-offroad) shift ;;
     --preflight-only) PREFLIGHT_ONLY=1; shift ;;
     -h|--help) echo "Usage: revert_onroad_ui_export_patch.sh [--force-offroad] [--preflight-only]"; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
-trap cleanup EXIT
 ensure_offroad_ready
 if [ "$PREFLIGHT_ONLY" = "1" ]; then
   exit 0
@@ -102,42 +75,13 @@ detect_ui_prefix() {
   fi
 }
 
-request_openpilot_ui_restart() {
-  mkdir -p "$(dirname "$RESTART_MARKER")"
-  printf 'pending\n' > "$RESTART_MARKER"
-}
-
-restart_openpilot_ui_if_offroad() {
-  local is_onroad=""
-
-  if [ "${COMMAVIEWD_SKIP_OPENPILOT_UI_RESTART:-0}" = "1" ]; then
-    echo "INFO: skipping openpilot UI restart by request" >&2
-    return 0
-  fi
-
-  is_onroad="$(read_param IsOnroad)"
-  if [ "$is_onroad" = "1" ]; then
-    request_openpilot_ui_restart
-    echo "WARN: deferring openpilot UI restart while onroad" >&2
-    return 0
-  fi
-
-  if ! command -v pkill >/dev/null 2>&1; then
-    request_openpilot_ui_restart
-    echo "WARN: pkill unavailable; deferring openpilot UI restart" >&2
-    return 0
-  fi
-
-  if command -v pgrep >/dev/null 2>&1 && ! pgrep -f "selfdrive.ui.ui" >/dev/null 2>&1; then
-    echo "INFO: openpilot UI process not running; no restart needed" >&2
-    rm -f "$RESTART_MARKER"
-    return 0
-  fi
-
-  echo "INFO: restarting openpilot UI to unload CommaView onroad UI export transformer output" >&2
-  pkill -INT -f "selfdrive.ui.ui" 2>/dev/null || true
-  sleep 2
-  rm -f "$RESTART_MARKER"
+# CommaView never signals openpilot's UI: manager never restarts a UI that exits
+# (sunnypilot restarts it from the modules manager imported at startup), so a
+# signalled UI would stay dead or keep the old code until reboot. The running UI
+# keeps the exporter it loaded until openpilot next starts; without the CommaView
+# runtime its socket has no listener and the exporter stays idle.
+note_openpilot_ui_keeps_loaded_code() {
+  echo "INFO: openpilot's running UI keeps the CommaView onroad UI export it loaded until the next reboot; it is idle without the CommaView runtime" >&2
 }
 
 managed_targets() {
@@ -241,6 +185,6 @@ if [ "$reset_ec" -ne 0 ]; then
   exit "$restore_ec"
 fi
 rm -f "$STATE_ENV" "$STATE_JSON" "$RESTART_MARKER"
-restart_openpilot_ui_if_offroad
+note_openpilot_ui_keeps_loaded_code
 
 echo "CommaView onroad UI export transformer reverted"

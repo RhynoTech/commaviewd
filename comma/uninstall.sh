@@ -11,6 +11,42 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+PARAMS_DIR="${COMMAVIEWD_PARAMS_DIR:-/data/params/d}"
+DEFERRED_DIR="${COMMAVIEWD_DEFERRED_DIR:-/data/commaview-deferred}"
+RUNNER="$INSTALL_DIR/scripts/run_when_offroad.sh"
+
+read_param() {
+  local path="$PARAMS_DIR/$1"
+  [ -f "$path" ] || return 0
+  tr -d '\000\r\n' < "$path" 2>/dev/null || true
+}
+
+# openpilot and sunnypilot publish IsOffroad; IsOnroad stays a fallback for older builds and bench
+# rigs. Prints 1 when onroad.
+read_is_onroad() {
+  case "$(read_param IsOffroad)" in
+    0) echo 1 ;;
+    1) echo 0 ;;
+    *) if [ "$(read_param IsOnroad)" = "1" ]; then echo 1; else echo 0; fi ;;
+  esac
+}
+
+# Uninstalling stops the runtime and restores openpilot's UI files, so it only runs offroad.
+# CommaView never asks openpilot to go offroad: with --force-offroad an uninstall asked for while
+# driving is queued (run_when_offroad.sh) and runs once the car is parked; exit 75 says so.
+if [ "$(read_is_onroad)" = "1" ]; then
+  if [ "$FORCE_OFFROAD" = "1" ] && [ -f "$RUNNER" ]; then
+    if COMMAVIEWD_DEFERRED_DIR="$DEFERRED_DIR" bash "$RUNNER" queue uninstall --file "$INSTALL_DIR/uninstall.sh" -- \
+        bash @JOB@/uninstall.sh >/dev/null; then
+      echo "DEFERRED: CommaView will be uninstalled once the car is parked and switched off (openpilot offroad)."
+      echo "COMMAVIEW_MAINTENANCE_DEFERRED=uninstall"
+      exit 75
+    fi
+  fi
+  echo "ERROR: uninstall blocked while onroad. Park the vehicle, or rerun with --force-offroad to uninstall once it is parked." >&2
+  exit 42
+fi
+
 revert_args=()
 if [ "$FORCE_OFFROAD" = "1" ]; then
   revert_args+=(--force-offroad)
@@ -28,6 +64,13 @@ if [ -x "$revert_helper" ]; then
 else
   echo "ERROR: direct v2 onroad UI export transformer revert helper missing; uninstall aborted before stopping services or removing files; preserving $INSTALL_DIR for recovery" >&2
   exit 1
+fi
+
+# A queued install would put back what this removes. (Run as the queued job itself, the queue
+# cleans up after it.)
+if [ "${COMMAVIEWD_DEFERRED_JOB:-0}" != "1" ] && [ -f "$DEFERRED_DIR/runner.sh" ]; then
+  COMMAVIEWD_DEFERRED_DIR="$DEFERRED_DIR" bash "$DEFERRED_DIR/runner.sh" cancel >/dev/null 2>&1 || true
+  rm -rf "$DEFERRED_DIR"
 fi
 
 echo "Stopping services..."

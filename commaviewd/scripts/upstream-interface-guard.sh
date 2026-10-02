@@ -175,6 +175,10 @@ required_capnp_fields=(
   horizontalAccuracy
   bearingDeg
   unixTimestampMillis
+  # Support bundles peek managerState's process table (src/manager_state_peek.cpp).
+  managerState
+  shouldBeRunning
+  exitCode
 )
 
 for field in "${required_capnp_fields[@]}"; do
@@ -196,6 +200,93 @@ if [[ -f "$msgq_root/msgq/msgq.cc" ]]; then
     'q->data = mem + sizeof(msgq_header_t);'; do
     grep -Fq "$needle" "$msgq_root/msgq/msgq.cc" || missing+=("msgq-ring:$needle")
   done
+fi
+
+# The bridge follows the encoder queues the same way, message by message, without a reader slot
+# (src/msgq_ring_reader.cpp), so it relies on the rest of the layout too: the header's fields and
+# their order (write_pointer second; the size, 24 + 24 * NUM_READERS, is worked out from the file,
+# which only works while it stays under 1 KiB and the queue sizes are whole KiB), the packed
+# lap/offset pointer, the order of a send (size tag, bytes, barrier, then the pointer), and the
+# one-third-of-the-ring bound on a message that sizes the margin kept from the writer.
+if [[ -f "$msgq_root/msgq/msgq.h" && -f "$msgq_root/msgq/msgq.cc" ]]; then
+  while IFS= read -r problem; do
+    [[ -n "$problem" ]] && missing+=("$problem")
+  done < <(python3 - "$msgq_root/msgq/msgq.h" "$msgq_root/msgq/msgq.cc" "$OP_SOURCE_ROOT/cereal/services.py" <<'PY'
+import pathlib
+import re
+import sys
+
+header = pathlib.Path(sys.argv[1]).read_text()
+ring = pathlib.Path(sys.argv[2]).read_text()
+services_path = pathlib.Path(sys.argv[3])
+
+
+def flat(text):
+    return re.sub(r'\s+', ' ', text)
+
+
+if not re.search(r'struct\s+msgq_header_t\s*\{\s*uint64_t\s+num_readers;\s*uint64_t\s+write_pointer;\s*'
+                 r'uint64_t\s+write_uid;\s*uint64_t\s+read_pointers\[NUM_READERS\];\s*'
+                 r'uint64_t\s+read_valids\[NUM_READERS\];\s*uint64_t\s+read_uids\[NUM_READERS\];\s*\};', header):
+    print('msgq-layout:msgq_header_t is num_readers, write_pointer, write_uid, read_pointers/read_valids/read_uids[NUM_READERS]')
+readers = re.search(r'#define\s+NUM_READERS\s+(\d+)\b', header)
+if readers is None or not 1 <= int(readers.group(1)) <= 41:
+    print('msgq-layout:NUM_READERS between 1 and 41 (24 + 24 * NUM_READERS header bytes under 1 KiB)')
+for macro in ('#define ALIGN(n) ((n + (8 - 1)) & -8)',
+              '#define PACK64(output, higher, lower) output = ((uint64_t)higher << 32) | ((uint64_t)lower & 0xFFFFFFFF)'):
+    if macro not in flat(header):
+        print(f'msgq-layout:{macro}')
+
+for needle in ('int rc = ftruncate(fd, size + sizeof(msgq_header_t));',
+               'assert(3 * total_msg_size <= q->size);',
+               'write_cycles = write_cycles + 1;'):
+    if needle not in ring:
+        print(f'msgq-ring:{needle}')
+send = ring.split('int msgq_msg_send(', 1)[-1]
+order = ['*size_p = msg->size;', 'memcpy(p + sizeof(int64_t), msg->data, msg->size);', '__sync_synchronize();',
+         'uint32_t new_ptr = ALIGN(write_pointer + msg->size + sizeof(int64_t));',
+         'PACK64(*q->write_pointer, write_cycles, new_ptr);']
+positions = [send.find(needle) for needle in order]
+if -1 in positions or positions != sorted(positions):
+    print('msgq-ring:msgq_msg_send stores the size tag, the bytes, a barrier, then the write pointer')
+
+if services_path.is_file():
+    services = services_path.read_text()
+    queue_sizes = re.search(r'class\s+QueueSize\b.*?:\n((?:[ \t]+.*\n)+)', services)
+    if queue_sizes:
+        for name, value in re.findall(r'^\s+([A-Z_]+)\s*=\s*([^#\n]+)', queue_sizes.group(1), re.M):
+            if not re.fullmatch(r'\d+\s*\*\s*1024(\s*\*\s*1024)?', value.strip()):
+                print(f'msgq-layout:QueueSize.{name} = {value.strip()} (queue sizes must be whole KiB)')
+PY
+)
+fi
+
+# The control API's road phase (offroad / parked / driving, src/road_phase.cpp) reads carState and
+# selfdriveState from their queues the same read-only way.
+car_schema="$OP_SOURCE_ROOT/cereal/car.capnp"
+[[ -f "$car_schema" ]] || car_schema="$OP_ROOT/opendbc_repo/opendbc/car/car.capnp"
+check_file "$car_schema"
+if [[ -f "$car_schema" ]]; then
+  while IFS= read -r problem; do
+    [[ -n "$problem" ]] && missing+=("$problem")
+  done < <(python3 - "$car_schema" "$OP_SOURCE_ROOT/cereal/log.capnp" <<'PY'
+import pathlib
+import re
+import sys
+
+car = pathlib.Path(sys.argv[1]).read_text()
+log = pathlib.Path(sys.argv[2]).read_text() if pathlib.Path(sys.argv[2]).is_file() else ''
+if not re.search(r'\bgearShifter\s+@\d+\s*:GearShifter;', car):
+    print('road-phase:CarState.gearShifter :GearShifter')
+if not re.search(r'enum\s+GearShifter\s*\{\s*unknown\s+@0;\s*park\s+@1;', car):
+    print('road-phase:GearShifter { unknown @0; park @1; ... }')
+if not re.search(r'\bstandstill\s+@\d+\s*:Bool;', car):
+    print('road-phase:CarState.standstill :Bool')
+selfdrive = re.search(r'struct\s+SelfdriveState\s*\{(.*?)\n\}', log, re.S)
+if selfdrive is None or not re.search(r'\benabled\s+@\d+\s*:Bool;', selfdrive.group(1)):
+    print('road-phase:SelfdriveState.enabled :Bool')
+PY
+)
 fi
 
 if [[ ${#missing[@]} -gt 0 ]]; then

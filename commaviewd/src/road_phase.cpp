@@ -1,0 +1,140 @@
+#include "road_phase.h"
+
+#include <capnp/dynamic.h>
+#include <capnp/serialize.h>
+#include <kj/array.h>
+#include <sys/stat.h>
+
+#include <cstring>
+#include <ctime>
+
+#include "cereal/gen/cpp/log.capnp.h"
+#include "gps_peek.h"
+
+namespace commaview::road {
+namespace {
+
+uint64_t monotonic_ns() {
+  timespec ts {};
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+  return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+// Runs fn on the event in data, or returns nothing for bytes that aren't one.
+template <typename Fn>
+auto with_event(const uint8_t* data, size_t size, Fn fn) -> decltype(fn(std::declval<cereal::Event::Reader>())) {
+  if (data == nullptr || size < sizeof(capnp::word) || size % sizeof(capnp::word) != 0) return std::nullopt;
+  kj::Array<capnp::word> words = kj::heapArray<capnp::word>(size / sizeof(capnp::word));
+  std::memcpy(words.begin(), data, size);
+  try {
+    capnp::ReaderOptions options;
+    options.traversalLimitInWords = 1 << 16;
+    capnp::FlatArrayMessageReader reader(words, options);
+    return fn(reader.getRoot<cereal::Event>());
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+bool fresh(uint64_t log_mono_ns, uint64_t now_ns) {
+  if (log_mono_ns == 0) return false;
+  if (log_mono_ns >= now_ns) return log_mono_ns - now_ns <= kRoadPhaseFreshNs;
+  return now_ns - log_mono_ns <= kRoadPhaseFreshNs;
+}
+
+bool queue_exists(const std::string& path) {
+  struct stat st {};
+  return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+template <typename Decode>
+auto peek(const std::string& path, Decode decode) -> decltype(decode(nullptr, 0)) {
+  commaview::gps::QueuePeek queue(path);
+  const auto message = queue.newest();
+  if (!message) return std::nullopt;
+  return decode(message->data(), message->size());
+}
+
+}  // namespace
+
+const char* road_phase_name(RoadPhase phase) {
+  switch (phase) {
+    case RoadPhase::kOffroad: return "offroad";
+    case RoadPhase::kParked: return "parked";
+    case RoadPhase::kDriving: return "driving";
+  }
+  return "driving";
+}
+
+std::optional<CarSample> car_sample_from_event(const uint8_t* data, size_t size) {
+  return with_event(data, size, [](cereal::Event::Reader event) -> std::optional<CarSample> {
+    if (!event.isCarState()) return std::nullopt;
+    const auto car = event.getCarState();
+    CarSample sample;
+    sample.log_mono_ns = event.getLogMonoTime();
+    const auto gear = car.getGearShifter();
+    sample.gear_known = gear != cereal::CarState::GearShifter::UNKNOWN;
+    sample.in_park = gear == cereal::CarState::GearShifter::PARK;
+    sample.standstill = car.getStandstill();
+    return sample;
+  });
+}
+
+std::optional<SelfdriveSample> selfdrive_sample_from_event(const uint8_t* data, size_t size) {
+  return with_event(data, size, [](cereal::Event::Reader event) -> std::optional<SelfdriveSample> {
+    if (!event.isSelfdriveState()) return std::nullopt;
+    SelfdriveSample sample;
+    sample.log_mono_ns = event.getLogMonoTime();
+    sample.enabled = event.getSelfdriveState().getEnabled();
+    return sample;
+  });
+}
+
+std::optional<SelfdriveSample> mads_sample_from_event(const uint8_t* data, size_t size) {
+  return with_event(data, size, [](cereal::Event::Reader event) -> std::optional<SelfdriveSample> {
+    // By name: upstream openpilot's schema has no selfdriveStateSP, and get() on a member that
+    // doesn't exist throws.
+    capnp::DynamicStruct::Reader dynamic = capnp::toDynamic(event);
+    if (!dynamic.has("selfdriveStateSP")) return std::nullopt;
+    const auto mads = dynamic.get("selfdriveStateSP").as<capnp::DynamicStruct>().get("mads").as<capnp::DynamicStruct>();
+    SelfdriveSample sample;
+    sample.log_mono_ns = event.getLogMonoTime();
+    sample.enabled = mads.get("enabled").as<bool>();
+    return sample;
+  });
+}
+
+RoadPhaseReading decide_road_phase(const RoadPhaseInputs& in) {
+  if (!in.onroad) return {RoadPhase::kOffroad, "offroad"};
+  const auto driving = [](const char* why) { return RoadPhaseReading{RoadPhase::kDriving, why}; };
+  if (!in.car) return driving("car-state-missing");
+  if (!fresh(in.car->log_mono_ns, in.now_mono_ns)) return driving("car-state-stale");
+  if (!in.car->gear_known) return driving("gear-unknown");
+  if (!in.car->in_park) return driving("not-in-park");
+  if (!in.car->standstill) return driving("moving");
+  if (!in.selfdrive) return driving("selfdrive-state-missing");
+  if (!fresh(in.selfdrive->log_mono_ns, in.now_mono_ns)) return driving("selfdrive-state-stale");
+  if (in.selfdrive->enabled) return driving("engaged");
+  if (in.mads_queue_exists) {
+    // sunnypilot: lateral control (MADS) can be engaged while openpilot is not.
+    if (!in.mads || !fresh(in.mads->log_mono_ns, in.now_mono_ns)) return driving("mads-state-unknown");
+    if (in.mads->enabled) return driving("mads-engaged");
+  }
+  return {RoadPhase::kParked, "parked"};
+}
+
+RoadPhaseReading read_road_phase(bool onroad, const std::string& msgq_dir) {
+  RoadPhaseInputs in;
+  in.onroad = onroad;
+  if (onroad) {
+    in.car = peek(msgq_dir + "/msgq_carState", car_sample_from_event);
+    in.selfdrive = peek(msgq_dir + "/msgq_selfdriveState", selfdrive_sample_from_event);
+    const std::string mads_path = msgq_dir + "/msgq_selfdriveStateSP";
+    in.mads_queue_exists = queue_exists(mads_path);
+    if (in.mads_queue_exists) in.mads = peek(mads_path, mads_sample_from_event);
+    in.now_mono_ns = monotonic_ns();
+  }
+  return decide_road_phase(in);
+}
+
+}  // namespace commaview::road

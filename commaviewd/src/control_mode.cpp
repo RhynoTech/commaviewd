@@ -1,12 +1,16 @@
 #include "control_mode.h"
 #include "gps_peek.h"
 #include "http_server.h"
+#include "manager_state_peek.h"
+#include "road_phase.h"
 #include "runtime_debug_config.h"
 #include "source_recording_archive.h"
+#include "support_bundle.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +20,7 @@
 #include <iomanip>
 #include <cmath>
 #include <fcntl.h>
+#include <poll.h>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -53,22 +58,45 @@ constexpr const char* kOnroadUiExportApplyScript = "/data/commaview/scripts/appl
 constexpr const char* kOnroadUiExportVerifyScript = "/data/commaview/scripts/verify_onroad_ui_export_patch.sh";
 constexpr size_t kSupportLogPerFileCapBytes = 512 * 1024;
 constexpr size_t kSupportLogTotalCapBytes = 2 * 1024 * 1024;
+// The kernel ring buffer is usually 256 KiB-1 MiB; only its OOM/kill lines are kept.
+constexpr size_t kSupportKernelLogReadCapBytes = 2 * 1024 * 1024;
+
+// Where a support bundle entry comes from. Everything is read only while answering
+// GET /commaview/support/logs, which the app sends only when the user taps Share.
+enum class SupportLogSource {
+  kFile,
+  kManagerState,  // openpilot's process table, peeked from its msgq ring (no subscriber)
+  kSwaglog,       // openpilot's swaglog lines about stopped/killed processes
+  kKernelLog,     // dmesg lines about out-of-memory kills
+};
 
 struct SupportLogFileSpec {
   std::string entry_name;
   std::string path;
   bool rotated;
+  SupportLogSource source = SupportLogSource::kFile;
 };
+
+std::string msgq_dir();
+std::string swaglog_dir();
+std::string leaderboard_seed_for_redaction();
 
 std::vector<SupportLogFileSpec> support_log_files() {
   // Put the small structured snapshots first. Large rolling logs can consume the
   // total response cap, but a support bundle must always retain the current
   // bounded counters and effective configuration needed to diagnose the run.
+  // Nothing from data/: the drive list is private, and data/leaderboard-key.json is
+  // this comma's private key (its seed is also redacted wherever it might appear).
   std::vector<SupportLogFileSpec> files = {
       {"telemetry-stats.json", "/data/commaview/run/telemetry-stats.json", false},
       {"runtime-debug-effective.json", "/data/commaview/run/runtime-debug-effective.json", false},
       {"onroad-ui-export-status.json", "/data/commaview/run/onroad-ui-export-status.json", false},
       {"last-restart-reason.txt", "/data/commaview/run/last-restart-reason.txt", false},
+      // openpilot's side, each capped small: why a process openpilot needs isn't running.
+      {"openpilot-manager-state.json", msgq_dir() + "/msgq_managerState", false, SupportLogSource::kManagerState},
+      {"openpilot-process-events.log", swaglog_dir() + "/swaglog.*", false, SupportLogSource::kSwaglog},
+      {"kernel-oom-events.log", "dmesg", false, SupportLogSource::kKernelLog},
+      {"runtime-debug-apply.log", "/data/commaview/logs/runtime-debug-apply.log", false},
       {"runtime-run-events.jsonl", "/data/commaview/logs/runtime-run-events.jsonl", false},
       {"commaviewd-bridge.log", "/data/commaview/logs/commaviewd-bridge.log", false},
       {"commaviewd-control.log", "/data/commaview/logs/commaviewd-control.log", false},
@@ -102,7 +130,10 @@ struct PairingGrant {
 std::mutex g_pairing_mutex;
 PairingGrant g_pairing_grant;
 bool run_command(const std::vector<std::string>& args, int* exit_code, std::string* stdout_text, std::string* stderr_text);
+bool run_command_with_optional_sudo(const std::vector<std::string>& args, int* exit_code, std::string* stdout_text,
+                                    std::string* stderr_text);
 bool is_onroad();
+std::string deferred_maintenance_json();
 
 std::string normalize_code(const std::string& in) {
   std::string out;
@@ -247,23 +278,156 @@ std::string read_file_tail_capped(const std::string& path, size_t cap, bool* exi
   return out;
 }
 
-std::string support_logs_response_json() {
+// openpilot's own log (swaglog), kept by its logmessaged as /data/log/swaglog.<index>.
+std::string swaglog_dir() {
+#if !defined(__aarch64__)
+  if (const char* test_dir = std::getenv("COMMAVIEWD_TEST_SWAGLOG_DIR")) {
+    if (*test_dir) return test_dir;
+  }
+#endif
+  return "/data/log";
+}
+
+// The kernel log as plain `dmesg` prints it: read-only, the ring buffer is never cleared.
+std::string kernel_log_text(std::string* source, std::string* error) {
+#if !defined(__aarch64__)
+  // Host tests feed a fixed kernel log instead of the build machine's.
+  if (const char* test_file = std::getenv("COMMAVIEWD_TEST_KERNEL_LOG_FILE")) {
+    if (*test_file) {
+      bool exists = false;
+      bool truncated = false;
+      *source = "test";
+      std::string text = read_file_tail_capped(test_file, kSupportKernelLogReadCapBytes, &exists, &truncated);
+      if (!exists) *error = "kernel log unavailable";
+      return text;
+    }
+  }
+#endif
+  std::string klog_error;
+  std::string text = commaview::support::read_kernel_log(kSupportKernelLogReadCapBytes, &klog_error);
+  if (klog_error.empty()) {
+    *source = "klogctl";
+    return text;
+  }
+  // kernel.dmesg_restrict: the same read through plain `dmesg`, with sudo -n when not root.
+  int rc = 0;
+  std::string out;
+  std::string err;
+  if (run_command_with_optional_sudo({"dmesg"}, &rc, &out, &err) && rc == 0) {
+    *source = "dmesg";
+    if (out.size() > kSupportKernelLogReadCapBytes) out.erase(0, out.size() - kSupportKernelLogReadCapBytes);
+    return out;
+  }
+  *error = "kernel log unreadable: " + klog_error;
+  return "";
+}
+
+struct SupportLogEntry {
+  bool exists = false;
+  bool truncated = false;
+  std::string content;
+};
+
+SupportLogEntry support_log_file_entry(const SupportLogFileSpec& spec, const commaview::support::RedactionSecrets& secrets) {
+  SupportLogEntry entry;
+  std::string body = read_file_tail_capped(spec.path, kSupportLogPerFileCapBytes, &entry.exists, &entry.truncated);
+  if (entry.truncated) {
+    // Start at a whole line, so nothing private is cut in half and missed by redaction.
+    const size_t nl = body.find('\n');
+    body.erase(0, nl == std::string::npos ? body.size() : nl + 1);
+  }
+  entry.content = commaview::support::redact_support_text(body, secrets);
+  return entry;
+}
+
+SupportLogEntry support_manager_state_entry() {
+  SupportLogEntry entry;
+  const auto peek = commaview::support::peek_manager_state(msgq_dir());
+  entry.exists = peek.queue_exists;
+  // Process names, pids and exit codes only: nothing in it to redact.
+  entry.content = peek.json + "\n";
+  return entry;
+}
+
+SupportLogEntry support_swaglog_entry(const commaview::support::RedactionSecrets& secrets) {
+  SupportLogEntry entry;
+  const std::string dir = swaglog_dir();
+  const auto scan = commaview::support::scan_swaglog(dir, secrets);
+  entry.exists = scan.dir_exists;
+  entry.truncated = scan.truncated;
+  std::ostringstream out;
+  out << "# openpilot swaglog lines matching process_not_running, \"is dead with\" or killing\n";
+  if (!scan.dir_exists) {
+    out << "# unavailable: no swaglog directory at " << dir << "\n";
+  } else {
+    out << "# scanned the newest " << scan.files_scanned << " of " << scan.files_seen << " swaglog files ("
+        << scan.bytes_scanned << " bytes); " << scan.lines_matched << " matching lines"
+        << (scan.truncated ? ", capped" : "") << "\n";
+  }
+  entry.content = out.str() + scan.text;
+  return entry;
+}
+
+SupportLogEntry support_kernel_log_entry(const commaview::support::RedactionSecrets& secrets) {
+  SupportLogEntry entry;
+  std::string source;
+  std::string error;
+  const std::string log = kernel_log_text(&source, &error);
+  entry.exists = error.empty();
+  std::ostringstream out;
+  out << "# kernel log (dmesg) lines about out-of-memory kills\n";
+  if (!error.empty()) {
+    out << "# unavailable: " << error << "\n";
+    entry.content = out.str();
+    return entry;
+  }
+  size_t matched = 0;
+  const std::string lines = commaview::support::filter_kernel_log(
+      log, secrets, commaview::support::KernelLogLimits(), &matched, &entry.truncated);
+  out << "# read " << log.size() << " bytes via " << source << "; " << matched << " matching lines"
+      << (entry.truncated ? ", capped" : "") << "\n";
+  entry.content = out.str() + lines;
+  return entry;
+}
+
+const char* support_log_source_name(SupportLogSource source) {
+  switch (source) {
+    case SupportLogSource::kManagerState: return "openpilot-manager-state";
+    case SupportLogSource::kSwaglog: return "openpilot-swaglog";
+    case SupportLogSource::kKernelLog: return "kernel-log";
+    case SupportLogSource::kFile: break;
+  }
+  return "file";
+}
+
+// The support bundle, built only while answering the request: every entry is read now, capped,
+// and redacted (GPS, VIN, dongle id and serial, Wi-Fi SSIDs, public IPs, tokens) before it leaves
+// the comma.
+std::string support_logs_response_json(const std::string& api_token) {
+  const commaview::support::RedactionSecrets secrets{api_token, device_dongle_id(), device_hardware_serial(),
+                                                     leaderboard_seed_for_redaction()};
   std::ostringstream out;
   size_t total = 0;
   out << "{\"ok\":true,";
   out << "\"generatedAtMs\":" << now_ms() << ",";
   out << "\"perFileCapBytes\":" << kSupportLogPerFileCapBytes << ",";
   out << "\"totalCapBytes\":" << kSupportLogTotalCapBytes << ",";
+  out << "\"redacted\":[\"gps\",\"vin\",\"dongle-id\",\"serial\",\"wifi-ssid\",\"mac\",\"public-ip\",\"token\"],";
   out << "\"files\":[";
 
   bool first = true;
   const std::vector<SupportLogFileSpec> log_files = support_log_files();
   for (const auto& spec : log_files) {
-    bool exists = false;
-    bool truncated = false;
-    std::string body = read_file_tail_capped(spec.path, kSupportLogPerFileCapBytes, &exists, &truncated);
+    SupportLogEntry entry;
+    switch (spec.source) {
+      case SupportLogSource::kManagerState: entry = support_manager_state_entry(); break;
+      case SupportLogSource::kSwaglog: entry = support_swaglog_entry(secrets); break;
+      case SupportLogSource::kKernelLog: entry = support_kernel_log_entry(secrets); break;
+      case SupportLogSource::kFile: entry = support_log_file_entry(spec, secrets); break;
+    }
+    std::string& body = entry.content;
     if (total + body.size() > kSupportLogTotalCapBytes) {
-      truncated = true;
+      entry.truncated = true;
       const size_t remaining = total >= kSupportLogTotalCapBytes ? 0 : kSupportLogTotalCapBytes - total;
       body.resize(std::min(body.size(), remaining));
     }
@@ -274,8 +438,9 @@ std::string support_logs_response_json() {
     out << "{";
     out << "\"name\":\"" << json_escape(spec.entry_name) << "\",";
     out << "\"path\":\"" << json_escape(spec.path) << "\",";
-    out << "\"exists\":" << (exists ? "true" : "false") << ",";
-    out << "\"truncated\":" << (truncated ? "true" : "false") << ",";
+    out << "\"source\":\"" << support_log_source_name(spec.source) << "\",";
+    out << "\"exists\":" << (entry.exists ? "true" : "false") << ",";
+    out << "\"truncated\":" << (entry.truncated ? "true" : "false") << ",";
     out << "\"rotated\":" << (spec.rotated ? "true" : "false") << ",";
     out << "\"encoding\":\"text\",";
     out << "\"content\":\"" << json_escape(body) << "\"";
@@ -394,10 +559,10 @@ std::string run_onroad_ui_export_verify_json(int* rc_out, std::string* err_out) 
   return onroad_ui_export_status_error_json("error", trim_copy(err));
 }
 
-std::string run_onroad_ui_export_apply_status_json(int* rc_out, std::string* err_out, bool force_offroad = false) {
+std::string run_onroad_ui_export_apply_status_json(int* rc_out, std::string* err_out) {
   if (rc_out) *rc_out = 1;
   if (err_out) err_out->clear();
-  if (is_onroad() && !force_offroad) {
+  if (is_onroad()) {
     if (err_out) *err_out = "repair blocked while onroad";
     return onroad_ui_export_status_error_json("onroad-blocked", "repair blocked while onroad");
   }
@@ -410,7 +575,6 @@ std::string run_onroad_ui_export_apply_status_json(int* rc_out, std::string* err
   std::string out;
   std::string err;
   std::vector<std::string> args{kOnroadUiExportApplyScript};
-  if (force_offroad) args.push_back("--force-offroad");
   const bool ran = run_command(args, &rc, &out, &err);
   const std::string trimmed_err = trim_copy(err);
   const std::string failure = trimmed_err.empty() ? "onroad UI export repair failed" : trimmed_err;
@@ -534,6 +698,13 @@ std::string runtime_status_json() {
   out << "\"roadState\":\"" << (onroad ? "onroad" : "offroad") << "\",";
   out << "\"isOnroad\":" << (onroad ? "true" : "false") << ",";
   out << "\"onroad\":" << (onroad ? "true" : "false") << ",";
+  // roadState stays onroad/offroad (openpilot's own IsOffroad). roadPhase splits onroad into
+  // parked (in Park, at a standstill, not engaged) and driving; anything uncertain is driving.
+  const auto phase = commaview::road::read_road_phase(onroad, msgq_dir());
+  out << "\"roadPhase\":\"" << commaview::road::road_phase_name(phase.phase) << "\",";
+  out << "\"roadPhaseReason\":\"" << json_escape(phase.reason) << "\",";
+  // An install, uninstall or repair asked for while onroad, waiting for offroad (or how it ended).
+  out << "\"deferredMaintenance\":" << deferred_maintenance_json() << ",";
   out << "\"onroadUiExport\":" << live_onroad_ui_export_status_json(false) << ",";
   out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
   out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true) << ",";
@@ -596,27 +767,80 @@ std::string runtime_debug_restore_defaults_response() {
   return runtime_debug_write_response(true, parsed);
 }
 
+// The run directory start.sh writes pid files to: where the bridge writes its effective config.
+std::string runtime_run_dir() {
+  const std::string effective = commaview::runtime_debug::runtime_debug_effective_path();
+  const size_t slash = effective.find_last_of('/');
+  return slash == std::string::npos ? std::string(".") : effective.substr(0, slash);
+}
+
+// The running bridge's pid, or 0. A pid file outlives its process (and reboots) and the pid may
+// since belong to an openpilot process, so it counts only while /proc says it is our bridge.
+pid_t running_bridge_pid() {
+  const std::string text = read_file_trimmed(runtime_run_dir() + "/bridge.pid");
+  if (text.empty() || text.size() > 9 || text.find_first_not_of("0123456789") != std::string::npos) return 0;
+  const pid_t pid = static_cast<pid_t>(std::atoi(text.c_str()));
+  if (pid <= 1) return 0;
+  const std::string cmdline = read_file_raw("/proc/" + std::to_string(pid) + "/cmdline");
+  std::vector<std::string> args;
+  size_t start = 0;
+  while (start < cmdline.size()) {
+    size_t end = cmdline.find('\0', start);
+    if (end == std::string::npos) end = cmdline.size();
+    args.push_back(cmdline.substr(start, end - start));
+    start = end + 1;
+  }
+  if (args.size() < 2 || args[1] != "bridge") return 0;
+  const std::string& exe = args[0];
+  const std::string base = exe.substr(exe.find_last_of('/') == std::string::npos ? 0 : exe.find_last_of('/') + 1);
+  if (base.rfind("commaviewd", 0) != 0) return 0;
+  return pid;
+}
+
+// How many times the running bridge has reloaded its config (its stats file's configReloads).
+uint64_t bridge_config_reload_count() {
+  const std::string stats = read_file_raw(commaview::runtime_debug::runtime_debug_stats_path());
+  const std::string key = "\"configReloads\":";
+  const size_t pos = stats.find(key);
+  if (pos == std::string::npos) return 0;
+  return std::strtoull(stats.c_str() + pos + key.size(), nullptr, 10);
+}
+
 std::string runtime_debug_apply_response() {
   const auto persisted = load_persisted_runtime_debug_config();
   if (!persisted.valid) {
     return runtime_debug_write_response(false, persisted, persisted.error.empty() ? "invalid runtime debug config" : persisted.error);
   }
   ensure_runtime_debug_dirs();
-  const std::string restart_cmd =
-      "(sleep 1; COMMAVIEWD_RESTART_REASON=runtime-debug-apply bash /data/commaview/start.sh >/data/commaview/logs/runtime-debug-apply.log 2>&1) </dev/null &";
-  int restart_rc = -1;
-  std::string restart_out;
-  std::string restart_err;
-  const bool launched = run_command({"/bin/sh", "-lc", restart_cmd}, &restart_rc, &restart_out, &restart_err);
-  const bool restart_ok = launched && restart_rc == 0;
+  // Applied in place: the running bridge re-reads the config on SIGHUP. Nothing restarts, so it is
+  // safe while driving. Every setting in the config is a per-service telemetry policy that the
+  // bridge's telemetry loops pick up on their next pass, so nothing waits for the car to be parked
+  // (appliesWhenParked stays empty). Control mode itself reads the config on every request.
+  const uint64_t reloads_before = bridge_config_reload_count();
+  const pid_t bridge = running_bridge_pid();
+  const bool signalled = bridge > 0 && ::kill(bridge, SIGHUP) == 0;
+  bool applied = false;
+  if (signalled) {
+    for (int i = 0; i < 40 && !applied; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      applied = bridge_config_reload_count() > reloads_before;
+    }
+  }
+  // With no bridge running, the next one starts with the saved config.
+  const bool ok = !signalled || applied;
   auto effective = commaview::runtime_debug::effective_runtime_debug_config(persisted);
   std::ostringstream out;
   out << "{";
-  out << "\"ok\":" << (restart_ok ? "true" : "false") << ",";
-  out << "\"restartScheduled\":" << (restart_ok ? "true" : "false") << ",";
+  out << "\"ok\":" << (ok ? "true" : "false") << ",";
+  out << "\"applied\":" << (applied ? "true" : "false") << ",";
+  out << "\"appliedLive\":" << (applied ? "true" : "false") << ",";
+  out << "\"bridgeRunning\":" << (bridge > 0 ? "true" : "false") << ",";
+  out << "\"appliesOnNextStart\":" << (bridge > 0 ? "false" : "true") << ",";
+  out << "\"appliesWhenParked\":[],";
+  out << "\"restartScheduled\":false,";
   out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
   out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true);
-  if (!restart_ok) out << ",\"error\":\"failed to schedule restart\"";
+  if (!ok) out << ",\"error\":\"the bridge did not confirm the config reload\"";
   out << "}";
   return out.str();
 }
@@ -788,10 +1012,6 @@ bool active_wifi_profile(std::string* profile, std::string* error_json) {
   return true;
 }
 
-bool offroad_and_disengaged() {
-  return read_param("IsOffroad") == "1" && read_param("IsEngaged") == "0";
-}
-
 std::string wifi_power_save_status_response() {
   std::string profile, error_json;
   if (!active_wifi_profile(&profile, &error_json)) return error_json;
@@ -814,15 +1034,10 @@ std::string wifi_power_save_set_response(const std::string& body) {
   if (!extract_raw_string_field(body, "mode", &mode) || (mode != "on" && mode != "off")) {
     return "{\"ok\":false,\"error\":\"mode must be on or off\"}";
   }
-  if (!offroad_and_disengaged()) {
-    return "{\"ok\":false,\"error\":\"offroad and disengaged required\"}";
-  }
+  // Any time, driving included: this only saves the active profile's setting. The live link is
+  // never touched; the choice takes effect at the next normal Wi-Fi reconnect (reconnectRequired).
   std::string profile, error_json;
   if (!active_wifi_profile(&profile, &error_json)) return error_json;
-  // Re-check after the nmcli round trip, right before the write.
-  if (!offroad_and_disengaged()) {
-    return "{\"ok\":false,\"error\":\"offroad and disengaged required\"}";
-  }
   int rc = 0;
   std::string ignored;
   const std::string value = mode == "on" ? "3" : "2";
@@ -1091,55 +1306,139 @@ std::string python_path() {
   return "/usr/bin/python3";
 }
 
-// openpilot's own Python at the lowest priority, so the script reads the fork's logs and identity.
-// Everything is prepared before fork: the child of this threaded process only makes async-signal-
-// safe calls before exec.
-pid_t spawn_drive_script(const std::vector<std::string>& args) {
+// The script's command line, environment, log and working directory, all prepared before fork: the
+// child of this threaded process only makes async-signal-safe calls before exec.
+struct DriveScriptCommand {
   std::vector<std::string> argv;
+  std::vector<std::string> env;
+  std::vector<char*> argv_ptrs;
+  std::vector<char*> env_ptrs;
+  std::string log_path;
+  const char* workdir = nullptr;
+};
+
+// openpilot's own Python, so the script reads the fork's logs and identity.
+void prepare_drive_script(const std::vector<std::string>& args, DriveScriptCommand* cmd) {
   bool test_script = false;
 #if !defined(__aarch64__)
   if (const char* script = std::getenv("COMMAVIEWD_TEST_DRIVE_SCRIPT")) {
-    argv.push_back(script);
+    cmd->argv.push_back(script);
     test_script = true;
   }
 #endif
   if (!test_script) {
-    argv.push_back(python_path());
-    argv.push_back(std::string(kInstallDir) + "/src/commaview_drive_stats.py");
+    cmd->argv.push_back(python_path());
+    cmd->argv.push_back(std::string(kInstallDir) + "/src/commaview_drive_stats.py");
   }
-  argv.insert(argv.end(), args.begin(), args.end());
-  std::vector<char*> argv_ptrs;
-  for (auto& a : argv) argv_ptrs.push_back(const_cast<char*>(a.c_str()));
-  argv_ptrs.push_back(nullptr);
+  cmd->argv.insert(cmd->argv.end(), args.begin(), args.end());
+  for (auto& a : cmd->argv) cmd->argv_ptrs.push_back(const_cast<char*>(a.c_str()));
+  cmd->argv_ptrs.push_back(nullptr);
 
-  std::vector<std::string> env;
   for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
     if (!test_script && std::strncmp(*e, "PYTHONPATH=", 11) == 0) continue;
-    env.emplace_back(*e);
+    cmd->env.emplace_back(*e);
   }
-  if (!test_script) env.emplace_back("PYTHONPATH=/data/openpilot");
-  std::vector<char*> env_ptrs;
-  for (auto& e : env) env_ptrs.push_back(const_cast<char*>(e.c_str()));
-  env_ptrs.push_back(nullptr);
+  if (!test_script) cmd->env.emplace_back("PYTHONPATH=/data/openpilot");
+  for (auto& e : cmd->env) cmd->env_ptrs.push_back(const_cast<char*>(e.c_str()));
+  cmd->env_ptrs.push_back(nullptr);
 
-  const std::string log_path = drivelog_path("logs/commaview-drive-stats.log");
-  const char* workdir = test_script ? nullptr : "/data/openpilot";
+  cmd->log_path = drivelog_path("logs/commaview-drive-stats.log");
+  cmd->workdir = test_script ? nullptr : "/data/openpilot";
+}
 
-  const pid_t pid = fork();
-  if (pid != 0) return pid;  // the parent, or -1
-  setsid();
-  const int log_fd = open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+// In the child, after its own stdout is set up: the script's log, its directory, the lowest
+// priority, then the script. Never returns.
+[[noreturn]] void exec_drive_script(const DriveScriptCommand& cmd, bool log_stdout) {
+  const int log_fd = open(cmd.log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
   if (log_fd >= 0) {
-    dup2(log_fd, STDOUT_FILENO);
+    if (log_stdout) dup2(log_fd, STDOUT_FILENO);
     dup2(log_fd, STDERR_FILENO);
     close(log_fd);
   }
-  if (workdir != nullptr && chdir(workdir) != 0) _exit(126);
+  if (cmd.workdir != nullptr && chdir(cmd.workdir) != 0) _exit(126);
   if (nice(19) == -1) {
     // Normal priority still beats not running.
   }
-  execve(argv_ptrs[0], argv_ptrs.data(), env_ptrs.data());
+  execve(cmd.argv_ptrs[0], cmd.argv_ptrs.data(), cmd.env_ptrs.data());
   _exit(127);
+}
+
+// A run in the background (after a drive, comma's totals, the position fallback).
+pid_t spawn_drive_script(const std::vector<std::string>& args) {
+  DriveScriptCommand cmd;
+  prepare_drive_script(args, &cmd);
+  const pid_t pid = fork();
+  if (pid != 0) return pid;  // the parent, or -1
+  setsid();
+  exec_drive_script(cmd, true);
+}
+
+// A run the caller waits for, at most timeout_sec, reading its one-line answer from stdout (its log
+// lines still go to its log). False when it couldn't start or ran too long (it's killed then).
+bool run_drive_script_for_answer(const std::vector<std::string>& args, int timeout_sec, int* exit_code,
+                                 std::string* answer) {
+  constexpr size_t kAnswerCapBytes = 64 * 1024;
+  DriveScriptCommand cmd;
+  prepare_drive_script(args, &cmd);
+  int out_pipe[2];
+  if (pipe2(out_pipe, O_CLOEXEC) != 0) return false;
+  const pid_t pid = fork();
+  if (pid < 0) {
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    return false;
+  }
+  if (pid == 0) {
+    dup2(out_pipe[1], STDOUT_FILENO);  // the copy isn't close-on-exec
+    exec_drive_script(cmd, false);
+  }
+  close(out_pipe[1]);
+
+  const auto deadline = SteadyClock::now() + std::chrono::seconds(timeout_sec);
+  const auto ms_left = [&deadline] {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(deadline - SteadyClock::now()).count();
+  };
+  bool timed_out = false;
+  std::array<char, 4096> buf{};
+  answer->clear();
+  while (true) {
+    const auto left = ms_left();
+    if (left <= 0) {
+      timed_out = true;
+      break;
+    }
+    pollfd pfd{out_pipe[0], POLLIN, 0};
+    const int ready = poll(&pfd, 1, static_cast<int>(left));
+    if (ready < 0 && errno == EINTR) continue;
+    if (ready == 0) {
+      timed_out = true;
+      break;
+    }
+    if (ready < 0) break;
+    const ssize_t n = read(out_pipe[0], buf.data(), buf.size());
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) break;  // the script closed its stdout: done
+    answer->append(buf.data(), std::min(static_cast<size_t>(n), kAnswerCapBytes - std::min(kAnswerCapBytes, answer->size())));
+  }
+  close(out_pipe[0]);
+
+  int status = 0;
+  pid_t done = 0;
+  while (!timed_out && (done = waitpid(pid, &status, WNOHANG)) == 0) {
+    if (ms_left() <= 0) {
+      timed_out = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (timed_out) {
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    return false;
+  }
+  if (done < 0) return false;
+  *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+  return true;
 }
 
 // Caller holds g_drive_mutex.
@@ -1339,6 +1638,142 @@ std::string location_set_response(const std::string& body) {
   return std::string("{\"ok\":true,\"enabled\":") + (enabled ? "true" : "false") + "}";
 }
 
+// ---- The leaderboard (docs/plans/leaderboard.md in RhynoTech/commaview-web, "The contract"): this
+// comma's own Ed25519 key, kept by the drive stats script in data/leaderboard-key.json (0600), signs a
+// registration or a statement of its drives by UTC day for the paired phone to relay. It signs only
+// when asked here: nothing runs in the background. The key never passes through this process except
+// to be redacted from support bundles.
+//
+// Phones ask for a statement whenever they reach the comma (at most every 15 minutes each), driving
+// or not. While the drive list and the key are as they were, the last statement is handed back
+// unchanged from data/leaderboard-statement.json (0600, beside the counter), checked with two stat()
+// calls: no Python, no new seq. The account service answers the same statement again as a duplicate,
+// a success. The drive list only changes when a drive has ended (the after-drive script), so a
+// statement never covers a drive in progress, and a day's total in it never goes down.
+
+constexpr const char* kLeaderboardKeyFile = "data/leaderboard-key.json";
+constexpr const char* kLeaderboardDriveListFile = "data/drives.json";
+constexpr const char* kLeaderboardStatementCacheFile = "data/leaderboard-statement.json";
+constexpr int kLeaderboardScriptTimeoutSec = 20;
+// The script's exit codes (commaview_drive_stats.py, EXIT_*).
+constexpr int kLeaderboardExitBadRequest = 3;
+constexpr int kLeaderboardExitNoKey = 4;
+constexpr int kLeaderboardExitNoCrypto = 5;
+constexpr const char* kLeaderboardChallengeRequiredJson = "{\"ok\":false,\"error\":\"challenge required\"}";
+constexpr const char* kLeaderboardNoKeyJson = "{\"ok\":false,\"error\":\"no key\"}";
+constexpr const char* kLeaderboardNoCryptoJson = "{\"ok\":false,\"error\":\"crypto unavailable\"}";
+constexpr const char* kLeaderboardFailedJson = "{\"ok\":false,\"error\":\"leaderboard failed\"}";
+
+std::mutex g_leaderboard_mutex;
+
+commaview::api::HttpResponse make_json(int code, const std::string& body);
+
+// The account service's challenge: 32 bytes as base64url without padding (43 characters).
+bool leaderboard_challenge_valid(const std::string& challenge) {
+  if (challenge.size() != 43) return false;
+  for (char c : challenge) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') return false;
+  }
+  return true;
+}
+
+// The key's seed, read only so a support bundle can take it out wherever it might appear.
+std::string leaderboard_seed_for_redaction() {
+  std::string seed;
+  extract_raw_string_field(read_file_raw(drivelog_path(kLeaderboardKeyFile)), "seed", &seed);
+  return seed;
+}
+
+// One line of JSON that says ok: what the script prints when it signed.
+bool leaderboard_answer_ok(const std::string& answer) {
+  return answer.rfind("{\"ok\":true,", 0) == 0 && answer.back() == '}' && answer.find('\n') == std::string::npos;
+}
+
+// What a statement is made from, cheaply: the drive list's and the key's size, modification time and
+// inode (both are replaced whole when they change), or "none" for one that's missing.
+std::string leaderboard_statement_inputs() {
+  std::ostringstream out;
+  out << "v1";
+  for (const char* relative : {kLeaderboardDriveListFile, kLeaderboardKeyFile}) {
+    struct stat st {};
+    if (stat(drivelog_path(relative).c_str(), &st) != 0) {
+      out << " none";
+      continue;
+    }
+    out << ' ' << st.st_size << ':' << st.st_mtim.tv_sec << '.' << st.st_mtim.tv_nsec << ':' << st.st_ino;
+  }
+  return out.str();
+}
+
+// The last statement, when it was made from these same inputs; empty otherwise.
+std::string leaderboard_cached_statement(const std::string& inputs) {
+  const std::string cached = read_file_raw(drivelog_path(kLeaderboardStatementCacheFile));
+  const size_t newline = cached.find('\n');
+  if (newline == std::string::npos || cached.compare(0, newline, inputs) != 0) return "";
+  const std::string answer = trim_copy(cached.substr(newline + 1));
+  return leaderboard_answer_ok(answer) ? answer : "";
+}
+
+// Runs the script's leaderboard mode and answers with what it signed, or the contract's errors. The
+// caller holds g_leaderboard_mutex.
+commaview::api::HttpResponse leaderboard_script_response_locked(const std::vector<std::string>& args) {
+  int rc = 0;
+  std::string answer;
+  if (!run_drive_script_for_answer(args, kLeaderboardScriptTimeoutSec, &rc, &answer)) {
+    return make_json(500, kLeaderboardFailedJson);
+  }
+  answer = trim_copy(answer);
+  if (rc == 0 && leaderboard_answer_ok(answer)) {
+    return make_json(200, answer);
+  }
+  switch (rc) {
+    case kLeaderboardExitBadRequest: return make_json(400, kLeaderboardChallengeRequiredJson);
+    case kLeaderboardExitNoKey: return make_json(409, kLeaderboardNoKeyJson);
+    case kLeaderboardExitNoCrypto:
+    case 126:  // openpilot's directory is missing
+    case 127:  // no python3 to run it
+      return make_json(503, kLeaderboardNoCryptoJson);
+    default: return make_json(500, kLeaderboardFailedJson);
+  }
+}
+
+commaview::api::HttpResponse leaderboard_script_response(const std::vector<std::string>& args) {
+  std::lock_guard<std::mutex> lk(g_leaderboard_mutex);
+  return leaderboard_script_response_locked(args);
+}
+
+// POST /commaview/leaderboard/register {challenge, rotate?} -> {ok, registration, keyId}
+commaview::api::HttpResponse leaderboard_register_response(const std::string& body) {
+  std::string challenge;
+  if (!extract_raw_string_field(body, "challenge", &challenge) || !leaderboard_challenge_valid(challenge)) {
+    return make_json(400, kLeaderboardChallengeRequiredJson);
+  }
+  bool rotate = false;
+  extract_bool_field(body, "rotate", &rotate);
+  // One argument with '=': a challenge may start with '-'.
+  std::vector<std::string> args = {"leaderboard-register", "--challenge=" + challenge};
+  if (rotate) args.emplace_back("--rotate");
+  return leaderboard_script_response(args);
+}
+
+// POST /commaview/leaderboard/statement {} -> {ok, statement, keyId, seq}: the last one again while
+// the drive list and the key haven't changed, else a new one (and that one kept for next time).
+commaview::api::HttpResponse leaderboard_statement_response() {
+  std::lock_guard<std::mutex> lk(g_leaderboard_mutex);
+  // Taken before signing: a drive list that changes meanwhile makes the next request sign again.
+  const std::string inputs = leaderboard_statement_inputs();
+  const std::string cached = leaderboard_cached_statement(inputs);
+  if (!cached.empty()) return make_json(200, cached);
+  commaview::api::HttpResponse response = leaderboard_script_response_locked({"leaderboard-statement"});
+  const std::string cache_path = drivelog_path(kLeaderboardStatementCacheFile);
+  if (response.status == 200) {
+    if (write_file_atomic(cache_path, inputs + "\n" + response.body + "\n")) chmod(cache_path.c_str(), 0600);
+  } else {
+    unlink(cache_path.c_str());  // no key any more, or no way to sign: nothing to hand back
+  }
+  return response;
+}
+
 bool extract_pair_code(const std::string& body, std::string* code_out) {
   return extract_raw_string_field(body, "pairCode", code_out) ||
          extract_raw_string_field(body, "code", code_out);
@@ -1406,11 +1841,65 @@ std::string onroad_ui_export_status_response() {
   return live_onroad_ui_export_status_json(false);
 }
 
+// Maintenance asked for while onroad waits in comma/scripts/run_when_offroad.sh's queue, outside the
+// install directory, until openpilot is offroad.
+std::string deferred_maintenance_dir() {
+#if !defined(__aarch64__)
+  if (const char* test_dir = std::getenv("COMMAVIEWD_DEFERRED_DIR")) {
+    if (*test_dir) return test_dir;
+  }
+#endif
+  return "/data/commaview-deferred";
+}
+
+std::string deferred_runner_path() {
+#if !defined(__aarch64__)
+  if (const char* test_runner = std::getenv("COMMAVIEWD_TEST_DEFERRED_RUNNER")) {
+    if (*test_runner) return test_runner;
+  }
+#endif
+  return std::string(kInstallDir) + "/scripts/run_when_offroad.sh";
+}
+
+// The queue's status JSON: {"state":"none"} when nothing was ever queued, else state
+// waiting / running / done / failed / cancelled, with action, queuedAtMs, startedAtMs,
+// finishedAtMs, attempts and exitStatus.
+std::string deferred_maintenance_json() {
+  const std::string raw = read_file_trimmed(deferred_maintenance_dir() + "/status.json");
+  if (raw.size() < 2 || raw.front() != '{' || raw.back() != '}') return "{\"state\":\"none\"}";
+  return raw;
+}
+
+// A repair asked for while driving ("Safe Repair"): queued to run once the car is parked and off.
+// Nothing asks openpilot to go offroad.
+std::string onroad_ui_export_repair_deferred_response() {
+  int rc = 1;
+  std::string out;
+  std::string err;
+  const std::string runner = deferred_runner_path();
+  const bool queued = file_executable(runner.c_str()) &&
+                      run_command({"/usr/bin/env", "COMMAVIEWD_DEFERRED_DIR=" + deferred_maintenance_dir(), "bash", runner,
+                                   "queue", "repair", "--", "bash", kOnroadUiExportApplyScript},
+                                  &rc, &out, &err) &&
+                      rc == 0;
+  const std::string reason = queued ? "repair queued until the car is parked and switched off (openpilot offroad)"
+                                    : "repair blocked while onroad and could not be queued";
+  std::ostringstream resp;
+  resp << "{\"ok\":false,\"deferred\":" << (queued ? "true" : "false") << ",\"repairNeeded\":true,\"status\":"
+       << onroad_ui_export_status_error_json(queued ? "deferred-until-offroad" : "onroad-blocked", reason)
+       << ",\"deferredMaintenance\":" << deferred_maintenance_json()
+       << ",\"error\":\"" << json_escape(reason) << "\"}";
+  return resp.str();
+}
+
 std::string onroad_ui_export_repair_response(const std::string& request_body) {
   const bool force_offroad = json_field_true(request_body, "forceOffroad");
+  // Repair rewrites openpilot's UI files: offroad only, and never forced. With forceOffroad (the
+  // app's Safe Repair) a repair asked for while onroad is queued instead of refused.
+  if (force_offroad && is_onroad()) return onroad_ui_export_repair_deferred_response();
   int rc = 0;
   std::string err;
-  const std::string status = run_onroad_ui_export_apply_status_json(&rc, &err, force_offroad);
+  const std::string status = run_onroad_ui_export_apply_status_json(&rc, &err);
   std::ostringstream resp;
   resp << "{\"ok\":" << (rc == 0 ? "true" : "false") << ",\"repairNeeded\":" << (rc == 0 ? "false" : "true") << ",\"status\":" << status;
   if (rc != 0) {
@@ -1484,10 +1973,11 @@ commaview::api::HttpResponse handle_get(const commaview::api::HttpRequest& req, 
     return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 503, body);
   }
   if (req.path == "/commaview/support/logs") {
-    if (!is_authorized(req, api_token)) {
+    // Gathered only for a paired phone whose user tapped Share; never for anyone else on the LAN.
+    if (api_token.empty() || !is_authorized(req, api_token)) {
       return make_json(401, kUnauthorizedJson);
     }
-    return make_json(200, support_logs_response_json());
+    return make_json(200, support_logs_response_json(api_token));
   }
   if (req.path == "/commaview/drive-stats" || req.path == "/commaview/location") {
     // Where and how this comma drives is private: only a paired phone may ask.
@@ -1527,11 +2017,18 @@ commaview::api::HttpResponse handle_post(const commaview::api::HttpRequest& req,
     return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 400, body);
   }
 
+  if (req.path == "/commaview/leaderboard/register" || req.path == "/commaview/leaderboard/statement") {
+    // This comma's key signs only for its paired phone.
+    if (api_token.empty() || !is_authorized(req, api_token)) {
+      return make_json(401, kUnauthorizedJson);
+    }
+    return req.path == "/commaview/leaderboard/register" ? leaderboard_register_response(req.body)
+                                                         : leaderboard_statement_response();
+  }
+
   if (req.path == "/commaview/wifi/power-save") {
     const std::string body = wifi_power_save_set_response(req.body);
-    const int code = body.find("\"ok\":true") != std::string::npos ? 200 :
-                     body.find("offroad and disengaged required") != std::string::npos ? 403 : 400;
-    return make_json(code, body);
+    return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 400, body);
   }
 
   if (req.path == "/commaview/runtime-debug/config") {
@@ -1554,7 +2051,8 @@ commaview::api::HttpResponse handle_post(const commaview::api::HttpRequest& req,
   }
   if (req.path == "/commaview/onroad-ui-export/repair") {
     std::string body = onroad_ui_export_repair_response(req.body);
-    int code = body.find("\"ok\":true") != std::string::npos ? 200 : 500;
+    int code = body.find("\"ok\":true") != std::string::npos ? 200 :
+               body.find("\"deferred\":true") != std::string::npos ? 202 : 500;
     return make_json(code, body);
   }
   return make_json(404, "{\"error\":\"not found\"}");

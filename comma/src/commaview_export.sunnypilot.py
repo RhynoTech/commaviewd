@@ -51,12 +51,42 @@ COMMAVIEW_MS_TO_MPH = 2.23694
 COMMAVIEW_KM_TO_MILE = 0.621371
 COMMAVIEW_MAX_EXPORT_HZ = 20.0
 COMMAVIEW_MIN_EXPORT_INTERVAL_SEC = 1.0 / COMMAVIEW_MAX_EXPORT_HZ
+# Params are files. The exporter reads only what the UI has already parsed, except the CameraOffset param,
+# which the UI's model renderer itself re-reads every 3 s; the exporter reads it no more often than that.
+COMMAVIEW_PARAMS_REFRESH_SEC = 3.0
+# openpilot master's comma four lead bar uses leadsV3[0] and [1] at t=0 only.
+COMMAVIEW_MAX_MODEL_LEADS = 2
 
 UPSTREAM_SERVICE_ALIASES = {
   "calibration": ("extrinsicsCalibration", "liveCalibration"),
   "road_camera": ("narrowRoadCameraState", "roadCameraState"),
   "vehicle_parameters": ("vehicleParameters", "liveParameters"),
 }
+# Services only some UIs subscribe to (sunnypilot). A missing one is exported as absent, never an error.
+UPSTREAM_OPTIONAL_SERVICE_ALIASES = {
+  "torque_parameters": ("lateralTorqueParameters", "liveTorqueParameters"),
+}
+# Sunnypilot onroad params, exported under carParams.spParams by their param names (offered when one changes):
+# (param, sunnypilot ui_state attribute its param thread refreshes, type, params_keys.h default).
+SUNNYPILOT_UI_PARAMS = (
+  ("BlindSpot", "blindspot", "bool", False),
+  ("ShowTurnSignals", "turn_signals", "bool", False),
+  ("TorqueBar", "torque_bar", "bool", False),
+  ("DevUIInfo", "developer_ui", "int", 0),
+  ("HideVEgoUI", "hide_v_ego_ui", "bool", False),
+  ("TrueVEgoUI", "true_v_ego_ui", "bool", False),
+  ("RoadNameToggle", "road_name_toggle", "bool", False),
+  ("RocketFuel", "rocket_fuel", "bool", False),
+  ("StandstillTimer", "standstill_timer", "bool", False),
+  ("ChevronInfo", "chevron_metrics", "int", 4),
+  ("SpeedLimitMode", "speed_limit_mode", "int", 1),
+  ("RainbowMode", "rainbow_path", "bool", False),
+  ("EnforceTorqueControl", "enforce_torque_control", "bool", False),
+  ("CustomTorqueParams", "custom_torque_params", "bool", False),
+  ("TorqueParamsOverrideEnabled", "torque_override_enabled", "bool", False),
+  ("TorqueParamsOverrideFriction", "torque_override_friction", "float", 0.1),
+  ("TorqueParamsOverrideLatAccelFactor", "torque_override_lat_accel_factor", "float", 2.5),
+)
 
 
 def _encode_json(payload: dict) -> bytes:
@@ -86,8 +116,116 @@ def _safe_str(value) -> str:
   return "" if value is None else str(value)
 
 
+def _text(value) -> str:
+  if isinstance(value, bytes):
+    return value.decode("utf-8", errors="replace")
+  return value if isinstance(value, str) else ""
+
+
+def _items(values) -> list:
+  if values is None or isinstance(values, (bool, int, float, str, bytes)):
+    return []
+  try:
+    return list(values)
+  except TypeError:
+    return []
+
+
 def _float_list(values) -> list[float]:
-  return [_safe_float(v) for v in values]
+  # Missing or scalar (an absent field read through a fake or older schema) is an empty list.
+  if values is None or isinstance(values, (bool, int, float, str, bytes)):
+    return []
+  try:
+    return [_safe_float(v) for v in values]
+  except TypeError:
+    return []
+
+
+def _attr(source, *names, default=None):
+  # getattr chain that tolerates a missing link (absent cereal field, older schema, None).
+  for name in names:
+    if source is None:
+      return default
+    source = getattr(source, name, None)
+  return default if source is None else source
+
+
+def _enum_text(value) -> str:
+  # Cereal enumerant name as written in the schema ("preActive", "sccVision", "e2e").
+  if value is None or isinstance(value, bool):
+    return ""
+  name = getattr(value, "name", None)
+  if isinstance(name, str):
+    return name
+  return str(value).split(".")[-1]
+
+
+def _read_param(params, key: str, kind: str, default):
+  if params is None:
+    return default
+  try:
+    if kind == "bool":
+      return bool(params.get_bool(key))
+    try:
+      value = params.get(key, return_default=True)
+    except TypeError:
+      value = params.get(key)
+  except Exception:
+    return default
+  if isinstance(value, bytes):
+    value = value.decode("utf-8", errors="replace")
+  return default if value is None else value
+
+
+def _coerce_param(value, kind: str, default):
+  try:
+    if kind == "bool":
+      if isinstance(value, str):
+        return value.strip().lower() in ("1", "true")
+      return bool(value)
+    if kind == "int":
+      return int(float(value))
+    if kind == "float":
+      result = float(value)
+      return result if math.isfinite(result) else default
+  except (TypeError, ValueError):
+    return default
+  return value
+
+
+def _controls_v_cruise(controls_state) -> float:
+  # Set speed in km/h: controlsState.deprecated.vCruise in every current schema, vCruiseDEPRECATED in very old ones.
+  value = _attr(controls_state, "deprecated", "vCruise")
+  if value is None or isinstance(value, bool):
+    value = getattr(controls_state, "vCruiseDEPRECATED", 0.0)
+  return _safe_float(value)
+
+
+def _monitoring_policy(value):
+  # driverMonitoringState.activePolicy: 0 wheeltouch, 1 vision; None when the schema has no such field.
+  if value is None or isinstance(value, bool):
+    return None
+  name = _enum_text(value)
+  if name in ("wheeltouch", "vision"):
+    return 1 if name == "vision" else 0
+  try:
+    return int(getattr(value, "raw", value))
+  except (TypeError, ValueError):
+    return None
+
+
+def _projection_caller_layout() -> str:
+  # set_onroad_projection is called from the device UI's augmented_road_view. The comma four (mici) UI builds
+  # its model transform in content coordinates; the comma 3/3X (big) UI includes the content rect origin.
+  try:
+    filename = sys._getframe(2).f_code.co_filename.replace("\\", "/")
+  except (AttributeError, ValueError):
+    return ""
+  if "/mici/" in filename:
+    return "mici"
+  if "/onroad/" in filename:
+    return "big"
+  return ""
 
 
 def _matrix3_list(values) -> list[float]:
@@ -122,12 +260,27 @@ def _path_dict(source) -> dict:
 
 
 def _lead_dict(source) -> dict:
+  # radarState.LeadData presence is `present` in openpilot >= 0.11 and sunnypilot master, `status` in the
+  # sunnypilot release. Both keys carry the same flag so older apps (which read `status`) keep working.
+  present = bool(getattr(source, "present", False)) or bool(getattr(source, "status", False))
   return {
     "dRel": _safe_float(getattr(source, "dRel", 0.0)),
     "yRel": _safe_float(getattr(source, "yRel", 0.0)),
     "vRel": _safe_float(getattr(source, "vRel", 0.0)),
     "aRel": _safe_float(getattr(source, "aRel", 0.0)),
-    "status": bool(getattr(source, "status", False)),
+    "status": present,
+    "present": present,
+  }
+
+
+def _lead_v3_dict(source) -> dict:
+  # modelV2.leadsV3[i] at t=0 only (each list holds just index 0): x/y metres in the device frame, v m/s, a m/s^2.
+  return {
+    "prob": _safe_float(getattr(source, "prob", 0.0)),
+    "x": _float_list(getattr(source, "x", None))[:1],
+    "y": _float_list(getattr(source, "y", None))[:1],
+    "v": _float_list(getattr(source, "v", None))[:1],
+    "a": _float_list(getattr(source, "a", None))[:1],
   }
 
 
@@ -145,6 +298,7 @@ def _interp(value: float, xp: list[float], fp: list[float]) -> float:
 class _ServiceResolver:
   def __init__(self):
     self._resolved = {}
+    self._optional = {}
 
   def resolve(self, ui_state, semantic: str) -> str:
     if semantic in self._resolved:
@@ -152,6 +306,31 @@ class _ServiceResolver:
     aliases = UPSTREAM_SERVICE_ALIASES.get(semantic)
     if aliases is None:
       raise KeyError(f"unknown upstream service semantic: {semantic}")
+    service = self._first_present(ui_state, aliases)
+    if service is not None:
+      self._resolved[semantic] = service
+      return service
+    raise KeyError(f"missing {semantic} upstream service; expected one of: {', '.join(aliases)}")
+
+  def resolve_optional(self, ui_state, semantic: str):
+    # The service this UI subscribes to for an optional semantic, or None. SubMaster services are fixed at
+    # start, so the answer is cached either way.
+    if semantic in self._optional:
+      return self._optional[semantic]
+    aliases = UPSTREAM_OPTIONAL_SERVICE_ALIASES.get(semantic)
+    if aliases is None:
+      raise KeyError(f"unknown optional upstream service semantic: {semantic}")
+    service = self._first_present(ui_state, aliases)
+    self._optional[semantic] = service
+    return service
+
+  def resolve_any(self, ui_state, semantic: str):
+    if semantic in UPSTREAM_OPTIONAL_SERVICE_ALIASES:
+      return self.resolve_optional(ui_state, semantic)
+    return self.resolve(ui_state, semantic)
+
+  @staticmethod
+  def _first_present(ui_state, aliases):
     recv_frame = getattr(ui_state.sm, "recv_frame", {})
     for service in aliases:
       try:
@@ -159,9 +338,8 @@ class _ServiceResolver:
       except TypeError:
         present = False
       if present:
-        self._resolved[semantic] = service
         return service
-    raise KeyError(f"missing {semantic} upstream service; expected one of: {', '.join(aliases)}")
+    return None
 
   def message(self, ui_state, semantic: str):
     return ui_state.sm[self.resolve(ui_state, semantic)]
@@ -189,7 +367,8 @@ def _torque_bar_value(ui_state, service_resolver=None) -> float:
   controls_state = ui_state.sm["controlsState"]
   lateral_control = getattr(controls_state, "lateralControlState", None)
   control_mode = lateral_control.which() if lateral_control is not None and hasattr(lateral_control, "which") else ""
-  if control_mode == "angleState":
+  # openpilot/sunnypilot master estimate the bar from lateral accel for curvatureState too (torque_bar.py).
+  if control_mode in ("angleState", "curvatureState"):
     if (
       ui_state.sm.recv_frame["carState"] < ui_state.started_frame or
       ui_state.sm.recv_frame["carControl"] < ui_state.started_frame or
@@ -276,7 +455,7 @@ def _speed_limit_pre_active_state(ui_state) -> tuple[bool, str]:
     except (AttributeError, KeyError, TypeError, IndexError):
       v_cruise_cluster = 0.0
     try:
-      controls_v_cruise = _safe_float(getattr(ui_state.sm["controlsState"], "vCruiseDEPRECATED", 0.0))
+      controls_v_cruise = _controls_v_cruise(ui_state.sm["controlsState"])
     except (AttributeError, KeyError, TypeError, IndexError):
       controls_v_cruise = 0.0
 
@@ -317,6 +496,7 @@ class _CommaViewSocketExporter:
     self._last_generation = {}
     self._last_offer_time = {}
     self._last_projection_offer_time = 0.0
+    self._param_cache = {}
     self._snapshot_durations_ns = deque(maxlen=512)
     self._worker_lag_ns = deque(maxlen=512)
     self._stats = {
@@ -356,7 +536,7 @@ class _CommaViewSocketExporter:
     }
     self._service_specs = (
       (COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX, self._ui_state_onroad_payload, ("selfdriveState", "carState", "deviceState", "pandaStates", "wideRoadCameraState")),
-      (COMMAVIEW_SELFDRIVE_STATE_SERVICE_INDEX, self._selfdrive_state_payload, ("selfdriveState",)),
+      (COMMAVIEW_SELFDRIVE_STATE_SERVICE_INDEX, self._selfdrive_state_payload, ("selfdriveState", "selfdriveStateSP")),
       (COMMAVIEW_CAR_STATE_SERVICE_INDEX, self._car_state_payload, ("carState",)),
       (COMMAVIEW_CONTROLS_STATE_SERVICE_INDEX, self._controls_state_payload, ("controlsState", "carOutput", "carControl", "@vehicle_parameters", "carState", "longitudinalPlanSP")),
       (COMMAVIEW_ONROAD_EVENTS_SERVICE_INDEX, self._onroad_events_payload, ("onroadEvents",)),
@@ -367,9 +547,13 @@ class _CommaViewSocketExporter:
       (COMMAVIEW_LIVE_CALIBRATION_SERVICE_INDEX, self._live_calibration_payload, ("@calibration",)),
       (COMMAVIEW_CAR_OUTPUT_SERVICE_INDEX, self._car_output_payload, ("carOutput",)),
       (COMMAVIEW_CAR_CONTROL_SERVICE_INDEX, self._car_control_payload, ("carControl",)),
-      (COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX, self._live_parameters_payload, ("@vehicle_parameters",)),
-      (COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX, self._longitudinal_plan_payload, ("longitudinalPlan",)),
-      (COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload, ()),
+      (COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX, self._live_parameters_payload, ("@vehicle_parameters", "@torque_parameters")),
+      # The sunnypilot planner and map services ride along with longitudinalPlan (absent on openpilot).
+      (COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX, self._longitudinal_plan_payload, ("longitudinalPlan", "longitudinalPlanSP", "liveMapDataSP")),
+      # CarParams has no message of its own here: the UI loads it from params a moment after it
+      # starts. It is offered when what it says changes (loaded, or another car), and commaviewd
+      # keeps the latest for each client that connects later.
+      (COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload, ("#carParams",)),
       (COMMAVIEW_DEVICE_STATE_SERVICE_INDEX, self._device_state_payload, ("deviceState",)),
       (COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX, self._road_camera_state_payload, ("@road_camera",)),
       (COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX, self._panda_states_summary_payload, ("pandaStates",)),
@@ -389,6 +573,7 @@ class _CommaViewSocketExporter:
     video_frame_matrix,
     model_transform,
     camera_offset: float = 0.0,
+    layout: str | None = None,
   ) -> None:
     now = time.monotonic()
     camera = _safe_str(active_camera)
@@ -397,6 +582,8 @@ class _CommaViewSocketExporter:
     if not source_switch and self._last_projection_offer_time and now - self._last_projection_offer_time < COMMAVIEW_MIN_EXPORT_INTERVAL_SEC:
       self._stats["rateLimited"] += 1
       return
+    layout = layout if layout in ("big", "mici") else _projection_caller_layout()
+    transform_origin = {"big": "screen", "mici": "content"}.get(layout, "")
     road_service = self._service_resolver.resolve(ui_state, "road_camera")
     calibration_service = self._service_resolver.resolve(ui_state, "calibration")
     road_camera = self._service_msg(ui_state, road_service)
@@ -417,6 +604,11 @@ class _CommaViewSocketExporter:
       },
       "videoFrameMatrix": _matrix3_list(video_frame_matrix),
       "modelTransform": _matrix3_list(model_transform),
+      # "big": comma 3/3X UI, "mici": comma four UI, "" unknown (older hook or caller).
+      "layout": layout,
+      # "screen": modelTransform maps to device screen px, so it already includes contentRect.x/y (big UI).
+      # "content": modelTransform maps to content-rect-local px (mici UI). "": unknown, assume "screen".
+      "transformOrigin": transform_origin,
       "cameraOffset": [0.0, _safe_float(camera_offset), 0.0],
       "roadFrameId": _safe_int(getattr(road_camera, "frameId", 0)),
       "roadTimestampEof": _safe_int(getattr(road_camera, "timestampEof", 0)),
@@ -462,7 +654,13 @@ class _CommaViewSocketExporter:
   def _generation(self, ui_state, dependencies) -> tuple:
     generation = []
     for dependency in dependencies:
-      service = self._service_resolver.resolve(ui_state, dependency[1:]) if dependency.startswith("@") else dependency
+      if dependency == "#carParams":
+        generation.append((dependency, self._car_params_identity(ui_state)))
+        continue
+      service = self._service_resolver.resolve_any(ui_state, dependency[1:]) if dependency.startswith("@") else dependency
+      if service is None:
+        generation.append((dependency, -1, 0))
+        continue
       try:
         recv_frame = int(ui_state.sm.recv_frame.get(service, -1))
       except (AttributeError, TypeError, ValueError):
@@ -639,6 +837,55 @@ class _CommaViewSocketExporter:
     except (KeyError, TypeError, IndexError):
       return None
 
+  def _started_service_msg(self, ui_state, service):
+    # The latest message of an optional service received during this drive, else None (not subscribed:
+    # openpilot has no sunnypilot services; not received yet).
+    if service is None:
+      return None
+    try:
+      recv_frame = int(ui_state.sm.recv_frame.get(service, -1))
+    except (AttributeError, TypeError, ValueError):
+      return None
+    if recv_frame < 0 or recv_frame < ui_state.started_frame:
+      return None
+    return self._service_msg(ui_state, service)
+
+  def _service_valid(self, ui_state, service) -> bool:
+    try:
+      return bool(ui_state.sm.valid[service])
+    except (AttributeError, KeyError, TypeError):
+      return False
+
+  def _param_value(self, ui_state, key: str, kind: str, default, attr: str | None = None):
+    # The value the UI already parsed (sunnypilot refreshes these on its own param thread). Without such an
+    # attribute the param file is read at most once per COMMAVIEW_PARAMS_REFRESH_SEC.
+    if attr:
+      value = getattr(ui_state, attr, None)
+      if value is not None:
+        return _coerce_param(value, kind, default)
+    now = time.monotonic()
+    cached = self._param_cache.get(key)
+    if cached is not None and now - cached[0] < COMMAVIEW_PARAMS_REFRESH_SEC:
+      return cached[1]
+    value = _coerce_param(_read_param(getattr(ui_state, "params", None), key, kind, default), kind, default)
+    self._param_cache[key] = (now, value)
+    return value
+
+  def _sunnypilot_params(self, ui_state) -> dict | None:
+    if self._flavor != "SUNNYPILOT":
+      return None
+    values = {}
+    for key, attr, kind, default in SUNNYPILOT_UI_PARAMS:
+      value = getattr(ui_state, attr, None)
+      values[key] = default if value is None else _coerce_param(value, kind, default)
+    # What the device's model renderer adds to model y (path, lanes, edges, lead): the CameraOffset param,
+    # applied only while a custom model bundle is active (onroad/model_renderer.py, re-read every 3 s there).
+    camera_offset = 0.0
+    if getattr(ui_state, "active_bundle", None):
+      camera_offset = self._param_value(ui_state, "CameraOffset", "float", 0.0)
+    values["CameraOffset"] = camera_offset
+    return values
+
   def _service_log_mono(self, ui_state, *services: str) -> int:
     values = []
     for service in services:
@@ -700,14 +947,15 @@ class _CommaViewSocketExporter:
       "ignition": bool(getattr(ui_state, "ignition", ignition)),
       "status": _status_mode_name(ui_state.status),
       "isMetric": bool(ui_state.is_metric),
-      "alwaysOnDm": bool(getattr(ui_state, "always_on_dm", ui_state.params.get_bool("AlwaysOnDM"))),
+      "alwaysOnDm": bool(self._param_value(ui_state, "AlwaysOnDM", "bool", False, "always_on_dm")),
       "hasLongitudinalControl": bool(getattr(ui_state, "has_longitudinal_control", False)),
       "startedFrame": _safe_int(getattr(ui_state, "started_frame", 0)),
+      # time.monotonic() seconds when the UI went onroad: the clock of every logMonoTime / 1e9.
       "startedTime": _safe_float(getattr(ui_state, "started_time", 0.0)),
       "activeCamera": active_camera,
       "wideCameraAvailable": wide_camera_available,
       "runtimeFlavor": self._flavor,
-      "rainbowPathEnabled": bool(getattr(ui_state, "rainbow_path", ui_state.params.get_bool("RainbowMode"))),
+      "rainbowPathEnabled": self._flavor == "SUNNYPILOT" and bool(getattr(ui_state, "rainbow_path", False)),
       "logMonoTime": self._service_log_mono(ui_state, "deviceState", "pandaStates", "selfdriveState"),
     }
 
@@ -724,7 +972,7 @@ class _CommaViewSocketExporter:
       "alertSize": 0,
       "alertHudVisual": 0,
       "experimentalMode": False,
-      "logMonoTime": self._service_log_mono(ui_state, "selfdriveState"),
+      "logMonoTime": self._service_log_mono(ui_state, "selfdriveState", "selfdriveStateSP"),
     }
     if ui_state.sm.recv_frame["selfdriveState"] >= ui_state.started_frame:
       selfdrive_state = ui_state.sm["selfdriveState"]
@@ -740,6 +988,15 @@ class _CommaViewSocketExporter:
         "alertHudVisual": _safe_int(getattr(selfdrive_state, "alertHudVisual", 0)),
         "experimentalMode": bool(selfdrive_state.experimentalMode),
       })
+    # sunnypilot MADS (selfdriveStateSP.mads); absent on openpilot.
+    mads = _attr(self._started_service_msg(ui_state, "selfdriveStateSP"), "mads")
+    if mads is not None:
+      payload["mads"] = {
+        "state": _enum_text(getattr(mads, "state", None)),
+        "enabled": bool(getattr(mads, "enabled", False)),
+        "active": bool(getattr(mads, "active", False)),
+        "available": bool(getattr(mads, "available", False)),
+      }
     return payload
 
   def _car_state_payload(self, ui_state) -> dict:
@@ -755,10 +1012,16 @@ class _CommaViewSocketExporter:
       "rightBlinker": False,
       "leftBlindspot": False,
       "rightBlindspot": False,
+      "aEgo": 0.0,
+      "steeringTorqueEps": 0.0,
+      "brakePressed": False,
+      "gasPressed": False,
+      "cruiseState": {"speedCluster": 0.0},
       "logMonoTime": self._service_log_mono(ui_state, "carState"),
     }
     if ui_state.sm.recv_frame["carState"] >= ui_state.started_frame:
       car_state = ui_state.sm["carState"]
+      cruise_state = getattr(car_state, "cruiseState", None)
       payload.update({
         "vEgo": _safe_float(car_state.vEgo),
         "vEgoCluster": _safe_float(car_state.vEgoCluster),
@@ -770,6 +1033,12 @@ class _CommaViewSocketExporter:
         "rightBlinker": bool(car_state.rightBlinker),
         "leftBlindspot": bool(car_state.leftBlindspot),
         "rightBlindspot": bool(car_state.rightBlindspot),
+        "aEgo": _safe_float(getattr(car_state, "aEgo", 0.0)),
+        "steeringTorqueEps": _safe_float(getattr(car_state, "steeringTorqueEps", 0.0)),
+        "brakePressed": bool(getattr(car_state, "brakePressed", False)),
+        "gasPressed": bool(getattr(car_state, "gasPressed", False)),
+        # Set speed as shown on the car's cluster, m/s (sunnypilot ICBM).
+        "cruiseState": {"speedCluster": _safe_float(getattr(cruise_state, "speedCluster", 0.0))},
       })
     return payload
 
@@ -789,10 +1058,13 @@ class _CommaViewSocketExporter:
       "experimentalMode": False,
       "speedLimitPreActive": speed_limit_pre_active,
       "speedLimitPreActiveIcon": speed_limit_pre_active_icon,
+      "vCruise": 0.0,
       "vCruiseDEPRECATED": 0.0,
       "lateralControlStateWhich": "",
       "curvature": 0.0,
       "desiredCurvature": 0.0,
+      "angleStateSteeringAngleDeg": 0.0,
+      "pidStateSteeringAngleDesiredDeg": 0.0,
       "torqueBarValue": 0.0,
       "logMonoTime": max(
         self._service_log_mono(ui_state, "controlsState", "carOutput", "carControl", "carState", "longitudinalPlanSP"),
@@ -803,6 +1075,7 @@ class _CommaViewSocketExporter:
       controls_state = ui_state.sm["controlsState"]
       lateral_control = getattr(controls_state, "lateralControlState", None)
       control_mode = lateral_control.which() if lateral_control is not None and hasattr(lateral_control, "which") else ""
+      v_cruise = _controls_v_cruise(controls_state)
       payload.update({
         "enabled": bool(getattr(controls_state, "enabled", False)),
         "active": bool(getattr(controls_state, "active", False)),
@@ -814,11 +1087,21 @@ class _CommaViewSocketExporter:
         "alertSize": _safe_int(getattr(controls_state, "alertSize", 0)),
         "alertHudVisual": _safe_int(getattr(controls_state, "alertHudVisual", 0)),
         "experimentalMode": bool(getattr(controls_state, "experimentalMode", False)),
-        "vCruiseDEPRECATED": _safe_float(getattr(controls_state, "vCruiseDEPRECATED", 0.0)),
+        "vCruise": v_cruise,
+        # Same value under the old key, for apps that predate "vCruise".
+        "vCruiseDEPRECATED": v_cruise,
         "lateralControlStateWhich": _safe_str(control_mode),
         "curvature": _safe_float(getattr(controls_state, "curvature", 0.0)),
         "desiredCurvature": _safe_float(getattr(controls_state, "desiredCurvature", 0.0)),
       })
+      # Only the active union member may be read.
+      try:
+        if control_mode == "angleState":
+          payload["angleStateSteeringAngleDeg"] = _safe_float(getattr(lateral_control.angleState, "steeringAngleDeg", 0.0))
+        elif control_mode == "pidState":
+          payload["pidStateSteeringAngleDesiredDeg"] = _safe_float(getattr(lateral_control.pidState, "steeringAngleDesiredDeg", 0.0))
+      except Exception:
+        pass
     payload["torqueBarValue"] = _safe_float(_torque_bar_value(ui_state, self._service_resolver))
     return payload
 
@@ -859,6 +1142,10 @@ class _CommaViewSocketExporter:
       "posePitchValidCount": 0,
       "isLowStd": False,
       "isActiveMode": False,
+      "activePolicy": -1,
+      "awarenessPercent": 100,
+      "posePitch": 0.0,
+      "poseYaw": 0.0,
       "logMonoTime": self._service_log_mono(ui_state, "driverMonitoringState"),
     }
     if ui_state.sm.recv_frame["driverMonitoringState"] >= ui_state.started_frame:
@@ -867,6 +1154,18 @@ class _CommaViewSocketExporter:
       pose = getattr(vision_policy, "pose", None)
       yaw_calib = getattr(pose, "yawCalib", None)
       pitch_calib = getattr(pose, "pitchCalib", None)
+      active_policy = _monitoring_policy(getattr(driver_monitoring, "activePolicy", None))
+      if active_policy is not None:
+        # Current schema: the UI dims the face unless activePolicy == vision. Older apps read isActiveMode.
+        payload.update({
+          "activePolicy": active_policy,
+          "isActiveMode": active_policy == 1,
+          "awarenessPercent": _safe_int(getattr(vision_policy, "awarenessPercent", 100)),
+          "posePitch": _safe_float(getattr(pose, "pitch", 0.0)),
+          "poseYaw": _safe_float(getattr(pose, "yaw", 0.0)),
+        })
+      else:
+        payload["isActiveMode"] = bool(getattr(driver_monitoring, "isActiveMode", False))
       payload.update({
         "faceDetected": bool(getattr(driver_monitoring, "faceDetected", getattr(vision_policy, "faceDetected", False))),
         "isDistracted": bool(getattr(driver_monitoring, "isDistracted", getattr(vision_policy, "isDistracted", False))),
@@ -876,7 +1175,6 @@ class _CommaViewSocketExporter:
         "poseYawValidCount": _safe_int(getattr(driver_monitoring, "poseYawValidCount", getattr(yaw_calib, "calibratedPercent", 0))),
         "posePitchValidCount": _safe_int(getattr(driver_monitoring, "posePitchValidCount", getattr(pitch_calib, "calibratedPercent", 0))),
         "isLowStd": bool(getattr(driver_monitoring, "isLowStd", False)),
-        "isActiveMode": bool(getattr(driver_monitoring, "isActiveMode", False)),
       })
     return payload
 
@@ -946,6 +1244,7 @@ class _CommaViewSocketExporter:
         },
       },
       "acceleration": {"x": []},
+      "leadsV3": [],
       "logMonoTime": self._service_log_mono(ui_state, "modelV2"),
     }
     if ui_state.sm.recv_frame["modelV2"] >= ui_state.started_frame:
@@ -979,6 +1278,8 @@ class _CommaViewSocketExporter:
         "acceleration": {
           "x": _float_list(getattr(getattr(model, "acceleration", None), "x", [])),
         },
+        # openpilot master's comma four lead bar uses leadsV3[0..1] (prob, x[0], y[0]) in e2e plans.
+        "leadsV3": [_lead_v3_dict(lead) for lead in _items(getattr(model, "leadsV3", None))[:COMMAVIEW_MAX_MODEL_LEADS]],
       })
     return payload
 
@@ -1034,8 +1335,10 @@ class _CommaViewSocketExporter:
   def _car_control_payload(self, ui_state) -> dict:
     payload = {
       "exportVersion": 1,
+      "enabled": False,
       "latActive": False,
       "longActive": False,
+      "cruiseControl": {"override": False},
       "hudControl": {
         "setSpeed": 0.0,
         "speedVisible": False,
@@ -1045,9 +1348,14 @@ class _CommaViewSocketExporter:
     if ui_state.sm.recv_frame["carControl"] >= ui_state.started_frame:
       car_control = ui_state.sm["carControl"]
       hud_control = getattr(car_control, "hudControl", None)
+      cruise_control = getattr(car_control, "cruiseControl", None)
       payload.update({
+        "enabled": bool(getattr(car_control, "enabled", False)),
         "latActive": bool(car_control.latActive),
         "longActive": bool(car_control.longActive),
+        "cruiseControl": {
+          "override": bool(getattr(cruise_control, "override", False)),
+        },
         "hudControl": {
           "setSpeed": _safe_float(getattr(hud_control, "setSpeed", 0.0)),
           "speedVisible": bool(getattr(hud_control, "speedVisible", False)),
@@ -1056,36 +1364,142 @@ class _CommaViewSocketExporter:
     return payload
 
   def _live_parameters_payload(self, ui_state) -> dict:
+    vehicle_parameters = self._service_resolver.resolve(ui_state, "vehicle_parameters")
+    torque_parameters = self._service_resolver.resolve_optional(ui_state, "torque_parameters")
     payload = {
       "exportVersion": 1,
       "roll": 0.0,
-      "logMonoTime": self._service_resolver.log_mono_time(ui_state, "vehicle_parameters"),
+      "valid": False,
+      # SubMaster validity of the service (what the sunnypilot developer UI checks before using roll).
+      "serviceValid": self._service_valid(ui_state, vehicle_parameters),
+      "logMonoTime": self._service_log_mono(ui_state, vehicle_parameters, torque_parameters),
     }
     if self._service_resolver.recv_frame(ui_state, "vehicle_parameters") >= ui_state.started_frame:
-      payload["roll"] = _safe_float(self._service_resolver.message(ui_state, "vehicle_parameters").roll)
+      message = self._service_resolver.message(ui_state, "vehicle_parameters")
+      payload["roll"] = _safe_float(message.roll)
+      payload["valid"] = bool(getattr(message, "valid", False))
+    # sunnypilot developer UI FRIC. / L.A.F. (liveTorqueParameters on the release, lateralTorqueParameters on master).
+    torque = self._started_service_msg(ui_state, torque_parameters)
+    if torque is not None:
+      live_valid = getattr(torque, "liveValid", None)
+      payload["torqueParameters"] = {
+        "frictionCoefficientFiltered": _safe_float(getattr(torque, "frictionCoefficientFiltered", 0.0)),
+        "latAccelFactorFiltered": _safe_float(getattr(torque, "latAccelFactorFiltered", 0.0)),
+        # liveValid (release) / valid (master): the estimate is live, drawn green.
+        "liveValid": bool(live_valid if live_valid is not None else getattr(torque, "valid", False)),
+        "serviceValid": self._service_valid(ui_state, torque_parameters),
+        "logMonoTime": self._service_log_mono(ui_state, torque_parameters),
+      }
     return payload
 
   def _longitudinal_plan_payload(self, ui_state) -> dict:
     payload = {
       "exportVersion": 1,
       "allowThrottle": False,
-      "logMonoTime": self._service_log_mono(ui_state, "longitudinalPlan"),
+      "longitudinalPlanSource": "",
+      "logMonoTime": self._service_log_mono(ui_state, "longitudinalPlan", "longitudinalPlanSP", "liveMapDataSP"),
     }
     if ui_state.sm.recv_frame["longitudinalPlan"] >= ui_state.started_frame:
-      payload["allowThrottle"] = bool(getattr(ui_state.sm["longitudinalPlan"], "allowThrottle", False))
+      plan = ui_state.sm["longitudinalPlan"]
+      payload["allowThrottle"] = bool(getattr(plan, "allowThrottle", False))
+      payload["longitudinalPlanSource"] = _enum_text(getattr(plan, "longitudinalPlanSource", None))
+    plan_sp = self._started_service_msg(ui_state, "longitudinalPlanSP")
+    if plan_sp is not None:
+      payload["longitudinalPlanSP"] = self._longitudinal_plan_sp(ui_state, plan_sp)
+    map_data = self._started_service_msg(ui_state, "liveMapDataSP")
+    if map_data is not None:
+      payload["liveMapDataSP"] = {
+        "speedLimitValid": bool(getattr(map_data, "speedLimitValid", False)),
+        "speedLimit": _safe_float(getattr(map_data, "speedLimit", 0.0)),
+        "speedLimitAheadValid": bool(getattr(map_data, "speedLimitAheadValid", False)),
+        "speedLimitAhead": _safe_float(getattr(map_data, "speedLimitAhead", 0.0)),
+        "speedLimitAheadDistance": _safe_float(getattr(map_data, "speedLimitAheadDistance", 0.0)),
+        "roadName": _text(getattr(map_data, "roadName", "")),
+        "logMonoTime": self._service_log_mono(ui_state, "liveMapDataSP"),
+      }
     return payload
+
+  def _longitudinal_plan_sp(self, ui_state, plan_sp) -> dict:
+    # Speeds are m/s as published; the UI multiplies by its km/h or mph factor.
+    resolver = _attr(plan_sp, "speedLimit", "resolver")
+    assist = _attr(plan_sp, "speedLimit", "assist")
+    vision = _attr(plan_sp, "smartCruiseControl", "vision")
+    map_ = _attr(plan_sp, "smartCruiseControl", "map")
+    e2e_alerts = _attr(plan_sp, "e2eAlerts")
+    # Only what the sunnypilot onroad UI reads (speed_limit.py, smart_cruise_control.py, circular_alerts.py,
+    # hud_renderer.py), since this rides along at the plan's rate.
+    return {
+      "speedLimit": {
+        "resolver": {
+          "speedLimit": _safe_float(getattr(resolver, "speedLimit", 0.0)),
+          "speedLimitLast": _safe_float(getattr(resolver, "speedLimitLast", 0.0)),
+          "speedLimitFinalLast": _safe_float(getattr(resolver, "speedLimitFinalLast", 0.0)),
+          "speedLimitOffset": _safe_float(getattr(resolver, "speedLimitOffset", 0.0)),
+          "speedLimitValid": bool(getattr(resolver, "speedLimitValid", False)),
+          "speedLimitLastValid": bool(getattr(resolver, "speedLimitLastValid", False)),
+          "source": _enum_text(getattr(resolver, "source", None)),
+        },
+        "assist": {
+          "state": _enum_text(getattr(assist, "state", None)),
+          "active": bool(getattr(assist, "active", False)),
+        },
+      },
+      "smartCruiseControl": {
+        "vision": {
+          "enabled": bool(getattr(vision, "enabled", False)),
+          "active": bool(getattr(vision, "active", False)),
+        },
+        "map": {
+          "enabled": bool(getattr(map_, "enabled", False)),
+          "active": bool(getattr(map_, "active", False)),
+        },
+      },
+      "e2eAlerts": {
+        "greenLightAlert": bool(getattr(e2e_alerts, "greenLightAlert", False)),
+        "leadDepartAlert": bool(getattr(e2e_alerts, "leadDepartAlert", False)),
+      },
+      "logMonoTime": self._service_log_mono(ui_state, "longitudinalPlanSP"),
+    }
+
+  def _car_params_identity(self, ui_state) -> tuple:
+    # Everything carParams carries that can change: the car, and the slow-changing UI settings that ride along
+    # (sunnypilot params, CarParamsSP, the service names this UI resolved). Built from values the UI already
+    # holds, so it is cheap to compute every frame; the payload is offered only when this changes.
+    car_params = getattr(ui_state, "CP", None)
+    car = () if car_params is None else tuple(_safe_str(getattr(car_params, field, "")) for field in (
+      "carFingerprint", "carName", "carVin", "openpilotLongitudinalControl", "maxLateralAccel"))
+    sunnypilot_params = self._sunnypilot_params(ui_state)
+    return (
+      car,
+      self._pcm_cruise_speed(ui_state),
+      tuple(sunnypilot_params.items()) if sunnypilot_params is not None else (),
+      tuple(sorted(self._service_resolver.resolved.items())),
+    )
+
+  @staticmethod
+  def _pcm_cruise_speed(ui_state) -> bool:
+    # CarParamsSP.pcmCruiseSpeed (sunnypilot ICBM "MAX" swap); True, the UI's default, without CarParamsSP.
+    car_params_sp = getattr(ui_state, "CP_SP", None)
+    return True if car_params_sp is None else bool(getattr(car_params_sp, "pcmCruiseSpeed", True))
 
   def _car_params_payload(self, ui_state) -> dict:
     car_params = getattr(ui_state, "CP", None)
-    return {
+    payload = {
       "exportVersion": 1,
       "openpilotLongitudinalControl": bool(getattr(car_params, "openpilotLongitudinalControl", False)),
       "maxLateralAccel": _safe_float(getattr(car_params, "maxLateralAccel", COMMAVIEW_DEFAULT_MAX_LAT_ACCEL)),
       "carFingerprint": _safe_str(getattr(car_params, "carFingerprint", "")),
       "carName": _safe_str(getattr(car_params, "carName", "")),
       "carVin": _safe_str(getattr(car_params, "carVin", "")),
+      "pcmCruiseSpeed": self._pcm_cruise_speed(ui_state),
+      # Which name this UI subscribes to for each renamed service ("liveCalibration" = sunnypilot release schema).
+      "upstreamServices": self._service_resolver.resolved,
       "logMonoTime": 0,
     }
+    sunnypilot_params = self._sunnypilot_params(ui_state)
+    if sunnypilot_params is not None:
+      payload["spParams"] = sunnypilot_params
+    return payload
 
   def _device_state_payload(self, ui_state) -> dict:
     payload = {

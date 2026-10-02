@@ -1348,9 +1348,9 @@ def test_verify_script_fails_when_existing_flat_augmented_road_target_is_stale(t
 
 EXPECTED_OPENPILOT_ONLY_LINES = [
     'COMMAVIEW_RUNTIME_FLAVOR = "OPENPILOT"',
-    '      (COMMAVIEW_CONTROLS_STATE_SERVICE_INDEX, self._controls_state_payload, ("controlsState", "carOutput", "carControl", "@vehicle_parameters", "carState")),',
-    '      "rainbowPathEnabled": False,',
-    '        self._service_log_mono(ui_state, "controlsState", "carOutput", "carControl", "carState"),',
+]
+EXPECTED_SUNNYPILOT_ONLY_LINES = [
+    'COMMAVIEW_RUNTIME_FLAVOR = "SUNNYPILOT"',
 ]
 
 
@@ -1360,7 +1360,8 @@ def test_flavor_templates_differ_only_by_known_flavor_hunks():
     opcodes = [op for op in difflib.SequenceMatcher(a=openpilot, b=sunnypilot, autojunk=False).get_opcodes() if op[0] != "equal"]
     openpilot_only = [line for _, i1, i2, _, _ in opcodes for line in openpilot[i1:i2]]
     sunnypilot_only = [line for _, _, _, j1, j2 in opcodes for line in sunnypilot[j1:j2]]
-    # Shared exporter code must be edited in both flavors; only these hunks may differ.
+    # The two templates are the same exporter: sunnypilot-only exports are gated on the flavor constant and
+    # on the sunnypilot services being subscribed, so only the constant may differ.
     assert openpilot_only == EXPECTED_OPENPILOT_ONLY_LINES
-    assert len(opcodes) == 8
-    assert len(sunnypilot_only) == 60
+    assert sunnypilot_only == EXPECTED_SUNNYPILOT_ONLY_LINES
+    assert len(opcodes) == 1

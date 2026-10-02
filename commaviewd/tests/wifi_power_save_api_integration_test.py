@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the paired, offroad-only Wi-Fi control without touching host Wi-Fi."""
+"""Exercise the paired Wi-Fi power-save control without touching host Wi-Fi."""
 
 import json
 import os
@@ -80,16 +80,12 @@ def main():
             assert request(port, token="test-token") == (200, {"ok": True, "mode": "default", "enabled": None})
             assert request(port, "POST", "test-token", {"mode": "off"}) == (200, {"ok": True, "mode": "disable", "enabled": False, "reconnectRequired": True})
             assert (root / "profile_mode").read_text().strip() == "disable"
+            # Saving the profile never touches the live link, so it is allowed while driving.
             (params / "IsOffroad").write_text("0")
-            assert request(port, "POST", "test-token", {"mode": "on"})[0] == 403
-            (params / "IsOffroad").write_text("1")
             (params / "IsEngaged").write_text("1")
-            assert request(port, "POST", "test-token", {"mode": "on"})[0] == 403
-            assert (root / "profile_mode").read_text().strip() == "disable"
-            (params / "IsEngaged").write_text("0")
             assert request(port, "POST", "test-token", {"mode": "on"}) == (200, {"ok": True, "mode": "enable", "enabled": True, "reconnectRequired": True})
             assert (root / "profile_mode").read_text().strip() == "enable"
-            print("PASS: paired Wi-Fi control saves active profile and rejects onroad/engaged changes")
+            print("PASS: paired Wi-Fi control saves the active profile, onroad included, for the next reconnect")
         finally:
             process.terminate()
             process.wait(timeout=5)

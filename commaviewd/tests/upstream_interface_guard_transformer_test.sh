@@ -18,20 +18,56 @@ manifest="$tmpdir/manifest.json"
 source_root="$op_root/cereal"
 mkdir -p "$source_root"
 
-# The lines of openpilot's msgq ring that live location's read-only GPS reader relies on.
+# The lines of openpilot's msgq ring that the read-only readers (live location's GPS, the
+# bridge's encoder queues) rely on.
 write_msgq_fixture() {
   mkdir -p "$1/msgq_repo/msgq"
   cat > "$1/msgq_repo/msgq/msgq.h" <<'H'
-struct msgq_header_t { uint64_t num_readers; uint64_t write_pointer; };
+#define NUM_READERS 15
+#define ALIGN(n) ((n + (8 - 1)) & -8)
+#define PACK64(output, higher, lower) output = ((uint64_t)higher << 32) | ((uint64_t)lower & 0xFFFFFFFF)
+struct  msgq_header_t {
+  uint64_t num_readers;
+  uint64_t write_pointer;
+  uint64_t write_uid;
+  uint64_t read_pointers[NUM_READERS];
+  uint64_t read_valids[NUM_READERS];
+  uint64_t read_uids[NUM_READERS];
+};
 H
   cat > "$1/msgq_repo/msgq/msgq.cc" <<'CC'
+  int rc = ftruncate(fd, size + sizeof(msgq_header_t));
   q->data = mem + sizeof(msgq_header_t);
+int msgq_msg_send(msgq_msg_t * msg, msgq_queue_t *q){
   uint64_t total_msg_size = ALIGN(msg->size + sizeof(int64_t));
+  assert(3 * total_msg_size <= q->size);
     *(int64_t*)p = -1;
+    write_cycles = write_cycles + 1;
+  *size_p = msg->size;
+  memcpy(p + sizeof(int64_t), msg->data, msg->size);
+  __sync_synchronize();
+  uint32_t new_ptr = ALIGN(write_pointer + msg->size + sizeof(int64_t));
   PACK64(*q->write_pointer, write_cycles, new_ptr);
+}
 CC
 }
 write_msgq_fixture "$op_root"
+
+# The carState fields the road phase reads.
+write_car_fixture() {
+  cat > "$1/car.capnp" <<'CAPNP'
+struct CarState {
+  standstill @18 :Bool;
+  gearShifter @14 :GearShifter;
+  enum GearShifter {
+    unknown @0;
+    park @1;
+    drive @2;
+  }
+}
+CAPNP
+}
+write_car_fixture "$source_root"
 
 cat > "$source_root/services.py" <<'PY'
 roadEncodeData = None
@@ -110,6 +146,13 @@ hasFix
 horizontalAccuracy
 bearingDeg
 unixTimestampMillis
+managerState
+shouldBeRunning
+exitCode
+struct SelfdriveState {
+  state @0 :OpenpilotState;
+  enabled @1 :Bool;
+}
 CAPNP
 
 git -C "$op_root" init -q
@@ -170,6 +213,7 @@ sed -e 's/liveCalibration/extrinsicsCalibration/g' \
     -e 's/driverEncodeData/cabinEncodeData/g' \
     "$source_root/log.capnp" > "$current_op_root/cereal/log.capnp"
 write_msgq_fixture "$current_op_root"
+write_car_fixture "$current_op_root/cereal"
 git -C "$current_op_root" init -q
 git -C "$current_op_root" remote add origin https://github.com/commaai/openpilot.git
 
@@ -219,6 +263,30 @@ printf '%s\n' "$ring_output" | grep -Fq 'msgq-ring:*(int64_t*)p = -1;' || {
 }
 
 echo "PASS: upstream interface guard rejects a changed msgq ring"
+
+expect_guard_failure() {
+  local name="$1" needle="$2" edit="$3" file="$4"
+  local root="$tmpdir/openpilot-$name"
+  cp -a "$current_op_root" "$root"
+  sed -i "$edit" "$root/$file"
+  local out
+  if out="$(OP_ROOT="$root" "$GUARD" --manifest "$tmpdir/$name-manifest.json" 2>&1)"; then
+    echo "FAIL: guard accepted $name" >&2
+    exit 1
+  fi
+  printf '%s\n' "$out" | grep -Fq "$needle" || {
+    printf '%s\n' "$out" >&2
+    echo "FAIL: guard did not name $needle for $name" >&2
+    exit 1
+  }
+}
+expect_guard_failure many-readers 'msgq-layout:NUM_READERS' 's/NUM_READERS 15/NUM_READERS 64/' msgq_repo/msgq/msgq.h
+expect_guard_failure header-order 'msgq-layout:msgq_header_t' '/uint64_t write_uid;/d' msgq_repo/msgq/msgq.h
+expect_guard_failure send-order 'msgq-ring:msgq_msg_send stores the size tag' '/__sync_synchronize();/d' msgq_repo/msgq/msgq.cc
+expect_guard_failure gear 'road-phase:CarState.gearShifter' '/gearShifter @14/d' cereal/car.capnp
+expect_guard_failure selfdrive-enabled 'road-phase:SelfdriveState.enabled' '/enabled @1 :Bool;/d' cereal/log.capnp
+
+echo "PASS: upstream interface guard rejects a changed msgq layout or road-phase field"
 
 nested_op_root="$tmpdir/openpilot-nested"
 nested_manifest="$tmpdir/nested-manifest.json"

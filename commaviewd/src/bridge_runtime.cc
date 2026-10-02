@@ -1,4 +1,5 @@
 #include "framing.h"
+#include "msgq_ring_reader.h"
 #include "socket.h"
 #include "policy.h"
 #include "router.h"
@@ -40,6 +41,7 @@
 #include <netinet/tcp.h>
 #include <linux/sockios.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -60,7 +62,6 @@
 #include <capnp/serialize.h>
 #include "cereal/gen/cpp/log.capnp.h"
 #include "cereal/messaging/messaging.h"
-#include "cereal/services.h"
 using commaview::telemetry::ServicePolicy;
 using commaview::telemetry::service_policy_samples;
 using commaview::runtime_debug::LoadedRuntimeDebugConfig;
@@ -92,6 +93,12 @@ static constexpr uint64_t TELEMETRY_PARTIAL_SEND_RECOVERY_BUDGET_MICROS = 250000
 // Its bounded queue continues accepting only fresh work and resumes on a keyframe after drops.
 static constexpr uint64_t VIDEO_PARTIAL_SEND_RECOVERY_BUDGET_MICROS = 2000000ULL;
 static constexpr size_t VIDEO_FRAME_QUEUE_CAPACITY = 3;
+// A new client's stream starts at its first keyframe. encoderd sends one every 15-30 frames
+// (0.75-1.5 s at 20 fps); if this many pass without one being recognized, the stream starts anyway.
+static constexpr size_t VIDEO_START_MAX_SKIPPED_FRAMES = 60;
+// encoderd sets V4L2_BUF_FLAG_KEYFRAME in EncodeIndex.flags on keyframes (loggerd starts each
+// recording on it), alongside the IDR NAL unit the bridge also looks for.
+static constexpr uint32_t ENCODE_IDX_KEYFRAME_FLAG = 0x00000008;
 
 // Wire protocol: the index of each name is the service_idx byte in 0x04 meta-raw frames and the
 // UI export socket service id. Keep the order identical to telemetry::kDefaultServicePolicies,
@@ -167,12 +174,6 @@ static std::atomic<int>& active_counter_for_port(int port) {
   if (port == PORT_ROAD) return g_active_road;
   if (port == PORT_WIDE) return g_active_wide;
   return g_active_driver;
-}
-
-static size_t queue_size_for_service(const char* video_service) {
-  auto it = services.find(std::string(video_service));
-  if (it == services.end()) return 0;
-  return it->second.queue_size;
 }
 
 static void telemetry_loop(int client_fd,
@@ -272,6 +273,19 @@ struct RuntimePeerDisconnectStats {
   uint64_t at_ms = 0;
 };
 
+// Encoder queue reads (msgq_ring_reader.h), summed over finished client sessions plus the gaps of
+// sessions still running.
+struct RuntimeVideoRingStats {
+  uint64_t sessions = 0;
+  uint64_t messages = 0;
+  uint64_t discontinuities = 0;
+  uint64_t lapped = 0;
+  uint64_t invalid = 0;
+  uint64_t resets = 0;
+  uint64_t remaps = 0;
+  uint64_t fell_behind = 0;
+};
+
 struct RuntimeState {
   LoadedRuntimeDebugConfig loaded_config = {};
   LoadedRuntimeDebugConfig effective_config = {};
@@ -281,13 +295,19 @@ struct RuntimeState {
   commaview::runtime::RuntimeVideoSendStats video_send = {};
   RuntimePeerDisconnectStats peer_disconnect = {};
   std::chrono::steady_clock::time_point started_at = std::chrono::steady_clock::now();
+  RuntimeVideoRingStats video_ring = {};
   uint64_t reconnect_count = 0;
+  uint64_t config_reloads = 0;
+  uint64_t last_config_reload_ms = 0;
   std::string last_restart_reason = "startup";
   bool initialized = false;
 };
 
 static std::mutex g_runtime_state_mutex;
 static RuntimeState g_runtime_state;
+// Bumped (under g_runtime_state_mutex) whenever effective_config changes, so telemetry loops copy
+// the config only when it changed.
+static std::atomic<uint64_t> g_config_generation{0};
 
 static uint64_t runtime_now_ms() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -378,6 +398,18 @@ static std::string build_runtime_stats_json_locked() {
   out << "\"maxMicros\":" << g_runtime_state.video_loop.max_micros << ",";
   out << "\"overBudget\":" << g_runtime_state.video_loop.over_budget << "},";
   out << "\"videoSend\":" << commaview::runtime::video_send_stats_json(g_runtime_state.video_send) << ",";
+  out << "\"videoRing\":{"
+      << "\"msgqReaderSlots\":0,"
+      << "\"sessions\":" << g_runtime_state.video_ring.sessions << ","
+      << "\"messages\":" << g_runtime_state.video_ring.messages << ","
+      << "\"discontinuities\":" << g_runtime_state.video_ring.discontinuities << ","
+      << "\"lapped\":" << g_runtime_state.video_ring.lapped << ","
+      << "\"invalid\":" << g_runtime_state.video_ring.invalid << ","
+      << "\"resets\":" << g_runtime_state.video_ring.resets << ","
+      << "\"remaps\":" << g_runtime_state.video_ring.remaps << ","
+      << "\"fellBehind\":" << g_runtime_state.video_ring.fell_behind << "},";
+  out << "\"configReloads\":" << g_runtime_state.config_reloads << ",";
+  out << "\"lastConfigReloadMs\":" << g_runtime_state.last_config_reload_ms << ",";
   out << "\"peerDisconnect\":{"
       << "\"count\":" << g_runtime_state.peer_disconnect.count << ","
       << "\"stream\":\"" << runtime_json_escape(g_runtime_state.peer_disconnect.stream) << "\","
@@ -475,6 +507,70 @@ static void initialize_runtime_state_once() {
       g_runtime_state.last_restart_reason = restart_reason;
     }
     g_runtime_state.initialized = true;
+  }
+  flush_runtime_state();
+}
+
+// Re-reads the runtime debug config in place (SIGHUP, sent by control mode's runtime-debug apply).
+// Every setting in it is a per-service telemetry policy, read by each telemetry loop on its next
+// pass, so nothing needs a restart.
+static void reload_runtime_config(const char* reason) {
+  LoadedRuntimeDebugConfig loaded = commaview::runtime_debug::load_runtime_debug_config();
+  LoadedRuntimeDebugConfig effective = effective_runtime_debug_config(loaded);
+  std::string hash;
+  {
+    std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+    g_runtime_state.loaded_config = std::move(loaded);
+    g_runtime_state.effective_config = std::move(effective);
+    g_runtime_state.config_reloads += 1;
+    g_runtime_state.last_config_reload_ms = runtime_now_ms();
+    g_config_generation.fetch_add(1);
+    hash = g_runtime_state.effective_config.config_hash;
+  }
+  flush_runtime_state();
+  append_runtime_run_event("config_reload", "", "", reason == nullptr ? "" : reason, "ok");
+  printf("runtime debug config reloaded in place (%s) hash=%s\n", reason == nullptr ? "" : reason, hash.c_str());
+  fflush(stdout);
+}
+
+// The telemetry loops' copy of the effective config, refreshed when it changed.
+static void refresh_config_snapshot(LoadedRuntimeDebugConfig* config, uint64_t* generation) {
+  const uint64_t current = g_config_generation.load();
+  if (current == *generation) return;
+  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+  *config = g_runtime_state.effective_config;
+  *generation = g_config_generation.load();
+}
+
+// SIGHUP is blocked in every thread (see commaview_bridge_main) and taken here, so a reload runs
+// on an ordinary thread instead of in a signal handler, and costs nothing until one is asked for.
+static void config_reload_signal_loop() {
+  sigset_t set;
+  sigemptyset(&set);
+  sigaddset(&set, SIGHUP);
+  while (g_running) {
+    int sig = 0;
+    if (sigwait(&set, &sig) != 0) continue;
+    if (sig == SIGHUP && g_running) reload_runtime_config("sighup");
+  }
+}
+
+static void note_video_ring_discontinuity() {
+  std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+  g_runtime_state.video_ring.discontinuities += 1;
+}
+
+static void note_video_ring_session(const commaview::ipc::StreamReaderStats& stats) {
+  {
+    std::lock_guard<std::mutex> lock(g_runtime_state_mutex);
+    auto& ring = g_runtime_state.video_ring;
+    ring.sessions += 1;
+    ring.messages += stats.messages;
+    ring.lapped += stats.lapped;
+    ring.invalid += stats.invalid;
+    ring.resets += stats.resets;
+    ring.remaps += stats.remaps;
+    ring.fell_behind += stats.fell_behind;
   }
   flush_runtime_state();
 }
@@ -679,17 +775,16 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     return;
   }
 
+  // Reads the encoder queue without a msgq reader slot (msgq_ring_reader.h): any number of client
+  // reconnects and bridge restarts leave openpilot's queue, and loggerd's place in it, untouched.
+  // The session starts at the newest message.
+  commaview::ipc::QueueStreamReader video_reader(commaview::ipc::msgq_queue_path(video_service));
+  std::vector<uint8_t> raw_msg;
+  uint64_t ring_discontinuities = 0;
+
   note_runtime_connect();
 
-  Context* ctx = Context::create();
-
-  const size_t video_segment_size = queue_size_for_service(video_service);
-  SubSocket* video_sock = SubSocket::create(ctx, video_service, "127.0.0.1", true, true, video_segment_size);
-
   const bool include_telemetry = (port == PORT_ROAD || port == PORT_WIDE);
-
-  Poller* video_poller = Poller::create();
-  if (video_sock != nullptr) video_poller->registerSocket(video_sock);
 
   std::atomic<bool> telemetry_disconnect_requested{false};
   std::atomic<bool> telemetry_enabled_for_client{include_telemetry};
@@ -710,6 +805,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   uint64_t wrong_union_count = 0;
   uint64_t suppressed_video_count = 0;
   commaview::video::VideoFrameQueue video_queue(VIDEO_FRAME_QUEUE_CAPACITY);
+  commaview::video::KeyframeStartGate start_gate(VIDEO_START_MAX_SKIPPED_FRAMES);
   std::mutex video_queue_mutex;
   std::condition_variable video_queue_cv;
   std::atomic<bool> video_sender_disconnect_requested{false};
@@ -816,6 +912,124 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     }
   });
 
+  // Parses one encoder message from the port's reader and queues its frame for the sender thread.
+  const auto ingest_video_message = [&](const std::vector<uint8_t>& raw_msg) {
+    const size_t raw_size = raw_msg.size();
+
+    try {
+      capnp::ReaderOptions options;
+      options.traversalLimitInWords = kj::maxValue;
+
+      capnp::FlatArrayMessageReader reader(
+          aligned_buf.align(reinterpret_cast<const char*>(raw_msg.data()), raw_size), options);
+      auto event = reader.getRoot<cereal::Event>();
+
+      const auto which = event.which();
+      const auto expected = commaview::video::expected_video_which_for_port(port, g_livestream_video_enabled);
+      if (which != expected) {
+        wrong_union_count++;
+        if (wrong_union_count <= 20 || (wrong_union_count % 100) == 0) {
+          printf("[%s] union mismatch #%llu: got=%d expected=%d raw=%zu\n",
+                 video_service,
+                 static_cast<unsigned long long>(wrong_union_count),
+                 static_cast<int>(which),
+                 static_cast<int>(expected),
+                 raw_size);
+          fflush(stdout);
+        }
+        return;
+      }
+
+      auto ed = commaview::video::read_encode_data(event, port, g_livestream_video_enabled);
+      auto header = ed.getHeader();
+      auto data = ed.getData();
+
+      const uint32_t header_len = header.size();
+      const size_t data_len = data.size();
+      const uint64_t timestamp_ns = ed.getUnixTimestampNanos();
+      const uint32_t video_width = ed.getWidth();
+      const uint32_t video_height = ed.getHeight();
+      if (data_len == 0) return;
+
+      bool suppress_video = false;
+      bool session_policy = false;
+      if (commaview::control::get_session_policy(control_state.bound_session_id, &session_policy)) {
+        suppress_video = session_policy;
+      }
+
+      if (suppress_video) {
+        suppressed_video_count++;
+        if (suppressed_video_count <= 3 || (suppressed_video_count % 500) == 0) {
+          printf("[%s] suppress-video drop=%llu session=%s header=%u data=%zu\n",
+                 video_service,
+                 static_cast<unsigned long long>(suppressed_video_count),
+                 control_state.bound_session_id.empty() ? "<legacy>" : control_state.bound_session_id.c_str(),
+                 header_len,
+                 data_len);
+          fflush(stdout);
+        }
+        return;
+      }
+
+      const auto contains_idr = g_livestream_video_enabled
+          ? commaview::video::contains_h264_idr
+          : commaview::video::contains_hevc_idr;
+      const bool is_keyframe =
+          (ed.getIdx().getFlags() & ENCODE_IDX_KEYFRAME_FLAG) != 0 ||
+          contains_idr(header.begin(), header_len) ||
+          contains_idr(data.begin(), data_len);
+      const bool stream_was_started = start_gate.started();
+      if (!start_gate.admit(is_keyframe)) return;
+      if (!stream_was_started) {
+        printf("[%s] stream starts on a %s after skipping %llu frames\n",
+               video_service,
+               is_keyframe ? "keyframe" : "non-keyframe (no keyframe recognized)",
+               static_cast<unsigned long long>(start_gate.skipped()));
+        fflush(stdout);
+      }
+      commaview::video::PendingVideoFrame pending;
+      pending.sequence = ++parsed_frame_count;
+      pending.is_keyframe = is_keyframe;
+      pending.created_at_ms = runtime_now_ms();
+      pending.timestamp_ns = timestamp_ns;
+      pending.width = video_width;
+      pending.height = video_height;
+      pending.codec_header.assign(header.begin(), header.begin() + header_len);
+      pending.data.assign(data.begin(), data.begin() + data_len);
+      uint64_t queue_drop_delta = 0;
+      {
+        std::lock_guard<std::mutex> queue_lock(video_queue_mutex);
+        video_queue.push(std::move(pending));
+        queue_drop_delta = video_queue.drop_count() - last_queue_drop_count;
+        note_video_queue_deltas(
+            queue_drop_delta,
+            video_queue.keyframe_wait_drop_count() - last_keyframe_wait_drop_count,
+            video_queue.high_watermark());
+        last_queue_drop_count = video_queue.drop_count();
+        last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
+      }
+      if (queue_drop_delta > 0 && !queue_drop_tcp_snapshot_taken.exchange(true)) {
+        note_video_tcp_pressure_snapshot(client_fd, video_service, "queue_drop");
+      }
+      video_queue_cv.notify_one();
+    } catch (const std::exception& e) {
+      parse_error_count++;
+      printf("[%s] parse exception #%llu: %s (raw=%zu)\n",
+             video_service,
+             static_cast<unsigned long long>(parse_error_count),
+             e.what(),
+             raw_size);
+      fflush(stdout);
+    } catch (...) {
+      parse_error_count++;
+      printf("[%s] parse unknown exception #%llu (raw=%zu)\n",
+             video_service,
+             static_cast<unsigned long long>(parse_error_count),
+             raw_size);
+      fflush(stdout);
+    }
+  };
+
   while (g_running) {
     const auto loop_started = std::chrono::steady_clock::now();
     if (!commaview::net::client_socket_alive(client_fd)) {
@@ -831,117 +1045,23 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     if (video_sender_disconnect_requested.load() ||
         (include_telemetry && telemetry_disconnect_requested.load())) break;
 
-    int video_poll_ms = 20;
-    auto ready = video_poller->poll(video_poll_ms);
-
-    for (auto* sock : ready) {
-      std::unique_ptr<Message> raw_msg(sock->receive(true));
-      if (!raw_msg) continue;
-      const size_t raw_size = raw_msg->getSize();
-
-      try {
-        capnp::ReaderOptions options;
-        options.traversalLimitInWords = kj::maxValue;
-
-        capnp::FlatArrayMessageReader reader(aligned_buf.align(raw_msg.get()), options);
-        auto event = reader.getRoot<cereal::Event>();
-
-        if (video_sock != nullptr && sock == video_sock) {
-          const auto which = event.which();
-          const auto expected = commaview::video::expected_video_which_for_port(port, g_livestream_video_enabled);
-          if (which != expected) {
-            wrong_union_count++;
-            if (wrong_union_count <= 20 || (wrong_union_count % 100) == 0) {
-              printf("[%s] union mismatch #%llu: got=%d expected=%d raw=%zu\n",
-                     video_service,
-                     static_cast<unsigned long long>(wrong_union_count),
-                     static_cast<int>(which),
-                     static_cast<int>(expected),
-                     raw_size);
-              fflush(stdout);
-            }
-            continue;
-          }
-
-          auto ed = commaview::video::read_encode_data(event, port, g_livestream_video_enabled);
-          auto header = ed.getHeader();
-          auto data = ed.getData();
-
-          const uint32_t header_len = header.size();
-          const size_t data_len = data.size();
-          const uint64_t timestamp_ns = ed.getUnixTimestampNanos();
-          const uint32_t video_width = ed.getWidth();
-          const uint32_t video_height = ed.getHeight();
-          if (data_len == 0) continue;
-
-          bool suppress_video = false;
-          bool session_policy = false;
-          if (commaview::control::get_session_policy(control_state.bound_session_id, &session_policy)) {
-            suppress_video = session_policy;
-          }
-
-          if (suppress_video) {
-            suppressed_video_count++;
-            if (suppressed_video_count <= 3 || (suppressed_video_count % 500) == 0) {
-              printf("[%s] suppress-video drop=%llu session=%s header=%u data=%zu\n",
-                     video_service,
-                     static_cast<unsigned long long>(suppressed_video_count),
-                     control_state.bound_session_id.empty() ? "<legacy>" : control_state.bound_session_id.c_str(),
-                     header_len,
-                     data_len);
-              fflush(stdout);
-            }
-            continue;
-          }
-
-          const auto contains_idr = g_livestream_video_enabled
-              ? commaview::video::contains_h264_idr
-              : commaview::video::contains_hevc_idr;
-          const bool is_keyframe =
-              contains_idr(header.begin(), header_len) ||
-              contains_idr(data.begin(), data_len);
-          commaview::video::PendingVideoFrame pending;
-          pending.sequence = ++parsed_frame_count;
-          pending.is_keyframe = is_keyframe;
-          pending.created_at_ms = runtime_now_ms();
-          pending.timestamp_ns = timestamp_ns;
-          pending.width = video_width;
-          pending.height = video_height;
-          pending.codec_header.assign(header.begin(), header.begin() + header_len);
-          pending.data.assign(data.begin(), data.begin() + data_len);
-          uint64_t queue_drop_delta = 0;
-          {
-            std::lock_guard<std::mutex> queue_lock(video_queue_mutex);
-            video_queue.push(std::move(pending));
-            queue_drop_delta = video_queue.drop_count() - last_queue_drop_count;
-            note_video_queue_deltas(
-                queue_drop_delta,
-                video_queue.keyframe_wait_drop_count() - last_keyframe_wait_drop_count,
-                video_queue.high_watermark());
-            last_queue_drop_count = video_queue.drop_count();
-            last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
-          }
-          if (queue_drop_delta > 0 && !queue_drop_tcp_snapshot_taken.exchange(true)) {
-            note_video_tcp_pressure_snapshot(client_fd, video_service, "queue_drop");
-          }
-          video_queue_cv.notify_one();
+    const int video_poll_ms = 20;
+    bool discontinuity = false;
+    if (video_reader.next(video_poll_ms, &raw_msg, &discontinuity)) {
+      if (discontinuity) {
+        // The encoder overtook us (or the queue started over): frames are missing, so the stream
+        // resumes on the next keyframe, as a new client's does.
+        ring_discontinuities += 1;
+        start_gate = commaview::video::KeyframeStartGate(VIDEO_START_MAX_SKIPPED_FRAMES);
+        note_video_ring_discontinuity();
+        if (ring_discontinuities <= 5 || (ring_discontinuities % 100) == 0) {
+          printf("[%s] encoder queue gap #%llu: waiting for the next keyframe\n",
+                 video_service,
+                 static_cast<unsigned long long>(ring_discontinuities));
+          fflush(stdout);
         }
-      } catch (const std::exception& e) {
-        parse_error_count++;
-        printf("[%s] parse exception #%llu: %s (raw=%zu)\n",
-               video_service,
-               static_cast<unsigned long long>(parse_error_count),
-               e.what(),
-               raw_size);
-        fflush(stdout);
-      } catch (...) {
-        parse_error_count++;
-        printf("[%s] parse unknown exception #%llu (raw=%zu)\n",
-               video_service,
-               static_cast<unsigned long long>(parse_error_count),
-               raw_size);
-        fflush(stdout);
       }
+      ingest_video_message(raw_msg);
     }
 
     const auto video_loop_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -958,6 +1078,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   printf("[%s] client disconnected: %s\n", video_service, addr_str);
   fflush(stdout);
 
+  note_video_ring_session(video_reader.stats());
   telemetry_disconnect_requested.store(true);
   video_sender_disconnect_requested.store(true);
   video_queue_cv.notify_all();
@@ -966,10 +1087,6 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   if (telemetry_thread.joinable()) telemetry_thread.join();
   active_counter.fetch_sub(1);
   close(client_fd);
-
-  delete video_poller;
-  if (video_sock != nullptr) delete video_sock;
-  delete ctx;
 }
 
 static void telemetry_loop(int client_fd,
@@ -983,6 +1100,8 @@ static void telemetry_loop(int client_fd,
   auto next_stats_flush = next_telem_poll + std::chrono::milliseconds(1000);
   std::array<uint64_t, static_cast<size_t>(NUM_TELEM)> last_ui_emit_ms = {};
   std::array<uint64_t, static_cast<size_t>(NUM_TELEM)> last_ui_emit_wall_ms = {};
+  LoadedRuntimeDebugConfig config;
+  uint64_t config_generation = ~uint64_t{0};
 
   while (g_running && !disconnect_requested->load()) {
     if (!commaview::net::client_socket_alive(client_fd)) {
@@ -1011,18 +1130,20 @@ static void telemetry_loop(int client_fd,
       next_telem_poll += std::chrono::milliseconds(TELEMETRY_EMIT_MS);
     } while (next_telem_poll <= now);
 
+    refresh_config_snapshot(&config, &config_generation);
     if (g_ui_export_socket != nullptr) {
       for (int i = 0; i < NUM_TELEM; ++i) {
         const char* service_name = kTelemetryServices[static_cast<size_t>(i)];
-        const ServicePolicy policy = policy_for_service(g_runtime_state.effective_config, service_name);
+        const ServicePolicy policy = policy_for_service(config, service_name);
         if (!telemetry_policy_fetches_latest(policy)) {
           continue;
         }
 
         commaview::ui_export::LatestFrame frame;
-        if (!g_ui_export_socket->latest_frame(static_cast<uint8_t>(i),
-                                              commaview::ui_export::kFreshFrameWindowMs,
-                                              &frame)) {
+        const uint64_t fresh_within_ms = commaview::telemetry::telemetry_service_is_latched(service_name)
+            ? 0
+            : commaview::ui_export::kFreshFrameWindowMs;
+        if (!g_ui_export_socket->latest_frame(static_cast<uint8_t>(i), fresh_within_ms, &frame)) {
           continue;
         }
         const uint64_t now_ms = runtime_now_ms();
@@ -1171,6 +1292,11 @@ int commaview_bridge_main(int argc, char* argv[]) {
   signal(SIGINT, sig_handler);
   signal(SIGTERM, sig_handler);
   signal(SIGPIPE, SIG_IGN);
+  // Before any thread starts, so every thread inherits the mask and only the reload thread takes it.
+  sigset_t reload_signals;
+  sigemptyset(&reload_signals);
+  sigaddset(&reload_signals, SIGHUP);
+  pthread_sigmask(SIG_BLOCK, &reload_signals, nullptr);
 
   (void)argc;
   (void)argv;
@@ -1183,6 +1309,7 @@ int commaview_bridge_main(int argc, char* argv[]) {
   g_livestream_video_enabled = source != nullptr && std::strcmp(source, "livestream") == 0;
   initialize_runtime_state_once();
   append_runtime_run_event("process_start");
+  std::thread(config_reload_signal_loop).detach();
 
   g_ui_export_socket = std::make_unique<commaview::ui_export::SocketServer>();
   const bool ui_export_socket_ready = g_ui_export_socket->start();
