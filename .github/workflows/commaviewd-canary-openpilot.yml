@@ -13,6 +13,8 @@ on:
 permissions:
   contents: read
   actions: read
+  # Pass markers from pull requests count only after checking the pull request isn't a fork's.
+  pull-requests: read
 
 concurrency:
   group: commaviewd-canary-openpilot
