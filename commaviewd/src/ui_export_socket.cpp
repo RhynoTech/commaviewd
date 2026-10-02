@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <chrono>
 #include <cctype>
 #include <ctime>
 #include <cstdio>
@@ -72,10 +73,38 @@ bool ensure_parent_dirs(const std::string& path) {
   return true;
 }
 
-std::string current_route_id() {
+std::string current_route_path() {
   const char* override_path = std::getenv("COMMAVIEWD_CURRENT_ROUTE_FILE");
-  const char* path = override_path && override_path[0] ?
-      override_path : "/data/params/d/CurrentRoute";
+  return override_path && override_path[0] ? override_path : "/data/params/d/CurrentRoute";
+}
+
+std::string read_param_beside_route(const char* key) {
+  std::string path = current_route_path();
+  const size_t slash = path.find_last_of('/');
+  path = (slash == std::string::npos ? std::string() : path.substr(0, slash + 1)) + key;
+  FILE* file = std::fopen(path.c_str(), "r");
+  if (file == nullptr) return {};
+  char buffer[8] = {};
+  const bool read = std::fgets(buffer, sizeof(buffer), file) != nullptr;
+  std::fclose(file);
+  if (!read) return {};
+  std::string value(buffer);
+  while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) value.pop_back();
+  return value;
+}
+
+// Offroad as the comma says so (sunnypilot publishes IsOffroad, openpilot IsOnroad). An unknown
+// state counts as onroad, so a drive is never missed.
+bool comma_offroad() {
+  const std::string offroad = read_param_beside_route("IsOffroad");
+  if (offroad == "1") return true;
+  if (offroad == "0") return false;
+  return read_param_beside_route("IsOnroad") == "0";
+}
+
+std::string current_route_id() {
+  const std::string path_string = current_route_path();
+  const char* path = path_string.c_str();
   FILE* file = std::fopen(path, "r");
   if (file == nullptr) return {};
   char buffer[128] = {};
@@ -386,6 +415,25 @@ void SocketServer::recipe_writer_loop() {
       snapshot_active_ = false;
     }
     if (has_snapshot) {
+      // CurrentRoute stays set after the drive, and the comma's UI keeps exporting while offroad.
+      // A finished route's snapshot must stop growing, or the app's download of it (which checks
+      // that the file doesn't change mid-transfer) fails and the drive can't be rendered.
+      const auto now = std::chrono::steady_clock::now();
+      if (now - offroad_checked_at_ >= std::chrono::seconds(1)) {
+        offroad_checked_at_ = now;
+        offroad_ = comma_offroad();
+      }
+      if (offroad_) {
+        if (snapshot_file_ != nullptr) {
+          // Final for this route: openpilot starts a new route each time the car goes onroad.
+          sync_and_close(snapshot_file_);
+          snapshot_file_ = nullptr;
+          snapshot_route_.clear();
+          std::lock_guard<std::mutex> lock(recipe_mutex_);
+          snapshot_active_ = false;
+        }
+        continue;
+      }
       if (snapshot_route_ != route || snapshot_file_ == nullptr) {
         if (snapshot_file_ != nullptr) sync_and_close(snapshot_file_);
         snapshot_route_ = route;

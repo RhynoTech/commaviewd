@@ -141,6 +141,35 @@ int main() {
   assert(got_snapshots);
   const std::string recipe_path = server.recipe_file_path();
 
+  // Offroad, CurrentRoute stays set and the comma's UI keeps exporting; the finished route's
+  // snapshot must stop growing so the app can download it whole.
+  const std::string offroad_param = std::string(dir) + "/IsOffroad";
+  {
+    std::ofstream offroad(offroad_param);
+    offroad << "1";
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));  // Past the writer's 1 s re-check.
+  bool snapshot_closed = false;
+  for (int i = 0; i < 100 && !snapshot_closed; ++i) {
+    assert(send_frame(client_fd, 2, R"({"speed":0.0,"logMonoTime":200})"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    snapshot_closed = !server.stats().snapshot_active;
+  }
+  assert(snapshot_closed);
+  const auto closed = server.stats();
+  const std::string offroad_snapshot_path = recipe_dir + "/ui-snapshot-000004b4--75e1f0ba8f.jsonl";
+  std::ifstream before_file(offroad_snapshot_path, std::ios::ate | std::ios::binary);
+  const auto size_before = before_file.tellg();
+  for (int i = 0; i < 5; ++i) {
+    assert(send_frame(client_fd, 2, R"({"speed":0.0,"logMonoTime":300})"));
+    assert(send_frame(client_fd, 7, R"({"frameId":9,"logMonoTime":301})"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+  }
+  std::ifstream after_file(offroad_snapshot_path, std::ios::ate | std::ios::binary);
+  assert(after_file.tellg() == size_before);
+  assert(server.stats().snapshot_events == closed.snapshot_events);
+  unlink(offroad_param.c_str());
+
   // Shutdown must also wake a still-connected UI producer blocked in recv().
   server.stop();
   close(client_fd);

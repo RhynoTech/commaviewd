@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -90,6 +91,9 @@ class SocketServer {
   bool snapshot_active_ = false;
   std::string snapshot_route_;
   uint64_t snapshot_bytes_ = 0;
+  // Whether the comma is offroad, read at most once a second by the writer thread.
+  bool offroad_ = false;
+  std::chrono::steady_clock::time_point offroad_checked_at_{};
   std::string active_route_;
   std::string recipe_route_;
   bool recipe_stopping_ = false;
