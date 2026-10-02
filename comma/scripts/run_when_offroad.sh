@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Runs CommaView maintenance that restarts the runtime or changes openpilot's files (install,
-# update, uninstall, onroad UI export repair) only while openpilot is offroad.
+# update, uninstall, onroad UI export repair) only while the car isn't being driven: openpilot
+# offroad, or parked (in Park, at a standstill, openpilot and sunnypilot's MADS not engaged).
 #
-# Asked for while the car is onroad, the job is queued instead, and a small waiter (one stat of
-# a param file every POLL_SEC, nothing else) runs it once openpilot's manager is up and IsOffroad
-# has read 1 for STABLE_SEC in a row. Nothing here ever asks openpilot to go offroad (no
-# OffroadMode): a drive is never interrupted for CommaView.
+# Asked for while driving, the job is queued instead, and a small waiter runs it once openpilot's
+# manager is up and either IsOffroad has read 1 for STABLE_SEC in a row or commaviewd road-phase
+# has read parked for PARKED_STABLE_SEC in a row. Every POLL_SEC it reads one param file and, only
+# while onroad, runs road-phase once (a read-only peek at openpilot's queues; no subscriber).
+# Nothing here ever asks openpilot to go offroad (no OffroadMode): a drive is never interrupted
+# for CommaView, and a job that finds the car being driven when it starts (exit 42) waits again.
 #
 # One job at a time: queueing replaces the job that was waiting. The queue lives outside the
 # install directory, so an install or uninstall can replace /data/commaview under it.
@@ -24,9 +27,11 @@ STATE_DIR="${COMMAVIEWD_DEFERRED_DIR:-/data/commaview-deferred}"
 PARAMS_DIR="${COMMAVIEWD_PARAMS_DIR:-/data/params/d}"
 PROC_ROOT="${COMMAVIEWD_PROC_ROOT:-/proc}"
 STABLE_SEC="${COMMAVIEWD_DEFERRED_OFFROAD_STABLE_SEC:-60}"
+PARKED_STABLE_SEC="${COMMAVIEWD_DEFERRED_PARKED_STABLE_SEC:-20}"
+ROAD_PHASE_BIN="${COMMAVIEWD_ROAD_PHASE_BIN:-/data/commaview/commaviewd}"
 POLL_SEC="${COMMAVIEWD_DEFERRED_POLL_SEC:-10}"
 REQUIRE_MANAGER="${COMMAVIEWD_DEFERRED_REQUIRE_MANAGER:-1}"
-# A job that finds the car onroad again when it starts (exit 42) goes back to waiting, this often.
+# A job that finds the car being driven when it starts (exit 42) goes back to waiting, this often.
 MAX_ATTEMPTS="${COMMAVIEWD_DEFERRED_MAX_ATTEMPTS:-5}"
 JOB_DIR="$STATE_DIR/job"
 RUNNER="$STATE_DIR/runner.sh"
@@ -66,7 +71,7 @@ write_status() {
   tmp="$STATUS.tmp.$$"
   {
     printf '{"state":%s,"action":%s' "$(json_string "$state")" "$(json_string "${action:-}")"
-    printf ',"waitsFor":"offroad","queuedAtMs":%s' "${queued:-0}"
+    printf ',"waitsFor":"parked","queuedAtMs":%s' "${queued:-0}"
     printf ',"startedAtMs":%s,"finishedAtMs":%s,"attempts":%s' "${started:-0}" "${finished:-0}" "${attempts:-0}"
     [ -n "$exit_status" ] && printf ',"exitStatus":%s' "$exit_status"
     printf ',"updatedAtMs":%s}\n' "$(now_ms)"
@@ -104,6 +109,20 @@ manager_running() {
     esac
   done
   return 1
+}
+
+# offroad, parked or driving. Parked is commaviewd road-phase's call; a runtime without it (or one
+# that can't tell) leaves onroad as driving.
+maintenance_phase() {
+  if ! manager_running; then
+    echo driving
+  elif openpilot_offroad; then
+    echo offroad
+  elif [ -x "$ROAD_PHASE_BIN" ] && [ "$(timeout 5 "$ROAD_PHASE_BIN" road-phase 2>/dev/null | cut -d' ' -f1)" = "parked" ]; then
+    echo parked
+  else
+    echo driving
+  fi
 }
 
 waiter_pid() {
@@ -190,15 +209,21 @@ cmd_queue() {
 
 cmd_wait() {
   echo "$$" > "$STATE_DIR/waiter.pid"
-  local stable=0 attempts ec action
+  local stable=0 attempts ec action phase prev_phase="" needed
   local -a args=()
   while [ -f "$JOB_DIR/args" ]; do
-    if manager_running && openpilot_offroad; then
+    phase="$(maintenance_phase)"
+    if [ "$phase" = "driving" ]; then
+      stable=0
+    elif [ "$phase" = "$prev_phase" ]; then
       stable=$((stable + POLL_SEC))
     else
-      stable=0
+      stable="$POLL_SEC"
     fi
-    if [ "$stable" -lt "$STABLE_SEC" ]; then
+    prev_phase="$phase"
+    needed="$STABLE_SEC"
+    [ "$phase" = "parked" ] && needed="$PARKED_STABLE_SEC"
+    if [ "$phase" = "driving" ] || [ "$stable" -lt "$needed" ]; then
       sleep "$POLL_SEC"
       continue
     fi
@@ -209,13 +234,13 @@ cmd_wait() {
     echo "$attempts" > "$JOB_DIR/attempts"
     now_ms > "$JOB_DIR/started_at_ms"
     write_status running
-    log "running $action (attempt $attempts): ${args[*]}"
+    log "running $action while $phase (attempt $attempts): ${args[*]}"
     ( cd / && COMMAVIEWD_DEFERRED_JOB=1 "${args[@]}" ) >> "$LOG" 2>&1
     ec=$?
     now_ms > "$JOB_DIR/finished_at_ms"
     if [ "$ec" = "42" ] && [ "$attempts" -lt "$MAX_ATTEMPTS" ]; then
-      # The car went onroad again just as it started: wait for the next offroad stretch.
-      log "$action found the car onroad (exit 42); waiting again"
+      # The car was being driven again just as it started: wait for the next parked stretch.
+      log "$action found the car being driven (exit 42); waiting again"
       write_status waiting "$ec"
       rm -f "$JOB_DIR/started_at_ms" "$JOB_DIR/finished_at_ms"
       stable=0

@@ -92,7 +92,14 @@ def main():
             COMMAVIEWD_TEST_DEFERRED_RUNNER=str(RUNNER),
             COMMAVIEWD_DEFERRED_REQUIRE_MANAGER="0",
             COMMAVIEWD_PARAMS_DIR=str(params),
+            COMMAVIEWD_TEST_INSTALL_SCRIPT=str(root / "install.sh"),
+            COMMAVIEWD_ROAD_PHASE_BIN=str(root / "no-commaviewd"),
         )
+        (root / "install.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+
+        def road_phase_cli():
+            result = subprocess.run([str(binary), "road-phase"], env=env, capture_output=True, text=True, timeout=10)
+            return result.returncode, result.stdout.strip()
 
         bridge = subprocess.Popen([str(binary), "bridge"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         (run / "bridge.pid").write_text(f"{bridge.pid}\n")
@@ -135,10 +142,13 @@ def main():
             code, status = request(port, "/commaview/status")
             assert status["roadState"] == "offroad" and status["roadPhase"] == "offroad", status
             assert status["deferredMaintenance"] == {"state": "none"}, status
+            assert "runtime-update" in status["capabilities"], status
+            assert road_phase_cli() == (0, "offroad offroad")
             (params / "IsOffroad").write_text("0")
             code, status = request(port, "/commaview/status")
             assert status["roadState"] == "onroad" and status["roadPhase"] == "driving", status
             assert status["roadPhaseReason"] == "car-state-missing", status
+            assert road_phase_cli() == (1, "driving car-state-missing")
             if road_tool:
                 def phase(gear, standstill, enabled, age_ms="0"):
                     subprocess.run([road_tool, "--write-road-queues", str(msgq), gear, standstill, enabled, age_ms], check=True)
@@ -148,8 +158,14 @@ def main():
                 assert phase("drive", "1", "0")["roadPhase"] == "driving"
                 assert phase("unknown", "1", "0")["roadPhaseReason"] == "gear-unknown"
                 assert phase("park", "1", "1")["roadPhaseReason"] == "engaged"
+                phase("park", "1", "0")
+                assert road_phase_cli() == (0, "parked parked")
+                # Parked is not driving: a repair runs now (here the helper is missing), not queued.
+                code, body = request(port, "/commaview/onroad-ui-export/repair", "POST", {"forceOffroad": True})
+                assert code != 202 and body["status"]["state"] != "deferred-until-offroad", (code, body)
                 assert phase("park", "1", "0", "2000")["roadPhaseReason"] == "car-state-stale"
-                print("PASS: /commaview/status reports roadPhase offroad / parked / driving")
+                assert road_phase_cli()[0] == 1
+                print("PASS: /commaview/status and commaviewd road-phase report offroad / parked / driving")
             else:
                 print("SKIP: roadPhase from queues (set COMMAVIEWD_ROAD_QUEUE_TOOL)")
 
@@ -164,7 +180,23 @@ def main():
             assert status["deferredMaintenance"]["state"] == "waiting", status
             code, body = request(port, "/commaview/onroad-ui-export/repair", "POST", {})
             assert body["status"]["state"] == "onroad-blocked", body
-            print("PASS: Safe Repair while onroad is queued until offroad, never forced")
+            print("PASS: Safe Repair while driving is queued until parked, never forced")
+
+            # --- runtime update without SSH ------------------------------------------------
+            code, body = request(port, "/commaview/runtime/update", "POST", {"tag": "v0.0.57-alpha.1"}, token="wrong")
+            assert code == 401, (code, body)
+            for bad in ("", "latest", "v1.2", "v1.2.3;reboot", "v1.2.3-", "../v1.2.3", "v1.2.3-a/b"):
+                code, body = request(port, "/commaview/runtime/update", "POST", {"tag": bad})
+                assert code == 400, (bad, code, body)
+            code, body = request(port, "/commaview/runtime/update", "POST", {"tag": "v0.0.57-alpha.1"})
+            assert code == 202 and body["ok"] and body["queued"] and body["tag"] == "v0.0.57-alpha.1", (code, body)
+            assert body["deferredMaintenance"]["state"] == "waiting", body
+            assert body["deferredMaintenance"]["action"] == "install", body
+            args = (deferred / "job" / "args").read_bytes().split(b"\0")
+            assert args[:4] == [b"bash", str(deferred / "job" / "install.sh").encode(), b"--tag", b"v0.0.57-alpha.1"], args
+            assert (deferred / "job" / "install.sh").read_text() == (root / "install.sh").read_text()
+            assert not (params / "OffroadMode").exists()
+            print("PASS: /commaview/runtime/update queues the installed installer for the tag, paired phone only")
         finally:
             subprocess.run(["bash", str(RUNNER), "cancel"], env=env, check=False, capture_output=True)
             control.terminate()

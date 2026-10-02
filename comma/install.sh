@@ -119,8 +119,8 @@ Usage:
 Options:
   --tag <release-tag>            Install or update to a specific release tag.
   --current                      Reinstall the installed release instead of looking one up.
-  --force-offroad                While onroad, queue the install to run once openpilot is offroad (exit 75)
-                                 instead of refusing it (exit 42). Never asks openpilot to go offroad.
+  --force-offroad                While driving, queue the install to run once the car is parked or offroad
+                                 (exit 75) instead of refusing it (exit 42). Never asks openpilot to go offroad.
   -h, --help                     Show this help and exit.
 
 Without --tag or --current, installs the runtime paired with the current CommaView app
@@ -182,6 +182,20 @@ read_is_onroad() {
     1) echo 0 ;;
     *) if [ "$(read_param IsOnroad)" = "1" ]; then echo 1; else echo 0; fi ;;
   esac
+}
+
+# Prints 1 while the car is being driven: onroad and not parked. Parked is in Park, at a standstill
+# and not engaged (sunnypilot's MADS included), as commaviewd road-phase reads it from openpilot's
+# queues without subscribing. A runtime without road-phase, or one that can't tell, leaves onroad
+# as driving.
+ROAD_PHASE_BIN="${COMMAVIEWD_ROAD_PHASE_BIN:-${INSTALL_DIR:-/data/commaview}/commaviewd}"
+read_is_driving() {
+  [ "$(read_is_onroad)" = "1" ] || { echo 0; return 0; }
+  if [ -x "$ROAD_PHASE_BIN" ] && timeout 5 "$ROAD_PHASE_BIN" road-phase >/dev/null 2>&1; then
+    echo 0
+  else
+    echo 1
+  fi
 }
 
 
@@ -330,6 +344,7 @@ revert_onroad_ui_export_after_failed_install() {
 
 cleanup() {
   local restore_ec=0
+  [ -n "${COMMAVIEWD_INSTALLER_HANDOFF_FILE:-}" ] && rm -f "$COMMAVIEWD_INSTALLER_HANDOFF_FILE"
   if revert_onroad_ui_export_after_failed_install; then
     restore_previous_install_tree || restore_ec=$?
   else
@@ -345,22 +360,41 @@ cleanup() {
 }
 
 
-# Queues this install in run_when_offroad.sh, which runs it once openpilot has been offroad for a
-# minute. The queued copy is this release's own installer, pinned to the tag resolved now.
+# Queues this install in run_when_offroad.sh, which runs it once the car has been parked (or
+# openpilot offroad) for a little while. The queued copy is this release's own installer, pinned to the tag resolved now.
 queue_install_until_offroad() {
   local runner="$COMPANION_DIR/scripts/run_when_offroad.sh"
   if [ ! -f "$runner" ]; then
-    echo "ERROR: install blocked while onroad, and this release cannot queue it. Park the vehicle and retry." >&2
+    echo "ERROR: install blocked while driving, and this release cannot queue it. Park the vehicle and retry." >&2
     exit 42
   fi
   if ! COMMAVIEWD_DEFERRED_DIR="$DEFERRED_DIR" bash "$runner" queue install --file "$COMPANION_DIR/install.sh" -- \
       bash @JOB@/install.sh --tag "$RELEASE_TAG" >/dev/null; then
-    echo "ERROR: install blocked while onroad and could not be queued. Park the vehicle and retry." >&2
+    echo "ERROR: install blocked while driving and could not be queued. Park the vehicle and retry." >&2
     exit 42
   fi
-  echo "DEFERRED: CommaView ${RELEASE_TAG} will install once the car is parked and switched off (openpilot offroad)."
+  echo "DEFERRED: CommaView ${RELEASE_TAG} will install once the car is in Park with openpilot disengaged, or offroad."
   echo "COMMAVIEW_MAINTENANCE_DEFERRED=install"
   exit "$DEFERRED_EXIT"
+}
+
+# The release being installed installs itself: an installer asked for another release (the comma's
+# own update queues the installed install.sh with --tag) hands over to that release's install.sh,
+# fetched with its companions, before it changes anything. Piped installs (curl | bash) already run
+# the release's own installer.
+handoff_to_release_installer() {
+  [ "${COMMAVIEWD_INSTALLER_HANDOFF:-0}" = "1" ] && return 0
+  local self="${BASH_SOURCE[0]:-}" next="$COMPANION_DIR/install.sh" copy
+  [ -f "$self" ] && [ -f "$next" ] || return 0
+  [ "$(sha256sum < "$self")" = "$(sha256sum < "$next")" ] && return 0
+  copy="$(mktemp /tmp/commaview-install-next.XXXXXX)" || return 0
+  cp -f "$next" "$copy" || { rm -f "$copy"; return 0; }
+  local args=(--tag "$RELEASE_TAG")
+  [ "$FORCE_OFFROAD" = "1" ] && args+=(--force-offroad)
+  echo "Handing over to the ${RELEASE_TAG} installer"
+  rm -rf "$tmpdir"
+  trap - EXIT
+  COMMAVIEWD_INSTALLER_HANDOFF=1 COMMAVIEWD_INSTALLER_HANDOFF_FILE="$copy" exec bash "$copy" "${args[@]}"
 }
 
 # A queued job would undo or repeat what an install run directly does now.
@@ -370,19 +404,18 @@ cancel_deferred_maintenance() {
   COMMAVIEWD_DEFERRED_DIR="$DEFERRED_DIR" bash "$DEFERRED_DIR/runner.sh" cancel >/dev/null 2>&1 || true
 }
 
-# Installing restarts the runtime and rewrites openpilot's UI files, so it only runs offroad.
-# CommaView never asks openpilot to go offroad (no OffroadMode): with --force-offroad an install
-# asked for while driving is queued until the car is parked instead.
+# Installing restarts the runtime and rewrites openpilot's UI files (which its running UI never
+# reloads), so it runs offroad or parked, never while driving. CommaView never asks openpilot to go
+# offroad (no OffroadMode): with --force-offroad an install asked for while driving is queued until
+# the car is parked instead.
 ensure_offroad_ready() {
-  local is_onroad
-  is_onroad="$(read_is_onroad)"
-  if [ "$is_onroad" != "1" ]; then
+  if [ "$(read_is_driving)" != "1" ]; then
     cancel_deferred_maintenance
     return 0
   fi
 
   if [ "$FORCE_OFFROAD" != "1" ]; then
-    echo "ERROR: install blocked while onroad. Park the vehicle, or rerun with --force-offroad to install once it is parked." >&2
+    echo "ERROR: install blocked while driving. Shift into Park (openpilot not engaged), or rerun with --force-offroad to install once it is parked." >&2
     exit 42
   fi
   queue_install_until_offroad
@@ -516,6 +549,17 @@ PYTOKEN
   chmod 600 "$token_path" 2>/dev/null || true
 }
 
+# The new runtime is healthy once its control API answers: what the app (and the next update)
+# talks to.
+wait_for_control_api() {
+  local _
+  for _ in $(seq 1 "${COMMAVIEWD_INSTALL_HEALTH_TIMEOUT_SEC:-30}"); do
+    curl -fsS --max-time 2 http://127.0.0.1:5002/commaview/version >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
 print_pairing_code() {
   local token_path="/data/commaview/api/auth.token"
   local token=""
@@ -636,6 +680,7 @@ tmpdir="$(mktemp -d /tmp/commaview-install.XXXXXX)"
 trap cleanup EXIT
 refresh_required_files
 validate_required_files
+handoff_to_release_installer
 
 echo "=== CommaView ${VERSION} Installer ==="
 echo "Release: ${RELEASE_TAG}"
@@ -716,7 +761,12 @@ install_boot_hook
 
 echo "Starting CommaView runtime..."
 bash "$INSTALL_DIR/start.sh"
-sleep 1
+if ! wait_for_control_api; then
+  # The cleanup trap puts the previous release back and starts it.
+  echo "ERROR: the ${RELEASE_TAG} runtime did not answer on its control API; rolling back" >&2
+  stop_commaview_processes || true
+  exit 1
+fi
 print_pairing_code
 INSTALL_SUCCESS=1
 

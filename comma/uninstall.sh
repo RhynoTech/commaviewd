@@ -31,19 +31,34 @@ read_is_onroad() {
   esac
 }
 
-# Uninstalling stops the runtime and restores openpilot's UI files, so it only runs offroad.
-# CommaView never asks openpilot to go offroad: with --force-offroad an uninstall asked for while
-# driving is queued (run_when_offroad.sh) and runs once the car is parked; exit 75 says so.
-if [ "$(read_is_onroad)" = "1" ]; then
+# Prints 1 while the car is being driven: onroad and not parked. Parked is in Park, at a standstill
+# and not engaged (sunnypilot's MADS included), as commaviewd road-phase reads it from openpilot's
+# queues without subscribing. A runtime without road-phase, or one that can't tell, leaves onroad
+# as driving.
+ROAD_PHASE_BIN="${COMMAVIEWD_ROAD_PHASE_BIN:-$INSTALL_DIR/commaviewd}"
+read_is_driving() {
+  [ "$(read_is_onroad)" = "1" ] || { echo 0; return 0; }
+  if [ -x "$ROAD_PHASE_BIN" ] && timeout 5 "$ROAD_PHASE_BIN" road-phase >/dev/null 2>&1; then
+    echo 0
+  else
+    echo 1
+  fi
+}
+
+# Uninstalling stops the runtime and restores openpilot's UI files, so it runs offroad or parked,
+# never while driving. CommaView never asks openpilot to go offroad: with --force-offroad an
+# uninstall asked for while driving is queued (run_when_offroad.sh) and runs once the car is
+# parked; exit 75 says so.
+if [ "$(read_is_driving)" = "1" ]; then
   if [ "$FORCE_OFFROAD" = "1" ] && [ -f "$RUNNER" ]; then
     if COMMAVIEWD_DEFERRED_DIR="$DEFERRED_DIR" bash "$RUNNER" queue uninstall --file "$INSTALL_DIR/uninstall.sh" -- \
         bash @JOB@/uninstall.sh >/dev/null; then
-      echo "DEFERRED: CommaView will be uninstalled once the car is parked and switched off (openpilot offroad)."
+      echo "DEFERRED: CommaView will be uninstalled once the car is in Park with openpilot disengaged, or offroad."
       echo "COMMAVIEW_MAINTENANCE_DEFERRED=uninstall"
       exit 75
     fi
   fi
-  echo "ERROR: uninstall blocked while onroad. Park the vehicle, or rerun with --force-offroad to uninstall once it is parked." >&2
+  echo "ERROR: uninstall blocked while driving. Shift into Park (openpilot not engaged), or rerun with --force-offroad to uninstall once it is parked." >&2
   exit 42
 fi
 

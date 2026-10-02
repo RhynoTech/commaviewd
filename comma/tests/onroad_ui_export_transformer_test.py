@@ -991,7 +991,7 @@ def test_revert_script_preflight_only_rejects_onroad_without_mutating_targets(tm
     )
 
     assert result.returncode == 42
-    assert "transformer revert blocked while onroad" in result.stderr
+    assert "transformer revert blocked while driving" in result.stderr
     assert not backup_root.exists()
     for rel, text in managed_after_apply.items():
         assert (op_root / rel).read_text() == text

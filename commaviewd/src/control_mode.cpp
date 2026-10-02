@@ -133,6 +133,7 @@ bool run_command(const std::vector<std::string>& args, int* exit_code, std::stri
 bool run_command_with_optional_sudo(const std::vector<std::string>& args, int* exit_code, std::string* stdout_text,
                                     std::string* stderr_text);
 bool is_onroad();
+bool being_driven();
 std::string deferred_maintenance_json();
 
 std::string normalize_code(const std::string& in) {
@@ -562,9 +563,9 @@ std::string run_onroad_ui_export_verify_json(int* rc_out, std::string* err_out) 
 std::string run_onroad_ui_export_apply_status_json(int* rc_out, std::string* err_out) {
   if (rc_out) *rc_out = 1;
   if (err_out) err_out->clear();
-  if (is_onroad()) {
-    if (err_out) *err_out = "repair blocked while onroad";
-    return onroad_ui_export_status_error_json("onroad-blocked", "repair blocked while onroad");
+  if (being_driven()) {
+    if (err_out) *err_out = "repair blocked while driving";
+    return onroad_ui_export_status_error_json("onroad-blocked", "repair blocked while driving");
   }
   if (!file_executable(kOnroadUiExportApplyScript)) {
     if (err_out) *err_out = "onroad UI export repair helper missing";
@@ -703,8 +704,10 @@ std::string runtime_status_json() {
   const auto phase = commaview::road::read_road_phase(onroad, msgq_dir());
   out << "\"roadPhase\":\"" << commaview::road::road_phase_name(phase.phase) << "\",";
   out << "\"roadPhaseReason\":\"" << json_escape(phase.reason) << "\",";
-  // An install, uninstall or repair asked for while onroad, waiting for offroad (or how it ended).
+  // An install, uninstall or repair asked for while driving, waiting for Park (or how it ended).
   out << "\"deferredMaintenance\":" << deferred_maintenance_json() << ",";
+  // What this runtime can do for a paired phone without SSH.
+  out << "\"capabilities\":[\"runtime-update\"],";
   out << "\"onroadUiExport\":" << live_onroad_ui_export_status_json(false) << ",";
   out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
   out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true) << ",";
@@ -867,6 +870,14 @@ bool is_onroad() {
   if (onroad == "0") return false;
   // An unknown state must not authorize offroad-only changes.
   return true;
+}
+
+// Maintenance (install, update, uninstall, repair) never runs while the car is being driven: it
+// may run offroad, or parked (in Park, at a standstill, not engaged). Anything uncertain is driving.
+bool being_driven() {
+  const bool onroad = is_onroad();
+  if (!onroad) return false;
+  return commaview::road::read_road_phase(onroad, msgq_dir()).phase == commaview::road::RoadPhase::kDriving;
 }
 
 // Raw text between the quotes after the first `"key":` - no escape decoding,
@@ -1841,8 +1852,8 @@ std::string onroad_ui_export_status_response() {
   return live_onroad_ui_export_status_json(false);
 }
 
-// Maintenance asked for while onroad waits in comma/scripts/run_when_offroad.sh's queue, outside the
-// install directory, until openpilot is offroad.
+// Maintenance asked for while driving waits in comma/scripts/run_when_offroad.sh's queue, outside
+// the install directory, until the car is parked or openpilot is offroad.
 std::string deferred_maintenance_dir() {
 #if !defined(__aarch64__)
   if (const char* test_dir = std::getenv("COMMAVIEWD_DEFERRED_DIR")) {
@@ -1870,7 +1881,7 @@ std::string deferred_maintenance_json() {
   return raw;
 }
 
-// A repair asked for while driving ("Safe Repair"): queued to run once the car is parked and off.
+// A repair asked for while driving ("Safe Repair"): queued to run once the car is parked.
 // Nothing asks openpilot to go offroad.
 std::string onroad_ui_export_repair_deferred_response() {
   int rc = 1;
@@ -1882,8 +1893,8 @@ std::string onroad_ui_export_repair_deferred_response() {
                                    "queue", "repair", "--", "bash", kOnroadUiExportApplyScript},
                                   &rc, &out, &err) &&
                       rc == 0;
-  const std::string reason = queued ? "repair queued until the car is parked and switched off (openpilot offroad)"
-                                    : "repair blocked while onroad and could not be queued";
+  const std::string reason = queued ? "repair queued until the car is in Park with openpilot disengaged, or offroad"
+                                    : "repair blocked while driving and could not be queued";
   std::ostringstream resp;
   resp << "{\"ok\":false,\"deferred\":" << (queued ? "true" : "false") << ",\"repairNeeded\":true,\"status\":"
        << onroad_ui_export_status_error_json(queued ? "deferred-until-offroad" : "onroad-blocked", reason)
@@ -1894,9 +1905,9 @@ std::string onroad_ui_export_repair_deferred_response() {
 
 std::string onroad_ui_export_repair_response(const std::string& request_body) {
   const bool force_offroad = json_field_true(request_body, "forceOffroad");
-  // Repair rewrites openpilot's UI files: offroad only, and never forced. With forceOffroad (the
-  // app's Safe Repair) a repair asked for while onroad is queued instead of refused.
-  if (force_offroad && is_onroad()) return onroad_ui_export_repair_deferred_response();
+  // Repair rewrites openpilot's UI files: offroad or parked only, and never forced. With
+  // forceOffroad (the app's Safe Repair) a repair asked for while driving is queued instead.
+  if (force_offroad && being_driven()) return onroad_ui_export_repair_deferred_response();
   int rc = 0;
   std::string err;
   const std::string status = run_onroad_ui_export_apply_status_json(&rc, &err);
@@ -1907,6 +1918,75 @@ std::string onroad_ui_export_repair_response(const std::string& request_body) {
   }
   resp << "}";
   return resp.str();
+}
+
+std::string installed_install_script() {
+#if !defined(__aarch64__)
+  if (const char* test_script = std::getenv("COMMAVIEWD_TEST_INSTALL_SCRIPT")) {
+    if (*test_script) return test_script;
+  }
+#endif
+  return std::string(kInstallDir) + "/install.sh";
+}
+
+// A release tag as commaviewd's releases name them: v1.2.3 or v1.2.3-alpha.4. Nothing else reaches
+// the installer, which builds the GitHub release URL from it.
+bool valid_release_tag(const std::string& tag) {
+  if (tag.size() < 6 || tag.size() > 64 || tag[0] != 'v') return false;
+  size_t i = 1;
+  for (int part = 0; part < 3; part++) {
+    const size_t start = i;
+    while (i < tag.size() && std::isdigit(static_cast<unsigned char>(tag[i]))) i++;
+    if (i == start) return false;
+    if (part < 2) {
+      if (i >= tag.size() || tag[i] != '.') return false;
+      i++;
+    }
+  }
+  if (i == tag.size()) return true;
+  if (tag[i] != '-' || i + 1 == tag.size()) return false;
+  for (i++; i < tag.size(); i++) {
+    const char c = tag[i];
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '.' && c != '-') return false;
+  }
+  return true;
+}
+
+// POST /commaview/runtime/update {"tag":"v0.0.57-alpha.1"}: the paired phone's runtime update, no
+// SSH. The installed install.sh is queued in run_when_offroad.sh with the tag; once the car is
+// parked or offroad it fetches that release from GitHub, checks its sha256, hands over to the
+// release's own installer, and rolls back if the new runtime doesn't come up. Always queued, even
+// when parked now: the waiter runs outside this process, which the install stops. Answers 202 with
+// the queue's status; the app follows deferredMaintenance and /commaview/version from there.
+commaview::api::HttpResponse runtime_update_response(const std::string& request_body) {
+  std::string tag;
+  if (!extract_raw_string_field(request_body, "tag", &tag) || !valid_release_tag(tag)) {
+    return make_json(400, "{\"ok\":false,\"error\":\"a release tag (v1.2.3 or v1.2.3-alpha.4) is required\"}");
+  }
+  const std::string installer = installed_install_script();
+  const std::string runner = deferred_runner_path();
+  struct stat st {};
+  if (stat(installer.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || !file_executable(runner.c_str())) {
+    return make_json(501, "{\"ok\":false,\"error\":\"this runtime can't update itself; update it over SSH\"}");
+  }
+  int rc = 1;
+  std::string out;
+  std::string err;
+  const bool ran = run_command({"/usr/bin/env", "COMMAVIEWD_DEFERRED_DIR=" + deferred_maintenance_dir(), "bash", runner,
+                                "queue", "install", "--file", installer, "--", "bash", "@JOB@/install.sh", "--tag", tag},
+                               &rc, &out, &err);
+  if (!ran || rc != 0) {
+    const std::string why = trim_copy(err).empty() ? "the update could not be queued" : trim_copy(err);
+    std::ostringstream resp;
+    resp << "{\"ok\":false,\"error\":\"" << json_escape(why) << "\",\"deferredMaintenance\":"
+         << deferred_maintenance_json() << "}";
+    // 3: a queued job is running right now.
+    return make_json(rc == 3 ? 409 : 500, resp.str());
+  }
+  std::ostringstream resp;
+  resp << "{\"ok\":true,\"queued\":true,\"tag\":\"" << json_escape(tag) << "\",\"deferredMaintenance\":"
+       << deferred_maintenance_json() << "}";
+  return make_json(202, resp.str());
 }
 
 constexpr const char* kUnauthorizedJson = "{\"ok\":false,\"error\":\"unauthorized\"}";
@@ -2026,6 +2106,14 @@ commaview::api::HttpResponse handle_post(const commaview::api::HttpRequest& req,
                                                          : leaderboard_statement_response();
   }
 
+  if (req.path == "/commaview/runtime/update") {
+    // Replaces this runtime: only a paired phone may ask.
+    if (api_token.empty() || !is_authorized(req, api_token)) {
+      return make_json(401, kUnauthorizedJson);
+    }
+    return runtime_update_response(req.body);
+  }
+
   if (req.path == "/commaview/wifi/power-save") {
     const std::string body = wifi_power_save_set_response(req.body);
     return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 400, body);
@@ -2071,6 +2159,13 @@ commaview::api::HttpResponse handle_request(const commaview::api::HttpRequest& r
 }
 
 }  // namespace
+
+int run_road_phase_mode() {
+  const bool onroad = is_onroad();
+  const auto phase = commaview::road::read_road_phase(onroad, msgq_dir());
+  std::printf("%s %s\n", commaview::road::road_phase_name(phase.phase), phase.reason.c_str());
+  return phase.phase == commaview::road::RoadPhase::kDriving ? 1 : 0;
+}
 
 int run_control_mode(int argc, char* argv[]) {
   int port = kDefaultApiPort;
