@@ -1,0 +1,195 @@
+name: commaviewd-verify
+
+# The checks commaviewd-ci and the canaries share, for a list of upstream targets (ci/*.json):
+# every target gets the upstream interface guard, the UI export patch check and the telemetry
+# guard; each upstream commit gets one verification build (ci/plan-targets.py). A check that
+# already passed for the same content (commaviewd's inputs and the upstream commit) leaves a pass
+# marker (.github/scripts/pass-marker.sh) and isn't run again, so a target with nothing new
+# gets no job at all. Locally: scripts/ci-local.sh.
+on:
+  workflow_call:
+    inputs:
+      targets:
+        description: The target list, e.g. ci/targets.json
+        type: string
+        required: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+      pending: ${{ steps.plan.outputs.pending }}
+    steps:
+      - name: Checkout CommaView
+        uses: actions/checkout@v6
+
+      - name: Plan the targets
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+          # Everything a check's result depends on in this repository.
+          markers="$(.github/scripts/pass-marker.sh key commaviewd-pass-v1 \
+            commaviewd comma comma4/install.sh tools scripts ci \
+            .github/workflows/commaviewd-verify.yml .github/scripts)"
+          planned="$(ci/plan-targets.py --targets "$TARGETS" --markers "$markers")"
+          pending="$(jq -c '[.[] | select(.pending)]' <<<"$planned")"
+          echo "targets=$pending" >> "$GITHUB_OUTPUT"
+          echo "pending=$(jq 'length > 0' <<<"$pending")" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Targets ($TARGETS)"
+            jq -r '.[] | "- \(.name): `\(.upstream_repo)@\(.upstream_ref)` `\(.sha[:12])`: " +
+              (if (.pending | not) then "already passed for this content, skipped"
+               elif .run_verification then "verification build and patch check"
+               else "patch check (\(.why))" end)' <<<"$planned"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    name: verify (${{ matrix.target.name }})
+    needs: plan
+    if: needs.plan.outputs.pending == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
+
+    steps:
+      - name: Checkout CommaView
+        uses: actions/checkout@v6
+
+      # The cross toolchain is for the verification build; the other checks need none.
+      - name: Restore apt package cache
+        if: matrix.target.run_verification
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/commaview-apt/archives
+          key: apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-v1
+          restore-keys: |
+            apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-
+
+      - name: Install toolchain + deps
+        if: matrix.target.run_verification
+        id: armcapnp
+        run: ./scripts/install-commaviewd-toolchain.sh
+
+      - name: Restore upstream source cache
+        id: upstream-cache
+        uses: actions/cache@v5
+        with:
+          path: openpilot-src
+          key: upstream-src-sparse-${{ runner.os }}-${{ matrix.target.upstream_repo }}-${{ matrix.target.sha }}
+
+      - name: Checkout upstream source
+        if: steps.upstream-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ matrix.target.upstream_repo }}
+          ref: ${{ matrix.target.sha }}
+          path: openpilot-src
+          submodules: recursive
+          # commaviewd never reads the driving models, which are most of a release tree (1.8 of
+          # 2.0 GB on release-chestnut). A blobless sparse checkout leaves them out, which keeps the
+          # cached source small; the cache key says "sparse" so full-tree caches are never mixed in.
+          filter: blob:none
+          sparse-checkout: |
+            /*
+            !/selfdrive/modeld/models/
+            !/openpilot/selfdrive/modeld/models/
+          sparse-checkout-cone-mode: false
+
+      - name: Interface guard + direct v2 onroad UI export patch applicability check
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          OP_ROOT="${{ github.workspace }}/openpilot-src" ./commaviewd/scripts/upstream-interface-guard.sh --telemetry-only
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/apply_onroad_ui_export_patch.sh --platform "${{ matrix.target.ui_platform }}"
+          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/verify_onroad_ui_export_patch.sh --json --platform "${{ matrix.target.ui_platform }}" >/dev/null
+          cp "${{ github.workspace }}/comma/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
+          git -C "${{ github.workspace }}/openpilot-src" reset --hard -q HEAD
+          git -C "${{ github.workspace }}/openpilot-src" clean -fdq
+
+      - name: Run commaviewd verification pipeline
+        if: matrix.target.run_verification
+        env:
+          OP_ROOT: ${{ github.workspace }}/openpilot-src
+          ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
+          ARM_KJ_SO: ${{ steps.armcapnp.outputs.arm_kj_so }}
+          RELEASE_SMOKE_TAG: verify-${{ matrix.target.name }}-${{ github.run_id }}
+        run: |
+          set -euxo pipefail
+          commaviewd/scripts/run-verification.sh
+
+      - name: "CI guard: enforce telemetry mode is production-hardening safe"
+        run: ./scripts/verify-telemetry-hardening.sh
+
+      - name: Verification summary
+        if: always()
+        run: |
+          {
+            echo "### commaviewd verification (${{ matrix.target.name }})"
+            echo "- Upstream: \`${{ matrix.target.upstream_repo }}@${{ matrix.target.upstream_ref }}\`"
+            echo "- Upstream SHA: \`${{ matrix.target.sha }}\`"
+            echo "- Upstream source cache hit: \`${{ steps.upstream-cache.outputs.cache-hit || 'false' }}\`"
+            for manifest in upstream-interface-manifest binary-contract release-smoke-manifest onroad-ui-export-status; do
+              if [[ -f "dist/$manifest.json" ]]; then
+                echo "- dist/$manifest.json"
+              fi
+            done
+            if [[ '${{ matrix.target.run_verification }}' == 'false' ]]; then
+              echo "- Runtime verification: not in this job (${{ matrix.target.why }})"
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verification manifests on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: commaviewd-verify-${{ matrix.target.name }}-${{ github.run_id }}
+          path: |
+            dist/reproducible-build-manifest.json
+            dist/upstream-interface-manifest.json
+            dist/binary-contract.json
+            dist/release-smoke-manifest.json
+            dist/onroad-ui-export-status.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      # Last, so they vouch for everything above.
+      - name: Write pass markers
+        run: .github/scripts/pass-marker.sh save
+
+      - name: Save the patch check's pass marker
+        uses: actions/cache/save@v5
+        with:
+          path: .pass-marker
+          key: ${{ matrix.target.patch_marker }}
+
+      - name: Save the verification build's pass marker
+        if: matrix.target.run_verification
+        uses: actions/cache/save@v5
+        with:
+          path: .pass-marker
+          key: ${{ matrix.target.verify_marker }}
+
+  # One check that sums up the run, for branch protection: required checks that are skipped or
+  # not created (a target with nothing new) would otherwise never report.
+  result:
+    needs: [plan, verify]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Result
+        run: |
+          echo "plan: ${{ needs.plan.result }}, verify: ${{ needs.verify.result }}"
+          [[ "${{ needs.plan.result }}" == success ]]
+          [[ "${{ needs.verify.result }}" == success || "${{ needs.verify.result }}" == skipped ]]

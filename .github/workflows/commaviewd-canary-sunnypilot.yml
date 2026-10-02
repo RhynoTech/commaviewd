@@ -1,150 +1,27 @@
 name: commaviewd-canary-sunnypilot
 
+# Early warning that upstream sunnypilot branches (ci/canary-sunnypilot.json) drifted away from
+# commaviewd.
+# The checks are commaviewd-verify.yml's: a target whose upstream commit already passed with the
+# same commaviewd content (here, in CI, or in another canary) is skipped, so a quiet week costs
+# only the plan.
 on:
   schedule:
     - cron: '53 7 * * 1,4'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+  # Pass markers from pull requests count only after checking the pull request isn't a fork's.
+  pull-requests: read
+
 concurrency:
   group: commaviewd-canary-sunnypilot
   cancel-in-progress: false
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   verify:
-    name: Early drift canary verify (${{ matrix.target.upstream_ref }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - upstream_ref: dev
-            ui_platform: tizi
-          - upstream_ref: master
-            ui_platform: mici
-          - upstream_ref: staging
-            ui_platform: tizi
-          - upstream_ref: release-mici-staging
-            ui_platform: mici
-          - upstream_ref: release-tizi-staging
-            ui_platform: tizi
-          - upstream_ref: staging-chestnut
-            ui_platform: mici
-
-
-    steps:
-      - name: Checkout CommaView
-        uses: actions/checkout@v6
-
-      - name: Restore apt package cache
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/commaview-apt/archives
-          key: apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-v1
-          restore-keys: |
-            apt-${{ runner.os }}-${{ runner.arch }}-commaviewd-toolchain-
-
-      - name: Install toolchain + deps
-        id: armcapnp
-        run: ./scripts/install-commaviewd-toolchain.sh
-
-      - name: Resolve upstream SHA
-        id: upstream
-        run: |
-          set -euo pipefail
-          REF='${{ matrix.target.upstream_ref }}'
-          SHA="$(git ls-remote "https://github.com/sunnypilot/sunnypilot.git" "refs/heads/${REF}" | awk '{print $1}')"
-          if [[ -z "$SHA" ]]; then
-            SHA="$(git ls-remote "https://github.com/sunnypilot/sunnypilot.git" "refs/tags/${REF}" | awk '{print $1}')"
-          fi
-          if [[ -z "$SHA" ]]; then
-            SHA="$REF"
-          fi
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Restore upstream source cache
-        id: upstream-cache
-        uses: actions/cache@v5
-        with:
-          path: openpilot-src
-          key: upstream-src-sparse-${{ runner.os }}-sunnypilot-sunnypilot-${{ steps.upstream.outputs.sha }}
-
-      - name: Checkout sunnypilot source
-        if: steps.upstream-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v6
-        with:
-          repository: sunnypilot/sunnypilot
-          ref: ${{ steps.upstream.outputs.sha }}
-          path: openpilot-src
-          submodules: recursive
-          # commaviewd never reads the driving models, which are most of a release tree (1.8 of
-          # 2.0 GB on release-chestnut). A blobless sparse checkout leaves them out, which keeps the
-          # cached source small; the cache key says "sparse" so full-tree caches are never mixed in.
-          filter: blob:none
-          sparse-checkout: |
-            /*
-            !/selfdrive/modeld/models/
-            !/openpilot/selfdrive/modeld/models/
-          sparse-checkout-cone-mode: false
-      - name: Transformer onroad UI export applicability check
-        run: |
-          set -euxo pipefail
-          mkdir -p dist
-          OP_ROOT="${{ github.workspace }}/openpilot-src" ./commaviewd/scripts/upstream-interface-guard.sh --telemetry-only
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/apply_onroad_ui_export_patch.sh --platform "${{ matrix.target.ui_platform }}"
-          COMMAVIEWD_INSTALL_DIR="${{ github.workspace }}/comma" COMMAVIEWD_OP_ROOT="${{ github.workspace }}/openpilot-src" ./comma/scripts/verify_onroad_ui_export_patch.sh --json --platform "${{ matrix.target.ui_platform }}" >/dev/null
-          cp "${{ github.workspace }}/comma/run/onroad-ui-export-status.json" dist/onroad-ui-export-status.json
-          git -C "${{ github.workspace }}/openpilot-src" reset --hard -q HEAD
-          git -C "${{ github.workspace }}/openpilot-src" clean -fdq
-
-
-      - name: Run commaviewd verification pipeline
-        env:
-          OP_ROOT: ${{ github.workspace }}/openpilot-src
-          ARM_CAPNP_SO: ${{ steps.armcapnp.outputs.arm_capnp_so }}
-          ARM_KJ_SO: ${{ steps.armcapnp.outputs.arm_kj_so }}
-          RELEASE_SMOKE_TAG: canary-sunnypilot-${{ matrix.target.upstream_ref }}-${{ github.run_id }}
-        run: |
-          set -euxo pipefail
-          commaviewd/scripts/run-verification.sh
-
-      - name: "CI guard: enforce telemetry mode is production-hardening safe"
-        run: ./scripts/verify-telemetry-hardening.sh
-
-      - name: Verification summary
-        if: always()
-        run: |
-          {
-            echo "### early drift canary verification (sunnypilot/${{ matrix.target.upstream_ref }})"
-            echo "- Upstream SHA: \`${{ steps.upstream.outputs.sha }}\`"
-            echo "- Upstream source cache hit: \`${{ steps.upstream-cache.outputs.cache-hit || 'false' }}\`"
-            if [[ -f dist/upstream-interface-manifest.json ]]; then
-              echo "- Interface manifest: dist/upstream-interface-manifest.json"
-            fi
-            if [[ -f dist/binary-contract.json ]]; then
-              echo "- Binary contract: dist/binary-contract.json"
-            fi
-            if [[ -f dist/release-smoke-manifest.json ]]; then
-              echo "- Release smoke: dist/release-smoke-manifest.json"
-            fi
-            if [[ -f dist/onroad-ui-export-status.json ]]; then
-              echo "- Onroad UI export status: dist/onroad-ui-export-status.json"
-            fi
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload verification manifests on failure
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: commaviewd-canary-sunnypilot-${{ matrix.target.upstream_ref }}-${{ github.run_id }}
-          path: |
-            dist/reproducible-build-manifest.json
-            dist/upstream-interface-manifest.json
-            dist/binary-contract.json
-            dist/release-smoke-manifest.json
-            dist/onroad-ui-export-status.json
-          if-no-files-found: warn
-          retention-days: 3
+    uses: ./.github/workflows/commaviewd-verify.yml
+    with:
+      targets: ci/canary-sunnypilot.json
