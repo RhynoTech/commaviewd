@@ -432,3 +432,33 @@ def test_unchanged_publish_path_stays_below_host_timing_gate(template, flavor):
   assert stats["snapshotP99Ms"] < 1.0
   assert stats["snapshotMaxMs"] < 5.0
   assert stats["maxPending"] <= len(exporter._service_specs)
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_car_params_are_offered_again_so_a_viewer_connecting_later_learns_the_car(template, flavor):
+  # The UI loads CarParams from params a moment after it starts, and commaviewd relays only frames
+  # fresher than 750 ms: offered once at start, the car never reached an app (no car picture).
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  values = alias_values(current=True)
+  values["deviceState"] = types.SimpleNamespace(started=False, deviceType="mici")
+  ui_state = FakeUiState(values)
+  ui_state.CP = None
+
+  exporter.publish(ui_state)
+  assert exporter._pending_payload(module.COMMAVIEW_CAR_PARAMS_SERVICE_INDEX)["carFingerprint"] == ""
+
+  exporter._pending.clear()
+  ui_state.CP = types.SimpleNamespace(
+    carFingerprint="HYUNDAI_IONIQ_5", carName="hyundai", carVin="KMHKN81AFNU000000",
+    openpilotLongitudinalControl=True, maxLateralAccel=2.5,
+  )
+  for _ in range(2):
+    ui_state.sm.recv_frame["deviceState"] += 1
+    time.sleep(module.COMMAVIEW_MIN_EXPORT_INTERVAL_SEC)
+    exporter.publish(ui_state)
+    payload = exporter._pending_payload(module.COMMAVIEW_CAR_PARAMS_SERVICE_INDEX)
+    assert payload is not None
+    assert payload["carFingerprint"] == "HYUNDAI_IONIQ_5"
+    assert payload["carName"] == "hyundai"
+    exporter._pending.clear()

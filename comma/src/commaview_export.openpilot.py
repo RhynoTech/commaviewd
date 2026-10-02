@@ -316,7 +316,10 @@ class _CommaViewSocketExporter:
       (COMMAVIEW_CAR_CONTROL_SERVICE_INDEX, self._car_control_payload, ("carControl",)),
       (COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX, self._live_parameters_payload, ("@vehicle_parameters",)),
       (COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX, self._longitudinal_plan_payload, ("longitudinalPlan",)),
-      (COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload, ()),
+      # CarParams has no message of its own here (the UI loads it from params a moment after it
+      # starts) and commaviewd relays only fresh frames, so it is offered again with each deviceState
+      # (2 Hz, onroad and off): an app that connects later still learns the car.
+      (COMMAVIEW_CAR_PARAMS_SERVICE_INDEX, self._car_params_payload, ("deviceState",)),
       (COMMAVIEW_DEVICE_STATE_SERVICE_INDEX, self._device_state_payload, ("deviceState",)),
       (COMMAVIEW_ROAD_CAMERA_STATE_SERVICE_INDEX, self._road_camera_state_payload, ("@road_camera",)),
       (COMMAVIEW_PANDA_STATES_SUMMARY_SERVICE_INDEX, self._panda_states_summary_payload, ("pandaStates",)),
