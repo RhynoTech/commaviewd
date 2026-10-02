@@ -1,4 +1,5 @@
 #include "framing.h"
+#include "msgq_service_reader.h"
 #include "socket.h"
 #include "policy.h"
 #include "router.h"
@@ -92,6 +93,12 @@ static constexpr uint64_t TELEMETRY_PARTIAL_SEND_RECOVERY_BUDGET_MICROS = 250000
 // Its bounded queue continues accepting only fresh work and resumes on a keyframe after drops.
 static constexpr uint64_t VIDEO_PARTIAL_SEND_RECOVERY_BUDGET_MICROS = 2000000ULL;
 static constexpr size_t VIDEO_FRAME_QUEUE_CAPACITY = 3;
+// A new client's stream starts at its first keyframe. encoderd sends one every 15-30 frames
+// (0.75-1.5 s at 20 fps); if this many pass without one being recognized, the stream starts anyway.
+static constexpr size_t VIDEO_START_MAX_SKIPPED_FRAMES = 60;
+// encoderd sets V4L2_BUF_FLAG_KEYFRAME in EncodeIndex.flags on keyframes (loggerd starts each
+// recording on it), alongside the IDR NAL unit the bridge also looks for.
+static constexpr uint32_t ENCODE_IDX_KEYFRAME_FLAG = 0x00000008;
 
 // Wire protocol: the index of each name is the service_idx byte in 0x04 meta-raw frames and the
 // UI export socket service id. Keep the order identical to telemetry::kDefaultServicePolicies,
@@ -167,6 +174,18 @@ static std::atomic<int>& active_counter_for_port(int port) {
   if (port == PORT_ROAD) return g_active_road;
   if (port == PORT_WIDE) return g_active_wide;
   return g_active_driver;
+}
+
+// One msgq subscriber per camera port for the life of the process, lent to each client in turn.
+// A subscriber per connection leaked one of the queue's 15 reader slots per reconnect until msgq
+// evicted every reader on the queue, loggerd included (see msgq_service_reader.h). Created at
+// startup and never deleted: a detached client thread may still be using one at exit.
+static std::array<commaview::ipc::ServiceReader*, 3> g_video_readers = {};
+
+static commaview::ipc::ServiceReader* video_reader_for_port(int port) {
+  if (port == PORT_ROAD) return g_video_readers[0];
+  if (port == PORT_WIDE) return g_video_readers[1];
+  return g_video_readers[2];
 }
 
 static size_t queue_size_for_service(const char* video_service) {
@@ -679,17 +698,18 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     return;
   }
 
+  // Borrow the port's process-lifetime reader. A subscriber of this connection's own would keep
+  // one of the queue's msgq reader slots after the connection ended.
+  commaview::ipc::ServiceReader* video_reader = video_reader_for_port(port);
+  if (video_reader == nullptr || !video_reader->begin_session()) {
+    active_counter.fetch_sub(1);
+    close(client_fd);
+    return;
+  }
+
   note_runtime_connect();
 
-  Context* ctx = Context::create();
-
-  const size_t video_segment_size = queue_size_for_service(video_service);
-  SubSocket* video_sock = SubSocket::create(ctx, video_service, "127.0.0.1", true, true, video_segment_size);
-
   const bool include_telemetry = (port == PORT_ROAD || port == PORT_WIDE);
-
-  Poller* video_poller = Poller::create();
-  if (video_sock != nullptr) video_poller->registerSocket(video_sock);
 
   std::atomic<bool> telemetry_disconnect_requested{false};
   std::atomic<bool> telemetry_enabled_for_client{include_telemetry};
@@ -710,6 +730,7 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   uint64_t wrong_union_count = 0;
   uint64_t suppressed_video_count = 0;
   commaview::video::VideoFrameQueue video_queue(VIDEO_FRAME_QUEUE_CAPACITY);
+  commaview::video::KeyframeStartGate start_gate(VIDEO_START_MAX_SKIPPED_FRAMES);
   std::mutex video_queue_mutex;
   std::condition_variable video_queue_cv;
   std::atomic<bool> video_sender_disconnect_requested{false};
@@ -816,6 +837,123 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     }
   });
 
+  // Parses one encoder message from the port's reader and queues its frame for the sender thread.
+  const auto ingest_video_message = [&](Message& raw_msg) {
+    const size_t raw_size = raw_msg.getSize();
+
+    try {
+      capnp::ReaderOptions options;
+      options.traversalLimitInWords = kj::maxValue;
+
+      capnp::FlatArrayMessageReader reader(aligned_buf.align(&raw_msg), options);
+      auto event = reader.getRoot<cereal::Event>();
+
+      const auto which = event.which();
+      const auto expected = commaview::video::expected_video_which_for_port(port, g_livestream_video_enabled);
+      if (which != expected) {
+        wrong_union_count++;
+        if (wrong_union_count <= 20 || (wrong_union_count % 100) == 0) {
+          printf("[%s] union mismatch #%llu: got=%d expected=%d raw=%zu\n",
+                 video_service,
+                 static_cast<unsigned long long>(wrong_union_count),
+                 static_cast<int>(which),
+                 static_cast<int>(expected),
+                 raw_size);
+          fflush(stdout);
+        }
+        return;
+      }
+
+      auto ed = commaview::video::read_encode_data(event, port, g_livestream_video_enabled);
+      auto header = ed.getHeader();
+      auto data = ed.getData();
+
+      const uint32_t header_len = header.size();
+      const size_t data_len = data.size();
+      const uint64_t timestamp_ns = ed.getUnixTimestampNanos();
+      const uint32_t video_width = ed.getWidth();
+      const uint32_t video_height = ed.getHeight();
+      if (data_len == 0) return;
+
+      bool suppress_video = false;
+      bool session_policy = false;
+      if (commaview::control::get_session_policy(control_state.bound_session_id, &session_policy)) {
+        suppress_video = session_policy;
+      }
+
+      if (suppress_video) {
+        suppressed_video_count++;
+        if (suppressed_video_count <= 3 || (suppressed_video_count % 500) == 0) {
+          printf("[%s] suppress-video drop=%llu session=%s header=%u data=%zu\n",
+                 video_service,
+                 static_cast<unsigned long long>(suppressed_video_count),
+                 control_state.bound_session_id.empty() ? "<legacy>" : control_state.bound_session_id.c_str(),
+                 header_len,
+                 data_len);
+          fflush(stdout);
+        }
+        return;
+      }
+
+      const auto contains_idr = g_livestream_video_enabled
+          ? commaview::video::contains_h264_idr
+          : commaview::video::contains_hevc_idr;
+      const bool is_keyframe =
+          (ed.getIdx().getFlags() & ENCODE_IDX_KEYFRAME_FLAG) != 0 ||
+          contains_idr(header.begin(), header_len) ||
+          contains_idr(data.begin(), data_len);
+      const bool stream_was_started = start_gate.started();
+      if (!start_gate.admit(is_keyframe)) return;
+      if (!stream_was_started) {
+        printf("[%s] stream starts on a %s after skipping %llu frames\n",
+               video_service,
+               is_keyframe ? "keyframe" : "non-keyframe (no keyframe recognized)",
+               static_cast<unsigned long long>(start_gate.skipped()));
+        fflush(stdout);
+      }
+      commaview::video::PendingVideoFrame pending;
+      pending.sequence = ++parsed_frame_count;
+      pending.is_keyframe = is_keyframe;
+      pending.created_at_ms = runtime_now_ms();
+      pending.timestamp_ns = timestamp_ns;
+      pending.width = video_width;
+      pending.height = video_height;
+      pending.codec_header.assign(header.begin(), header.begin() + header_len);
+      pending.data.assign(data.begin(), data.begin() + data_len);
+      uint64_t queue_drop_delta = 0;
+      {
+        std::lock_guard<std::mutex> queue_lock(video_queue_mutex);
+        video_queue.push(std::move(pending));
+        queue_drop_delta = video_queue.drop_count() - last_queue_drop_count;
+        note_video_queue_deltas(
+            queue_drop_delta,
+            video_queue.keyframe_wait_drop_count() - last_keyframe_wait_drop_count,
+            video_queue.high_watermark());
+        last_queue_drop_count = video_queue.drop_count();
+        last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
+      }
+      if (queue_drop_delta > 0 && !queue_drop_tcp_snapshot_taken.exchange(true)) {
+        note_video_tcp_pressure_snapshot(client_fd, video_service, "queue_drop");
+      }
+      video_queue_cv.notify_one();
+    } catch (const std::exception& e) {
+      parse_error_count++;
+      printf("[%s] parse exception #%llu: %s (raw=%zu)\n",
+             video_service,
+             static_cast<unsigned long long>(parse_error_count),
+             e.what(),
+             raw_size);
+      fflush(stdout);
+    } catch (...) {
+      parse_error_count++;
+      printf("[%s] parse unknown exception #%llu (raw=%zu)\n",
+             video_service,
+             static_cast<unsigned long long>(parse_error_count),
+             raw_size);
+      fflush(stdout);
+    }
+  };
+
   while (g_running) {
     const auto loop_started = std::chrono::steady_clock::now();
     if (!commaview::net::client_socket_alive(client_fd)) {
@@ -831,118 +969,9 @@ static void handle_video_client(int client_fd, const char* video_service, int po
     if (video_sender_disconnect_requested.load() ||
         (include_telemetry && telemetry_disconnect_requested.load())) break;
 
-    int video_poll_ms = 20;
-    auto ready = video_poller->poll(video_poll_ms);
-
-    for (auto* sock : ready) {
-      std::unique_ptr<Message> raw_msg(sock->receive(true));
-      if (!raw_msg) continue;
-      const size_t raw_size = raw_msg->getSize();
-
-      try {
-        capnp::ReaderOptions options;
-        options.traversalLimitInWords = kj::maxValue;
-
-        capnp::FlatArrayMessageReader reader(aligned_buf.align(raw_msg.get()), options);
-        auto event = reader.getRoot<cereal::Event>();
-
-        if (video_sock != nullptr && sock == video_sock) {
-          const auto which = event.which();
-          const auto expected = commaview::video::expected_video_which_for_port(port, g_livestream_video_enabled);
-          if (which != expected) {
-            wrong_union_count++;
-            if (wrong_union_count <= 20 || (wrong_union_count % 100) == 0) {
-              printf("[%s] union mismatch #%llu: got=%d expected=%d raw=%zu\n",
-                     video_service,
-                     static_cast<unsigned long long>(wrong_union_count),
-                     static_cast<int>(which),
-                     static_cast<int>(expected),
-                     raw_size);
-              fflush(stdout);
-            }
-            continue;
-          }
-
-          auto ed = commaview::video::read_encode_data(event, port, g_livestream_video_enabled);
-          auto header = ed.getHeader();
-          auto data = ed.getData();
-
-          const uint32_t header_len = header.size();
-          const size_t data_len = data.size();
-          const uint64_t timestamp_ns = ed.getUnixTimestampNanos();
-          const uint32_t video_width = ed.getWidth();
-          const uint32_t video_height = ed.getHeight();
-          if (data_len == 0) continue;
-
-          bool suppress_video = false;
-          bool session_policy = false;
-          if (commaview::control::get_session_policy(control_state.bound_session_id, &session_policy)) {
-            suppress_video = session_policy;
-          }
-
-          if (suppress_video) {
-            suppressed_video_count++;
-            if (suppressed_video_count <= 3 || (suppressed_video_count % 500) == 0) {
-              printf("[%s] suppress-video drop=%llu session=%s header=%u data=%zu\n",
-                     video_service,
-                     static_cast<unsigned long long>(suppressed_video_count),
-                     control_state.bound_session_id.empty() ? "<legacy>" : control_state.bound_session_id.c_str(),
-                     header_len,
-                     data_len);
-              fflush(stdout);
-            }
-            continue;
-          }
-
-          const auto contains_idr = g_livestream_video_enabled
-              ? commaview::video::contains_h264_idr
-              : commaview::video::contains_hevc_idr;
-          const bool is_keyframe =
-              contains_idr(header.begin(), header_len) ||
-              contains_idr(data.begin(), data_len);
-          commaview::video::PendingVideoFrame pending;
-          pending.sequence = ++parsed_frame_count;
-          pending.is_keyframe = is_keyframe;
-          pending.created_at_ms = runtime_now_ms();
-          pending.timestamp_ns = timestamp_ns;
-          pending.width = video_width;
-          pending.height = video_height;
-          pending.codec_header.assign(header.begin(), header.begin() + header_len);
-          pending.data.assign(data.begin(), data.begin() + data_len);
-          uint64_t queue_drop_delta = 0;
-          {
-            std::lock_guard<std::mutex> queue_lock(video_queue_mutex);
-            video_queue.push(std::move(pending));
-            queue_drop_delta = video_queue.drop_count() - last_queue_drop_count;
-            note_video_queue_deltas(
-                queue_drop_delta,
-                video_queue.keyframe_wait_drop_count() - last_keyframe_wait_drop_count,
-                video_queue.high_watermark());
-            last_queue_drop_count = video_queue.drop_count();
-            last_keyframe_wait_drop_count = video_queue.keyframe_wait_drop_count();
-          }
-          if (queue_drop_delta > 0 && !queue_drop_tcp_snapshot_taken.exchange(true)) {
-            note_video_tcp_pressure_snapshot(client_fd, video_service, "queue_drop");
-          }
-          video_queue_cv.notify_one();
-        }
-      } catch (const std::exception& e) {
-        parse_error_count++;
-        printf("[%s] parse exception #%llu: %s (raw=%zu)\n",
-               video_service,
-               static_cast<unsigned long long>(parse_error_count),
-               e.what(),
-               raw_size);
-        fflush(stdout);
-      } catch (...) {
-        parse_error_count++;
-        printf("[%s] parse unknown exception #%llu (raw=%zu)\n",
-               video_service,
-               static_cast<unsigned long long>(parse_error_count),
-               raw_size);
-        fflush(stdout);
-      }
-    }
+    const int video_poll_ms = 20;
+    std::unique_ptr<Message> raw_msg(video_reader->next_message(video_poll_ms));
+    if (raw_msg) ingest_video_message(*raw_msg);
 
     const auto video_loop_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - loop_started);
@@ -958,6 +987,9 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   printf("[%s] client disconnected: %s\n", video_service, addr_str);
   fflush(stdout);
 
+  // Hand the reader back before the port frees up, so the next client's begin_session succeeds.
+  // Its msgq subscriber (and reader slot) stays with the process.
+  video_reader->end_session();
   telemetry_disconnect_requested.store(true);
   video_sender_disconnect_requested.store(true);
   video_queue_cv.notify_all();
@@ -966,10 +998,6 @@ static void handle_video_client(int client_fd, const char* video_service, int po
   if (telemetry_thread.joinable()) telemetry_thread.join();
   active_counter.fetch_sub(1);
   close(client_fd);
-
-  delete video_poller;
-  if (video_sock != nullptr) delete video_sock;
-  delete ctx;
 }
 
 static void telemetry_loop(int client_fd,
@@ -1188,6 +1216,12 @@ int commaview_bridge_main(int argc, char* argv[]) {
   const bool ui_export_socket_ready = g_ui_export_socket->start();
 
   const char** video_services = g_livestream_video_enabled ? VIDEO_SERVICES_LIVESTREAM : VIDEO_SERVICES_PROD;
+  // Each subscribes on its first client session, not here, so a bridge that never serves a
+  // camera takes no reader slot on that camera's queue.
+  for (size_t i = 0; i < g_video_readers.size(); ++i) {
+    g_video_readers[i] = new commaview::ipc::ServiceReader(video_services[i],
+                                                           queue_size_for_service(video_services[i]));
+  }
   printf("CommaView Bridge v3.3.8-safe-bundle (C++) [VIDEO+TELEMETRY][VIDEO_SOURCE=%s][RAW_ONLY_DEFAULT][DIRECT_V2_UI_EXPORT_DEFAULT][UI_SOCKET_PREFERRED=%s][META_MODE=raw-only][EMIT_MS=%d]\n",
          g_livestream_video_enabled ? "livestream-h264" : "full-hevc",
          ui_export_socket_ready ? "on" : "off",

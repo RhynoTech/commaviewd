@@ -175,6 +175,10 @@ required_capnp_fields=(
   horizontalAccuracy
   bearingDeg
   unixTimestampMillis
+  # Support bundles peek managerState's process table (src/manager_state_peek.cpp).
+  managerState
+  shouldBeRunning
+  exitCode
 )
 
 for field in "${required_capnp_fields[@]}"; do

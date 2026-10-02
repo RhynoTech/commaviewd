@@ -1,8 +1,10 @@
 #include "control_mode.h"
 #include "gps_peek.h"
 #include "http_server.h"
+#include "manager_state_peek.h"
 #include "runtime_debug_config.h"
 #include "source_recording_archive.h"
+#include "support_bundle.h"
 
 #include <algorithm>
 #include <array>
@@ -53,12 +55,27 @@ constexpr const char* kOnroadUiExportApplyScript = "/data/commaview/scripts/appl
 constexpr const char* kOnroadUiExportVerifyScript = "/data/commaview/scripts/verify_onroad_ui_export_patch.sh";
 constexpr size_t kSupportLogPerFileCapBytes = 512 * 1024;
 constexpr size_t kSupportLogTotalCapBytes = 2 * 1024 * 1024;
+// The kernel ring buffer is usually 256 KiB-1 MiB; only its OOM/kill lines are kept.
+constexpr size_t kSupportKernelLogReadCapBytes = 2 * 1024 * 1024;
+
+// Where a support bundle entry comes from. Everything is read only while answering
+// GET /commaview/support/logs, which the app sends only when the user taps Share.
+enum class SupportLogSource {
+  kFile,
+  kManagerState,  // openpilot's process table, peeked from its msgq ring (no subscriber)
+  kSwaglog,       // openpilot's swaglog lines about stopped/killed processes
+  kKernelLog,     // dmesg lines about out-of-memory kills
+};
 
 struct SupportLogFileSpec {
   std::string entry_name;
   std::string path;
   bool rotated;
+  SupportLogSource source = SupportLogSource::kFile;
 };
+
+std::string msgq_dir();
+std::string swaglog_dir();
 
 std::vector<SupportLogFileSpec> support_log_files() {
   // Put the small structured snapshots first. Large rolling logs can consume the
@@ -69,6 +86,11 @@ std::vector<SupportLogFileSpec> support_log_files() {
       {"runtime-debug-effective.json", "/data/commaview/run/runtime-debug-effective.json", false},
       {"onroad-ui-export-status.json", "/data/commaview/run/onroad-ui-export-status.json", false},
       {"last-restart-reason.txt", "/data/commaview/run/last-restart-reason.txt", false},
+      // openpilot's side, each capped small: why a process openpilot needs isn't running.
+      {"openpilot-manager-state.json", msgq_dir() + "/msgq_managerState", false, SupportLogSource::kManagerState},
+      {"openpilot-process-events.log", swaglog_dir() + "/swaglog.*", false, SupportLogSource::kSwaglog},
+      {"kernel-oom-events.log", "dmesg", false, SupportLogSource::kKernelLog},
+      {"runtime-debug-apply.log", "/data/commaview/logs/runtime-debug-apply.log", false},
       {"runtime-run-events.jsonl", "/data/commaview/logs/runtime-run-events.jsonl", false},
       {"commaviewd-bridge.log", "/data/commaview/logs/commaviewd-bridge.log", false},
       {"commaviewd-control.log", "/data/commaview/logs/commaviewd-control.log", false},
@@ -102,6 +124,8 @@ struct PairingGrant {
 std::mutex g_pairing_mutex;
 PairingGrant g_pairing_grant;
 bool run_command(const std::vector<std::string>& args, int* exit_code, std::string* stdout_text, std::string* stderr_text);
+bool run_command_with_optional_sudo(const std::vector<std::string>& args, int* exit_code, std::string* stdout_text,
+                                    std::string* stderr_text);
 bool is_onroad();
 
 std::string normalize_code(const std::string& in) {
@@ -247,23 +271,155 @@ std::string read_file_tail_capped(const std::string& path, size_t cap, bool* exi
   return out;
 }
 
-std::string support_logs_response_json() {
+// openpilot's own log (swaglog), kept by its logmessaged as /data/log/swaglog.<index>.
+std::string swaglog_dir() {
+#if !defined(__aarch64__)
+  if (const char* test_dir = std::getenv("COMMAVIEWD_TEST_SWAGLOG_DIR")) {
+    if (*test_dir) return test_dir;
+  }
+#endif
+  return "/data/log";
+}
+
+// The kernel log as plain `dmesg` prints it: read-only, the ring buffer is never cleared.
+std::string kernel_log_text(std::string* source, std::string* error) {
+#if !defined(__aarch64__)
+  // Host tests feed a fixed kernel log instead of the build machine's.
+  if (const char* test_file = std::getenv("COMMAVIEWD_TEST_KERNEL_LOG_FILE")) {
+    if (*test_file) {
+      bool exists = false;
+      bool truncated = false;
+      *source = "test";
+      std::string text = read_file_tail_capped(test_file, kSupportKernelLogReadCapBytes, &exists, &truncated);
+      if (!exists) *error = "kernel log unavailable";
+      return text;
+    }
+  }
+#endif
+  std::string klog_error;
+  std::string text = commaview::support::read_kernel_log(kSupportKernelLogReadCapBytes, &klog_error);
+  if (klog_error.empty()) {
+    *source = "klogctl";
+    return text;
+  }
+  // kernel.dmesg_restrict: the same read through plain `dmesg`, with sudo -n when not root.
+  int rc = 0;
+  std::string out;
+  std::string err;
+  if (run_command_with_optional_sudo({"dmesg"}, &rc, &out, &err) && rc == 0) {
+    *source = "dmesg";
+    if (out.size() > kSupportKernelLogReadCapBytes) out.erase(0, out.size() - kSupportKernelLogReadCapBytes);
+    return out;
+  }
+  *error = "kernel log unreadable: " + klog_error;
+  return "";
+}
+
+struct SupportLogEntry {
+  bool exists = false;
+  bool truncated = false;
+  std::string content;
+};
+
+SupportLogEntry support_log_file_entry(const SupportLogFileSpec& spec, const commaview::support::RedactionSecrets& secrets) {
+  SupportLogEntry entry;
+  std::string body = read_file_tail_capped(spec.path, kSupportLogPerFileCapBytes, &entry.exists, &entry.truncated);
+  if (entry.truncated) {
+    // Start at a whole line, so nothing private is cut in half and missed by redaction.
+    const size_t nl = body.find('\n');
+    body.erase(0, nl == std::string::npos ? body.size() : nl + 1);
+  }
+  entry.content = commaview::support::redact_support_text(body, secrets);
+  return entry;
+}
+
+SupportLogEntry support_manager_state_entry() {
+  SupportLogEntry entry;
+  const auto peek = commaview::support::peek_manager_state(msgq_dir());
+  entry.exists = peek.queue_exists;
+  // Process names, pids and exit codes only: nothing in it to redact.
+  entry.content = peek.json + "\n";
+  return entry;
+}
+
+SupportLogEntry support_swaglog_entry(const commaview::support::RedactionSecrets& secrets) {
+  SupportLogEntry entry;
+  const std::string dir = swaglog_dir();
+  const auto scan = commaview::support::scan_swaglog(dir, secrets);
+  entry.exists = scan.dir_exists;
+  entry.truncated = scan.truncated;
+  std::ostringstream out;
+  out << "# openpilot swaglog lines matching process_not_running, \"is dead with\" or killing\n";
+  if (!scan.dir_exists) {
+    out << "# unavailable: no swaglog directory at " << dir << "\n";
+  } else {
+    out << "# scanned the newest " << scan.files_scanned << " of " << scan.files_seen << " swaglog files ("
+        << scan.bytes_scanned << " bytes); " << scan.lines_matched << " matching lines"
+        << (scan.truncated ? ", capped" : "") << "\n";
+  }
+  entry.content = out.str() + scan.text;
+  return entry;
+}
+
+SupportLogEntry support_kernel_log_entry(const commaview::support::RedactionSecrets& secrets) {
+  SupportLogEntry entry;
+  std::string source;
+  std::string error;
+  const std::string log = kernel_log_text(&source, &error);
+  entry.exists = error.empty();
+  std::ostringstream out;
+  out << "# kernel log (dmesg) lines about out-of-memory kills\n";
+  if (!error.empty()) {
+    out << "# unavailable: " << error << "\n";
+    entry.content = out.str();
+    return entry;
+  }
+  size_t matched = 0;
+  const std::string lines = commaview::support::filter_kernel_log(
+      log, secrets, commaview::support::KernelLogLimits(), &matched, &entry.truncated);
+  out << "# read " << log.size() << " bytes via " << source << "; " << matched << " matching lines"
+      << (entry.truncated ? ", capped" : "") << "\n";
+  entry.content = out.str() + lines;
+  return entry;
+}
+
+const char* support_log_source_name(SupportLogSource source) {
+  switch (source) {
+    case SupportLogSource::kManagerState: return "openpilot-manager-state";
+    case SupportLogSource::kSwaglog: return "openpilot-swaglog";
+    case SupportLogSource::kKernelLog: return "kernel-log";
+    case SupportLogSource::kFile: break;
+  }
+  return "file";
+}
+
+// The support bundle, built only while answering the request: every entry is read now, capped,
+// and redacted (GPS, VIN, dongle id and serial, Wi-Fi SSIDs, public IPs, tokens) before it leaves
+// the comma.
+std::string support_logs_response_json(const std::string& api_token) {
+  const commaview::support::RedactionSecrets secrets{api_token, device_dongle_id(), device_hardware_serial()};
   std::ostringstream out;
   size_t total = 0;
   out << "{\"ok\":true,";
   out << "\"generatedAtMs\":" << now_ms() << ",";
   out << "\"perFileCapBytes\":" << kSupportLogPerFileCapBytes << ",";
   out << "\"totalCapBytes\":" << kSupportLogTotalCapBytes << ",";
+  out << "\"redacted\":[\"gps\",\"vin\",\"dongle-id\",\"serial\",\"wifi-ssid\",\"mac\",\"public-ip\",\"token\"],";
   out << "\"files\":[";
 
   bool first = true;
   const std::vector<SupportLogFileSpec> log_files = support_log_files();
   for (const auto& spec : log_files) {
-    bool exists = false;
-    bool truncated = false;
-    std::string body = read_file_tail_capped(spec.path, kSupportLogPerFileCapBytes, &exists, &truncated);
+    SupportLogEntry entry;
+    switch (spec.source) {
+      case SupportLogSource::kManagerState: entry = support_manager_state_entry(); break;
+      case SupportLogSource::kSwaglog: entry = support_swaglog_entry(secrets); break;
+      case SupportLogSource::kKernelLog: entry = support_kernel_log_entry(secrets); break;
+      case SupportLogSource::kFile: entry = support_log_file_entry(spec, secrets); break;
+    }
+    std::string& body = entry.content;
     if (total + body.size() > kSupportLogTotalCapBytes) {
-      truncated = true;
+      entry.truncated = true;
       const size_t remaining = total >= kSupportLogTotalCapBytes ? 0 : kSupportLogTotalCapBytes - total;
       body.resize(std::min(body.size(), remaining));
     }
@@ -274,8 +430,9 @@ std::string support_logs_response_json() {
     out << "{";
     out << "\"name\":\"" << json_escape(spec.entry_name) << "\",";
     out << "\"path\":\"" << json_escape(spec.path) << "\",";
-    out << "\"exists\":" << (exists ? "true" : "false") << ",";
-    out << "\"truncated\":" << (truncated ? "true" : "false") << ",";
+    out << "\"source\":\"" << support_log_source_name(spec.source) << "\",";
+    out << "\"exists\":" << (entry.exists ? "true" : "false") << ",";
+    out << "\"truncated\":" << (entry.truncated ? "true" : "false") << ",";
     out << "\"rotated\":" << (spec.rotated ? "true" : "false") << ",";
     out << "\"encoding\":\"text\",";
     out << "\"content\":\"" << json_escape(body) << "\"";
@@ -1484,10 +1641,11 @@ commaview::api::HttpResponse handle_get(const commaview::api::HttpRequest& req, 
     return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 503, body);
   }
   if (req.path == "/commaview/support/logs") {
-    if (!is_authorized(req, api_token)) {
+    // Gathered only for a paired phone whose user tapped Share; never for anyone else on the LAN.
+    if (api_token.empty() || !is_authorized(req, api_token)) {
       return make_json(401, kUnauthorizedJson);
     }
-    return make_json(200, support_logs_response_json());
+    return make_json(200, support_logs_response_json(api_token));
   }
   if (req.path == "/commaview/drive-stats" || req.path == "/commaview/location") {
     // Where and how this comma drives is private: only a paired phone may ask.

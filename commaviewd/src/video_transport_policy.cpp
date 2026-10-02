@@ -54,6 +54,27 @@ bool contains_h264_idr(const uint8_t* data, size_t len) {
   return false;
 }
 
+KeyframeStartGate::KeyframeStartGate(size_t max_skipped)
+    : max_skipped_(max_skipped) {}
+
+bool KeyframeStartGate::admit(bool is_keyframe) {
+  if (started_) return true;
+  if (!is_keyframe && skipped_ < max_skipped_) {
+    skipped_ += 1;
+    return false;
+  }
+  started_ = true;
+  return true;
+}
+
+bool KeyframeStartGate::started() const {
+  return started_;
+}
+
+uint64_t KeyframeStartGate::skipped() const {
+  return skipped_;
+}
+
 VideoFrameQueue::VideoFrameQueue(size_t capacity)
     : capacity_(std::max<size_t>(capacity, 1)) {}
 

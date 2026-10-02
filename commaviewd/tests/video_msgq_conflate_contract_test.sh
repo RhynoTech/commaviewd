@@ -6,11 +6,12 @@ REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 OP_ROOT="${OP_ROOT:-$REPO_ROOT/../openpilot-src}"
 
 BRIDGE="$ROOT/src/bridge_runtime.cc"
+READER="$ROOT/src/msgq_service_reader.cpp"
 IMPL_MSGQ="$OP_ROOT/msgq_repo/msgq/impl_msgq.cc"
 MSGQ="$OP_ROOT/msgq_repo/msgq/msgq.cc"
 
-if [[ ! -f "$BRIDGE" ]]; then
-  echo "[ERR] Missing bridge runtime: $BRIDGE" >&2
+if [[ ! -f "$BRIDGE" || ! -f "$READER" ]]; then
+  echo "[ERR] Missing bridge runtime or msgq service reader: $BRIDGE $READER" >&2
   exit 2
 fi
 if [[ ! -f "$IMPL_MSGQ" || ! -f "$MSGQ" ]]; then
@@ -18,17 +19,21 @@ if [[ ! -f "$IMPL_MSGQ" || ! -f "$MSGQ" ]]; then
   exit 2
 fi
 
-python3 - "$BRIDGE" "$IMPL_MSGQ" "$MSGQ" <<'PY'
+python3 - "$BRIDGE" "$READER" "$IMPL_MSGQ" "$MSGQ" <<'PY'
 import pathlib
 import re
 import sys
 
 bridge = pathlib.Path(sys.argv[1]).read_text()
-impl = pathlib.Path(sys.argv[2]).read_text()
-msgq = pathlib.Path(sys.argv[3]).read_text()
+reader = pathlib.Path(sys.argv[2]).read_text()
+impl = pathlib.Path(sys.argv[3]).read_text()
+msgq = pathlib.Path(sys.argv[4]).read_text()
 
-if not re.search(r'SubSocket::create\s*\([^;]*\bvideo_service\b[^;]*,\s*true\s*,\s*true\s*(?:,|\))', bridge, re.S):
-    raise SystemExit('video SubSocket must keep conflate=true in bridge_runtime.cc')
+# The bridge reads video through its process-lifetime readers, which subscribe conflated.
+if not re.search(r'SubSocket::create\s*\([^;]*\bservice_\b[^;]*,\s*true\s*,\s*true\s*(?:,|\))', reader, re.S):
+    raise SystemExit('video SubSocket must keep conflate=true in msgq_service_reader.cpp')
+if 'commaview::ipc::ServiceReader' not in bridge:
+    raise SystemExit('bridge_runtime.cc must read video through commaview::ipc::ServiceReader')
 if not re.search(r'if\s*\(\s*conflate\s*\)\s*\{[^}]*q->read_conflate\s*=\s*true\s*;', impl, re.S):
     raise SystemExit('openpilot msgq must map conflate flag to q->read_conflate')
 if not re.search(

@@ -22,6 +22,25 @@ struct PendingVideoFrame {
   std::vector<uint8_t> data;
 };
 
+// Holds a new client's stream back until its first keyframe, the first frame a decoder can start
+// from (encoderd attaches the codec header only to keyframes). If max_skipped frames pass without a
+// keyframe being recognized, the stream starts anyway rather than never.
+class KeyframeStartGate {
+ public:
+  explicit KeyframeStartGate(size_t max_skipped);
+
+  // Whether to deliver this frame. Once a frame is let through, every later one is too.
+  bool admit(bool is_keyframe);
+
+  bool started() const;
+  uint64_t skipped() const;
+
+ private:
+  size_t max_skipped_ = 0;
+  bool started_ = false;
+  uint64_t skipped_ = 0;
+};
+
 class VideoFrameQueue {
  public:
   explicit VideoFrameQueue(size_t capacity);

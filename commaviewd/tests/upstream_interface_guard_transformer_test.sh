@@ -110,6 +110,9 @@ hasFix
 horizontalAccuracy
 bearingDeg
 unixTimestampMillis
+managerState
+shouldBeRunning
+exitCode
 CAPNP
 
 git -C "$op_root" init -q

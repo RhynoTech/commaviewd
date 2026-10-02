@@ -116,10 +116,31 @@ MSGQ_ROOT_DIR="$OP_SOURCE_ROOT/msgq_repo"
   "${CEREAL_SRCS[@]}" \
   -lcapnp -lkj -lpthread -o "$TMP/test_gps_peek"
 
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" \
+  "$ROOT/tests/test_support_bundle.cpp" \
+  "$ROOT/src/support_bundle.cpp" \
+  -o "$TMP/test_support_bundle"
+
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" -I"$MSGQ_ROOT_DIR" \
+  "$ROOT/tests/test_manager_state_peek.cpp" \
+  "$ROOT/src/manager_state_peek.cpp" \
+  "$ROOT/src/gps_peek.cpp" \
+  "${CEREAL_SRCS[@]}" \
+  -lcapnp -lkj -lpthread -o "$TMP/test_manager_state_peek"
+
 "$CXX_BIN" -O2 -std=c++17 "${INC[@]}" \
   "$ROOT/tests/test_msgq_header_recovery.cpp" \
   "$DIST_DIR/msgq-commaviewd.cc" \
   -lpthread -o "$TMP/test_msgq_header_recovery"
+
+# Real msgq (commaviewd's linked copy) on private queues: reader slots must not leak per client.
+"$CXX_BIN" -O2 -std=c++17 "${INC[@]}" -I"$ROOT/src" -I"$MSGQ_ROOT_DIR" \
+  "$ROOT/tests/test_msgq_service_reader.cpp" \
+  "$ROOT/src/msgq_service_reader.cpp" \
+  "$DIST_DIR/msgq-commaviewd.cc" \
+  "$MSGQ_ROOT_DIR/msgq/impl_msgq.cc" "$MSGQ_ROOT_DIR/msgq/ipc.cc" \
+  "$MSGQ_ROOT_DIR/msgq/event.cc" "$MSGQ_ROOT_DIR/msgq/impl_fake.cc" \
+  -lpthread -o "$TMP/test_msgq_service_reader"
 
 "$TMP/test_net_framing"
 "$TMP/test_runtime_mode"
@@ -132,13 +153,17 @@ MSGQ_ROOT_DIR="$OP_SOURCE_ROOT/msgq_repo"
 "$TMP/test_ui_export_socket"
 "$TMP/test_source_recording_archive"
 "$TMP/test_msgq_header_recovery"
+"$TMP/test_msgq_service_reader"
 "$TMP/test_gps_peek"
+"$TMP/test_support_bundle"
+"$TMP/test_manager_state_peek"
 
 "$ROOT/tests/control_mode_api_contract_test.sh"
 "$ROOT/tests/control_mode_pairing_integration_test.sh"
 python3 "$ROOT/tests/source_archive_endpoint_integration_test.py"
 python3 "$ROOT/tests/wifi_power_save_api_integration_test.py"
 COMMAVIEWD_GPS_QUEUE_TOOL="$TMP/test_gps_peek" python3 "$ROOT/tests/drive_stats_api_integration_test.py"
+COMMAVIEWD_MANAGER_STATE_QUEUE_TOOL="$TMP/test_manager_state_peek" python3 "$ROOT/tests/support_logs_api_integration_test.py"
 "$ROOT/tests/local_discovery_contract_test.sh"
 "$ROOT/tests/upstream_interface_guard_transformer_test.sh"
 "$ROOT/tests/device_test_workflow_contract_test.sh"
@@ -146,6 +171,7 @@ COMMAVIEWD_GPS_QUEUE_TOOL="$TMP/test_gps_peek" python3 "$ROOT/tests/drive_stats_
 "$ROOT/tests/release_workflow_contract_test.sh"
 "$ROOT/tests/raw_only_runtime_contract_test.sh"
 "$ROOT/tests/video_msgq_conflate_contract_test.sh"
+"$ROOT/tests/msgq_reader_slot_contract_test.sh"
 "$ROOT/tests/video_transport_bridge_contract_test.sh"
 "$ROOT/tests/runtime_split_transport_contract_test.sh"
 "$ROOT/tests/build_video_schema_contract_test.sh"

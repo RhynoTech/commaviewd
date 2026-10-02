@@ -116,6 +116,35 @@ void test_zero_byte_chunk_backpressure_abandons_frame_and_requires_keyframe_resu
   assert(resumed->is_keyframe);
 }
 
+void test_start_gate_skips_inter_frames_until_first_keyframe() {
+  commaview::video::KeyframeStartGate gate(60);
+  assert(!gate.admit(false));
+  assert(!gate.admit(false));
+  assert(!gate.started());
+  assert(gate.admit(true));
+  assert(gate.started());
+  assert(gate.skipped() == 2);
+  // Once started, inter frames flow; later drops are the queue's business.
+  assert(gate.admit(false));
+  assert(gate.skipped() == 2);
+}
+
+void test_start_gate_opens_on_an_immediate_keyframe() {
+  commaview::video::KeyframeStartGate gate(60);
+  assert(gate.admit(true));
+  assert(gate.skipped() == 0);
+}
+
+void test_start_gate_starts_anyway_after_its_limit() {
+  commaview::video::KeyframeStartGate gate(3);
+  assert(!gate.admit(false));
+  assert(!gate.admit(false));
+  assert(!gate.admit(false));
+  assert(gate.admit(false));
+  assert(gate.started());
+  assert(gate.skipped() == 3);
+}
+
 }  // namespace
 
 int main() {
@@ -129,5 +158,8 @@ int main() {
   test_queue_overflow_waits_for_next_keyframe();
   test_pressure_waits_for_keyframe_after_drops();
   test_zero_byte_chunk_backpressure_abandons_frame_and_requires_keyframe_resume();
+  test_start_gate_skips_inter_frames_until_first_keyframe();
+  test_start_gate_opens_on_an_immediate_keyframe();
+  test_start_gate_starts_anyway_after_its_limit();
   return 0;
 }
