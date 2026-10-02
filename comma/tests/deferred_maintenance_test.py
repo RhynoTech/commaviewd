@@ -227,3 +227,17 @@ def test_uninstall_while_onroad_refuses_or_queues(tmp_path):
         assert not (tmp_path / "params" / "OffroadMode").exists()
     finally:
         run(env, "cancel", check=False)
+
+
+def test_a_direct_run_clears_a_finished_jobs_status(tmp_path):
+    # The app shows a failed or finished job until something replaces it; a direct install,
+    # uninstall or repair calls cancel, which must not leave the old job's status behind.
+    env = env_for(tmp_path)
+    set_offroad(tmp_path, "0")
+    run(env, "queue", "install", "--", "false")
+    set_offroad(tmp_path, "1")
+    try:
+        assert wait_for(lambda: status(env)["state"] == "failed"), status(env)
+    finally:
+        run(env, "cancel", check=False)
+    assert status(env) == {"state": "none"}

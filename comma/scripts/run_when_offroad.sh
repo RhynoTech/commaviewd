@@ -256,6 +256,10 @@ cmd_cancel() {
     log "cancelled $(job_value action)"
     write_status cancelled
     rm -rf "$JOB_DIR"
+  else
+    # Nothing queued: what's left is a finished job's status (done / failed / cancelled). The direct
+    # run that called this supersedes it, so the comma stops reporting it.
+    rm -f "$STATUS"
   fi
   rm -f "$STATE_DIR/waiter.pid"
 }
