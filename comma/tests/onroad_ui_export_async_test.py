@@ -580,6 +580,54 @@ def test_driver_monitoring_without_active_policy_keeps_legacy_flag_and_marks_pol
 
 
 @pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_driver_monitoring_exports_alert_level_causes_and_the_active_policy_attention(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  driver_monitoring = types.SimpleNamespace(
+    isRHD=False,
+    activePolicy="vision",
+    alertLevel="two",
+    visionPolicyState=types.SimpleNamespace(
+      faceDetected=True, isDistracted=True, awarenessPercent=41,
+      distractedTypes=types.SimpleNamespace(pose=False, eye=True, phone=True, sleep=False),
+    ),
+    wheeltouchPolicyState=types.SimpleNamespace(awarenessPercent=90),
+  )
+  payload = exporter._driver_monitoring_state_payload(started_ui_state({"driverMonitoringState": driver_monitoring}))
+  assert payload["alertLevel"] == 2
+  assert payload["distractedTypes"] == 2 | 4
+  assert payload["attentionPercent"] == 41
+
+  # On wheel touch the attention is the wheel-touch policy's.
+  driver_monitoring.activePolicy = "wheeltouch"
+  driver_monitoring.alertLevel = types.SimpleNamespace(raw=0)
+  payload = exporter._driver_monitoring_state_payload(started_ui_state({"driverMonitoringState": driver_monitoring}))
+  assert payload["alertLevel"] == 0
+  assert payload["attentionPercent"] == 90
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_driver_monitoring_without_alert_level_derives_it_from_awareness(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  legacy = types.SimpleNamespace(faceDetected=True, isRHD=False, isActiveMode=True, awarenessStatus=0.6, distractedType=3 | 4)
+  payload = exporter._driver_monitoring_state_payload(started_ui_state({"driverMonitoringState": legacy}))
+  # Watching the driver: warning at 8 s of 11 till terminal, prompt at 6.
+  assert payload["alertLevel"] == 1
+  assert payload["attentionPercent"] == 60
+  # POSE and BLINK; E2E (1 << 2) has no cause to show.
+  assert payload["distractedTypes"] == 3
+
+  legacy.awarenessStatus = 0.5
+  assert exporter._driver_monitoring_state_payload(started_ui_state({"driverMonitoringState": legacy}))["alertLevel"] == 2
+  legacy.awarenessStatus = 0.0
+  assert exporter._driver_monitoring_state_payload(started_ui_state({"driverMonitoringState": legacy}))["alertLevel"] == 3
+  legacy.isActiveMode = False
+  legacy.awarenessStatus = 0.6
+  assert exporter._driver_monitoring_state_payload(started_ui_state({"driverMonitoringState": legacy}))["alertLevel"] == 0
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
 def test_controls_state_set_speed_reads_deprecated_group_and_dev_ui_steering(template, flavor):
   module = load_exporter(template)
   exporter = module._CommaViewSocketExporter(flavor, start_worker=False)

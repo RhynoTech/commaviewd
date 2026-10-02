@@ -145,14 +145,10 @@ void test_decisions() {
   in.selfdrive.reset();
   check(decide_road_phase(in).phase == RoadPhase::kDriving, "no selfdriveState is driving");
 
-  // sunnypilot: MADS lateral can be on while openpilot is not engaged.
+  // sunnypilot: its always-on steering (MADS) may stay on; disengaged and in Park is parked.
   in = parked_inputs(now);
-  in.mads_queue_exists = true;
-  check(decide_road_phase(in).reason == "mads-state-unknown", "an unreadable MADS state is driving");
-  in.mads = SelfdriveSample{now - 10'000'000, true};
-  check(decide_road_phase(in).reason == "mads-engaged", "MADS engaged is driving");
-  in.mads->enabled = false;
-  check(decide_road_phase(in).phase == RoadPhase::kParked, "MADS off and parked is parked");
+  in.selfdrive->enabled = false;
+  check(decide_road_phase(in).phase == RoadPhase::kParked, "disengaged in Park is parked, whatever MADS says");
 }
 
 void test_events() {
@@ -165,22 +161,6 @@ void test_events() {
   const auto sd_sample = commaview::road::selfdrive_sample_from_event(sd.data(), sd.size());
   check(sd_sample && sd_sample->enabled, "selfdriveState.enabled is read");
   check(!commaview::road::car_sample_from_event(sd.data(), sd.size()), "a selfdriveState is no carState");
-  check(!commaview::road::mads_sample_from_event(car.data(), car.size()), "a carState is no MADS state");
-  // sunnypilot's selfdriveStateSP, built by name: a schema without it skips this.
-  try {
-    capnp::MallocMessageBuilder builder;
-    auto event = builder.initRoot<cereal::Event>();
-    event.setLogMonoTime(now);
-    capnp::DynamicStruct::Builder dynamic = capnp::toDynamic(event);
-    auto sp = dynamic.init("selfdriveStateSP").as<capnp::DynamicStruct>();
-    sp.init("mads").as<capnp::DynamicStruct>().set("enabled", true);
-    const auto bytes = bytes_of(builder);
-    const auto mads = commaview::road::mads_sample_from_event(bytes.data(), bytes.size());
-    check(mads && mads->enabled && mads->log_mono_ns == now, "sunnypilot MADS enabled is read");
-    std::printf("  schema has selfdriveStateSP: MADS checked\n");
-  } catch (const kj::Exception&) {
-    std::printf("  schema has no selfdriveStateSP: MADS read skipped\n");
-  }
   std::vector<uint8_t> junk(64, 0xAB);
   check(!commaview::road::car_sample_from_event(junk.data(), junk.size()), "junk is no carState");
 }

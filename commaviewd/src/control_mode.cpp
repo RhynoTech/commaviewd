@@ -707,7 +707,7 @@ std::string runtime_status_json() {
   // An install, uninstall or repair asked for while driving, waiting for Park (or how it ended).
   out << "\"deferredMaintenance\":" << deferred_maintenance_json() << ",";
   // What this runtime can do for a paired phone without SSH.
-  out << "\"capabilities\":[\"runtime-update\"],";
+  out << "\"capabilities\":[\"runtime-update\",\"runtime-uninstall\"],";
   out << "\"onroadUiExport\":" << live_onroad_ui_export_status_json(false) << ",";
   out << "\"persistedConfig\":" << commaview::runtime_debug::render_config_json(persisted, true) << ",";
   out << "\"effectiveConfig\":" << commaview::runtime_debug::render_config_json(effective, true) << ",";
@@ -1929,6 +1929,49 @@ std::string installed_install_script() {
   return std::string(kInstallDir) + "/install.sh";
 }
 
+std::string installed_uninstall_script() {
+#if !defined(__aarch64__)
+  if (const char* test_script = std::getenv("COMMAVIEWD_TEST_UNINSTALL_SCRIPT")) {
+    if (*test_script) return test_script;
+  }
+#endif
+  return std::string(kInstallDir) + "/uninstall.sh";
+}
+
+// Queues ACTION (install or uninstall) in run_when_offroad.sh with a copy of SCRIPT and its
+// arguments; the waiter runs outside this process, which the job stops. 202 with the queue's
+// status, 409 while another job runs, 500 when it couldn't be queued.
+commaview::api::HttpResponse queue_runtime_job_response(const std::string& action,
+                                                        const std::string& script,
+                                                        const std::vector<std::string>& script_args,
+                                                        const std::string& extra_json) {
+  int rc = 1;
+  std::string out;
+  std::string err;
+  std::vector<std::string> cmd{"/usr/bin/env", "COMMAVIEWD_DEFERRED_DIR=" + deferred_maintenance_dir(), "bash",
+                               deferred_runner_path(), "queue", action, "--file", script, "--", "bash",
+                               "@JOB@/" + script.substr(script.find_last_of('/') + 1)};
+  cmd.insert(cmd.end(), script_args.begin(), script_args.end());
+  const bool ran = run_command(cmd, &rc, &out, &err);
+  if (!ran || rc != 0) {
+    const std::string why = trim_copy(err).empty() ? "the " + action + " could not be queued" : trim_copy(err);
+    std::ostringstream resp;
+    resp << "{\"ok\":false,\"error\":\"" << json_escape(why) << "\",\"deferredMaintenance\":"
+         << deferred_maintenance_json() << "}";
+    // 3: a queued job is running right now.
+    return make_json(rc == 3 ? 409 : 500, resp.str());
+  }
+  std::ostringstream resp;
+  resp << "{\"ok\":true,\"queued\":true," << extra_json << "\"deferredMaintenance\":" << deferred_maintenance_json()
+       << "}";
+  return make_json(202, resp.str());
+}
+
+bool regular_file(const std::string& path) {
+  struct stat st {};
+  return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
 // A release tag as commaviewd's releases name them: v1.2.3 or v1.2.3-alpha.4. Nothing else reaches
 // the installer, which builds the GitHub release URL from it.
 bool valid_release_tag(const std::string& tag) {
@@ -1964,29 +2007,22 @@ commaview::api::HttpResponse runtime_update_response(const std::string& request_
     return make_json(400, "{\"ok\":false,\"error\":\"a release tag (v1.2.3 or v1.2.3-alpha.4) is required\"}");
   }
   const std::string installer = installed_install_script();
-  const std::string runner = deferred_runner_path();
-  struct stat st {};
-  if (stat(installer.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || !file_executable(runner.c_str())) {
+  if (!regular_file(installer) || !file_executable(deferred_runner_path().c_str())) {
     return make_json(501, "{\"ok\":false,\"error\":\"this runtime can't update itself; update it over SSH\"}");
   }
-  int rc = 1;
-  std::string out;
-  std::string err;
-  const bool ran = run_command({"/usr/bin/env", "COMMAVIEWD_DEFERRED_DIR=" + deferred_maintenance_dir(), "bash", runner,
-                                "queue", "install", "--file", installer, "--", "bash", "@JOB@/install.sh", "--tag", tag},
-                               &rc, &out, &err);
-  if (!ran || rc != 0) {
-    const std::string why = trim_copy(err).empty() ? "the update could not be queued" : trim_copy(err);
-    std::ostringstream resp;
-    resp << "{\"ok\":false,\"error\":\"" << json_escape(why) << "\",\"deferredMaintenance\":"
-         << deferred_maintenance_json() << "}";
-    // 3: a queued job is running right now.
-    return make_json(rc == 3 ? 409 : 500, resp.str());
+  return queue_runtime_job_response("install", installer, {"--tag", tag}, "\"tag\":\"" + json_escape(tag) + "\",");
+}
+
+// POST /commaview/runtime/uninstall: the paired phone's uninstall, no SSH. The installed
+// uninstall.sh is queued like an update: once the car is parked or offroad it reverts the onroad
+// UI export, stops CommaView and removes /data/commaview (this API, its token and the queue
+// included), so the app takes the API going away for good as the uninstall having run.
+commaview::api::HttpResponse runtime_uninstall_response() {
+  const std::string uninstaller = installed_uninstall_script();
+  if (!regular_file(uninstaller) || !file_executable(deferred_runner_path().c_str())) {
+    return make_json(501, "{\"ok\":false,\"error\":\"this runtime can't uninstall itself; uninstall it over SSH\"}");
   }
-  std::ostringstream resp;
-  resp << "{\"ok\":true,\"queued\":true,\"tag\":\"" << json_escape(tag) << "\",\"deferredMaintenance\":"
-       << deferred_maintenance_json() << "}";
-  return make_json(202, resp.str());
+  return queue_runtime_job_response("uninstall", uninstaller, {}, "");
 }
 
 constexpr const char* kUnauthorizedJson = "{\"ok\":false,\"error\":\"unauthorized\"}";
@@ -2112,6 +2148,14 @@ commaview::api::HttpResponse handle_post(const commaview::api::HttpRequest& req,
       return make_json(401, kUnauthorizedJson);
     }
     return runtime_update_response(req.body);
+  }
+
+  if (req.path == "/commaview/runtime/uninstall") {
+    // Removes this runtime: only a paired phone may ask.
+    if (api_token.empty() || !is_authorized(req, api_token)) {
+      return make_json(401, kUnauthorizedJson);
+    }
+    return runtime_uninstall_response();
   }
 
   if (req.path == "/commaview/wifi/power-save") {
