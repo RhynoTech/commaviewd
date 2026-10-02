@@ -39,23 +39,18 @@ struct SelfdriveSample {
 
 std::optional<CarSample> car_sample_from_event(const uint8_t* data, size_t size);
 std::optional<SelfdriveSample> selfdrive_sample_from_event(const uint8_t* data, size_t size);
-// sunnypilot's selfdriveStateSP.mads.enabled, found by name so a build whose schema has no such
-// event still compiles; nothing when the event isn't one or the schema lacks it.
-std::optional<SelfdriveSample> mads_sample_from_event(const uint8_t* data, size_t size);
 
 struct RoadPhaseInputs {
   bool onroad = true;
   std::optional<CarSample> car;
   std::optional<SelfdriveSample> selfdrive;
-  bool mads_queue_exists = false;
-  std::optional<SelfdriveSample> mads;
   uint64_t now_mono_ns = 0;
 };
 
 struct RoadPhaseReading {
   RoadPhase phase = RoadPhase::kDriving;
   // Why, in a word or two: "offroad", "parked", "gear-unknown", "not-in-park", "moving",
-  // "engaged", "mads-engaged", "car-state-missing", "car-state-stale", ...
+  // "engaged", "car-state-missing", "car-state-stale", ...
   std::string reason;
 };
 

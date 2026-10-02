@@ -90,7 +90,7 @@ ssh comma@<comma-ip> 'bash /data/commaview/install.sh --force-offroad'
 Installing, updating, uninstalling and repairing the UI export restart the runtime or rewrite
 openpilot's UI files (which its running UI never reloads), so they never run while the car is being
 driven: they run while openpilot is offroad (`IsOffroad` is `1`), or while it is onroad but parked
-(in Park, at a standstill, openpilot and sunnypilot's MADS not engaged, as `commaviewd road-phase`
+(in Park, at a standstill, openpilot not engaged (sunnypilot's MADS steering may stay on), as `commaviewd road-phase`
 reads it; a runtime without `road-phase` counts onroad as driving). Asked for while driving, they
 exit 42 (refused), or with `--force-offroad` (the app's Safe Update / Safe Repair) they are queued
 and the command exits 75 after printing `COMMAVIEW_MAINTENANCE_DEFERRED=<action>`.

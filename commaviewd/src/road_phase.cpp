@@ -1,9 +1,7 @@
 #include "road_phase.h"
 
-#include <capnp/dynamic.h>
 #include <capnp/serialize.h>
 #include <kj/array.h>
-#include <sys/stat.h>
 
 #include <cstring>
 #include <ctime>
@@ -40,11 +38,6 @@ bool fresh(uint64_t log_mono_ns, uint64_t now_ns) {
   if (log_mono_ns == 0) return false;
   if (log_mono_ns >= now_ns) return log_mono_ns - now_ns <= kRoadPhaseFreshNs;
   return now_ns - log_mono_ns <= kRoadPhaseFreshNs;
-}
-
-bool queue_exists(const std::string& path) {
-  struct stat st {};
-  return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
 }
 
 template <typename Decode>
@@ -90,20 +83,6 @@ std::optional<SelfdriveSample> selfdrive_sample_from_event(const uint8_t* data, 
   });
 }
 
-std::optional<SelfdriveSample> mads_sample_from_event(const uint8_t* data, size_t size) {
-  return with_event(data, size, [](cereal::Event::Reader event) -> std::optional<SelfdriveSample> {
-    // By name: upstream openpilot's schema has no selfdriveStateSP, and get() on a member that
-    // doesn't exist throws.
-    capnp::DynamicStruct::Reader dynamic = capnp::toDynamic(event);
-    if (!dynamic.has("selfdriveStateSP")) return std::nullopt;
-    const auto mads = dynamic.get("selfdriveStateSP").as<capnp::DynamicStruct>().get("mads").as<capnp::DynamicStruct>();
-    SelfdriveSample sample;
-    sample.log_mono_ns = event.getLogMonoTime();
-    sample.enabled = mads.get("enabled").as<bool>();
-    return sample;
-  });
-}
-
 RoadPhaseReading decide_road_phase(const RoadPhaseInputs& in) {
   if (!in.onroad) return {RoadPhase::kOffroad, "offroad"};
   const auto driving = [](const char* why) { return RoadPhaseReading{RoadPhase::kDriving, why}; };
@@ -115,11 +94,8 @@ RoadPhaseReading decide_road_phase(const RoadPhaseInputs& in) {
   if (!in.selfdrive) return driving("selfdrive-state-missing");
   if (!fresh(in.selfdrive->log_mono_ns, in.now_mono_ns)) return driving("selfdrive-state-stale");
   if (in.selfdrive->enabled) return driving("engaged");
-  if (in.mads_queue_exists) {
-    // sunnypilot: lateral control (MADS) can be engaged while openpilot is not.
-    if (!in.mads || !fresh(in.mads->log_mono_ns, in.now_mono_ns)) return driving("mads-state-unknown");
-    if (in.mads->enabled) return driving("mads-engaged");
-  }
+  // sunnypilot's always-on steering (MADS) may stay on: in Park at a standstill it can't move the
+  // car, and the person has disengaged openpilot.
   return {RoadPhase::kParked, "parked"};
 }
 
@@ -129,9 +105,6 @@ RoadPhaseReading read_road_phase(bool onroad, const std::string& msgq_dir) {
   if (onroad) {
     in.car = peek(msgq_dir + "/msgq_carState", car_sample_from_event);
     in.selfdrive = peek(msgq_dir + "/msgq_selfdriveState", selfdrive_sample_from_event);
-    const std::string mads_path = msgq_dir + "/msgq_selfdriveStateSP";
-    in.mads_queue_exists = queue_exists(mads_path);
-    if (in.mads_queue_exists) in.mads = peek(mads_path, mads_sample_from_event);
     in.now_mono_ns = monotonic_ns();
   }
   return decide_road_phase(in);
