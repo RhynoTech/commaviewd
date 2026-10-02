@@ -105,7 +105,9 @@ A paired phone updates the runtime without SSH: `POST /commaview/runtime/update 
 installed `install.sh --tag vX.Y.Z` in that queue and answers 202. Once the car is parked or offroad
 the comma downloads the release from GitHub, checks its sha256, hands over to that release's own
 installer, and rolls back to the previous runtime if the new one's control API doesn't answer
-within 30 s.
+within 30 s. `POST /commaview/runtime/uninstall` (paired token; `runtime-uninstall` in `capabilities`)
+queues the installed `uninstall.sh` the same way; it removes the API, its token and the queue with
+it.
 
 `comma/install.sh` flags and release env:
 

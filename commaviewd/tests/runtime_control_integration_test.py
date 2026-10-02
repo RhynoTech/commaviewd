@@ -93,9 +93,11 @@ def main():
             COMMAVIEWD_DEFERRED_REQUIRE_MANAGER="0",
             COMMAVIEWD_PARAMS_DIR=str(params),
             COMMAVIEWD_TEST_INSTALL_SCRIPT=str(root / "install.sh"),
+            COMMAVIEWD_TEST_UNINSTALL_SCRIPT=str(root / "uninstall.sh"),
             COMMAVIEWD_ROAD_PHASE_BIN=str(root / "no-commaviewd"),
         )
         (root / "install.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (root / "uninstall.sh").write_text("#!/usr/bin/env bash\necho uninstalling\n")
 
         def road_phase_cli():
             result = subprocess.run([str(binary), "road-phase"], env=env, capture_output=True, text=True, timeout=10)
@@ -142,7 +144,7 @@ def main():
             code, status = request(port, "/commaview/status")
             assert status["roadState"] == "offroad" and status["roadPhase"] == "offroad", status
             assert status["deferredMaintenance"] == {"state": "none"}, status
-            assert "runtime-update" in status["capabilities"], status
+            assert {"runtime-update", "runtime-uninstall"} <= set(status["capabilities"]), status
             assert road_phase_cli() == (0, "offroad offroad")
             (params / "IsOffroad").write_text("0")
             code, status = request(port, "/commaview/status")
@@ -197,6 +199,18 @@ def main():
             assert (deferred / "job" / "install.sh").read_text() == (root / "install.sh").read_text()
             assert not (params / "OffroadMode").exists()
             print("PASS: /commaview/runtime/update queues the installed installer for the tag, paired phone only")
+
+            # --- runtime uninstall without SSH ---------------------------------------------
+            code, body = request(port, "/commaview/runtime/uninstall", "POST", {}, token="wrong")
+            assert code == 401, (code, body)
+            code, body = request(port, "/commaview/runtime/uninstall", "POST", {})
+            assert code == 202 and body["ok"] and body["queued"], (code, body)
+            assert body["deferredMaintenance"]["state"] == "waiting", body
+            assert body["deferredMaintenance"]["action"] == "uninstall", body
+            args = (deferred / "job" / "args").read_bytes().split(b"\0")
+            assert args[:2] == [b"bash", str(deferred / "job" / "uninstall.sh").encode()], args
+            assert (deferred / "job" / "uninstall.sh").read_text() == (root / "uninstall.sh").read_text()
+            print("PASS: /commaview/runtime/uninstall queues the installed uninstaller, paired phone only")
         finally:
             subprocess.run(["bash", str(RUNNER), "cancel"], env=env, check=False, capture_output=True)
             control.terminate()
