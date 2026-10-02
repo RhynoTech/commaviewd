@@ -13,19 +13,28 @@ stays running between drives.
                the comma's own identity, as sunnypilot's Trips page does.
   position     While a drive goes on and location is on: where the car was at the end of the drive's
                last finished log minute. The fallback when the comma's GPS can't be read directly.
+  leaderboard-register, leaderboard-statement
+               For a paired phone, while the control service waits: this comma's leaderboard key
+               signs a registration (for the account service's challenge) or a statement of its
+               drives grouped into UTC days. The answer is one JSON line on stdout.
 
 Files (under ROOT unless noted): data/drives.json, data/drive-stats.json, and only while location is
-on data/location-last.json and LIVE_DIR/location-log.json. Positions are never logged.
+on data/location-last.json and LIVE_DIR/location-log.json. Positions are never logged. Once the
+comma joins the leaderboard: data/leaderboard-key.json (its private key, 0600, never logged) and
+data/leaderboard-seq.json (the statement counter).
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 
 ROOT = os.environ.get("COMMAVIEW_DRIVE_ROOT", "/data/commaview")
 LIVE_DIR = os.environ.get("COMMAVIEW_DRIVE_LIVE_DIR", "/dev/shm/commaview")
@@ -48,7 +57,8 @@ GPS_EVENTS = ("gpsLocationExternal", "gpsLocation")
 
 
 def log(message: str) -> None:
-  print(f"commaview-drive-stats: {message}", flush=True)
+  # stderr: stdout carries the leaderboard's answer to the control service.
+  print(f"commaview-drive-stats: {message}", file=sys.stderr, flush=True)
 
 
 def valid_wall(ms) -> bool:
@@ -338,6 +348,286 @@ def refresh_totals(now_ms: int, fetch=fetch_totals_from_comma, cache=cached_tota
   return saved
 
 
+# ---------------------------------------------------------------- The leaderboard
+#
+# The contract is docs/plans/leaderboard.md in RhynoTech/commaview-web ("The contract"): this
+# comma's own Ed25519 key signs compact JWS (EdDSA) over canonical JSON, and the phone only relays
+# them. The private key never leaves this file's two functions that read and write it: it is never
+# printed, logged or answered, and the control service leaves it out of support bundles.
+
+LEADERBOARD_KEY_FILE = os.path.join(ROOT, "data", "leaderboard-key.json")
+LEADERBOARD_SEQ_FILE = os.path.join(ROOT, "data", "leaderboard-seq.json")
+LEADERBOARD_LOCK_FILE = os.path.join(ROOT, "data", "leaderboard.lock")
+VERSION_FILE = os.path.join(ROOT, "VERSION")
+
+LEADERBOARD_MAX_DAYS = 62
+LEADERBOARD_MAX_SEQ = 2_147_483_647
+LEADERBOARD_TEXT_MAX = 40
+DEVICE_HASH_PREFIX = "commaview-leaderboard-device/v1:"
+B64URL_32 = re.compile(r"[A-Za-z0-9_-]{43}")
+
+# Exit codes the control service turns into its answers (anything else is a 500).
+EXIT_BAD_REQUEST = 3  # 400 challenge required
+EXIT_NO_KEY = 4       # 409 no key
+EXIT_NO_CRYPTO = 5    # 503 crypto unavailable
+
+
+class LeaderboardError(Exception):
+  def __init__(self, code: int, error: str):
+    super().__init__(error)
+    self.code = code
+    self.error = error
+
+
+def b64u(data: bytes) -> str:
+  return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def b64u_32(text) -> bytes | None:
+  """32 bytes written the one canonical way as base64url without padding (43 characters), or None."""
+  if not isinstance(text, str) or not B64URL_32.fullmatch(text):
+    return None
+  raw = base64.urlsafe_b64decode(text + "=")
+  return raw if len(raw) == 32 and b64u(raw) == text else None
+
+
+def canonical(obj) -> bytes:
+  return json.dumps(obj, separators=(",", ":"), sort_keys=True, ensure_ascii=True).encode("ascii")
+
+
+def ed25519():
+  """cryptography's Ed25519 key class and serialization module, or None when this Python lacks them."""
+  try:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    Ed25519PrivateKey.from_private_bytes(bytes(32))  # the OpenSSL underneath may lack Ed25519
+  except Exception:
+    return None
+  return Ed25519PrivateKey, serialization
+
+
+def require_crypto():
+  crypto = ed25519()
+  if crypto is None:
+    raise LeaderboardError(EXIT_NO_CRYPTO, "crypto unavailable")
+  return crypto
+
+
+def private_key(seed: bytes):
+  key_class, _ = require_crypto()
+  return key_class.from_private_bytes(seed)
+
+
+def public_x(key) -> str:
+  _, serialization = require_crypto()
+  return b64u(key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw))
+
+
+def key_id(x: str) -> str:
+  """The RFC 7638 thumbprint of the public key."""
+  return b64u(hashlib.sha256(canonical({"crv": "Ed25519", "kty": "OKP", "x": x})).digest())
+
+
+def device_hash(identity: str) -> str:
+  return b64u(hashlib.sha256((DEVICE_HASH_PREFIX + identity).encode("utf-8")).digest())
+
+
+def jws(key, header: dict, payload: dict) -> str:
+  signing_input = b64u(canonical(header)) + "." + b64u(canonical(payload))
+  return signing_input + "." + b64u(key.sign(signing_input.encode("ascii")))
+
+
+def device_identity() -> str:
+  """The dongle id, or the serial when the comma isn't registered with comma. It's only ever hashed."""
+  dongle_id = read_param("DongleId")
+  if dongle_id and dongle_id != "UnregisteredDevice":
+    return dongle_id
+  return "serial:" + read_param("HardwareSerial")
+
+
+def optional_text(value: str) -> str | None:
+  value = value.strip()
+  return value[:LEADERBOARD_TEXT_MAX] if value else None
+
+
+def runtime_version() -> str | None:
+  try:
+    with open(VERSION_FILE, encoding="utf-8", errors="replace") as f:
+      return optional_text(f.readline())
+  except OSError:
+    return None
+
+
+def whole(value) -> int:
+  """A count from the drive list as the non-negative integer the contract wants."""
+  if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value in (float("inf"), float("-inf")):
+    return 0
+  return max(0, int(round(value)))
+
+
+def utc_day(ms: int):
+  return datetime.fromtimestamp(ms / 1000, timezone.utc).date()
+
+
+def drive_days(drives: list, signed_ms: int) -> list:
+  """The drives grouped by the UTC day they started: only days with a drive, oldest first, the newest 62.
+  A day after the day it's signed (a clock that went back) can't be right, so it's left out."""
+  signed_day = utc_day(signed_ms) if valid_wall(signed_ms) else None
+  days = {}
+  for drive in drives:
+    start_ms = drive.get("startMs") if isinstance(drive, dict) else None
+    if not valid_wall(start_ms):
+      continue
+    day = utc_day(start_ms)
+    if signed_day is not None and day > signed_day:
+      continue
+    total = days.setdefault(day, [0, 0, 0])
+    total[0] += whole(drive.get("distanceM"))
+    total[1] += whole(drive.get("durationS"))
+    total[2] += 1
+  newest = sorted(days)[-LEADERBOARD_MAX_DAYS:]
+  return [{"day": day.isoformat(), "distanceM": days[day][0], "durationS": days[day][1], "drives": days[day][2]}
+          for day in newest]
+
+
+def write_private_json(path: str, value) -> None:
+  """Owner-only (0600) and on disk before it's used: a counter must never go back after a power cut."""
+  directory = os.path.dirname(path)
+  os.makedirs(directory, mode=0o700, exist_ok=True)
+  tmp = f"{path}.tmp.{os.getpid()}"
+  fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+  try:
+    os.fchmod(fd, 0o600)
+    os.write(fd, json.dumps(value, separators=(",", ":")).encode("ascii"))
+    os.fsync(fd)
+  except BaseException:
+    os.close(fd)
+    try:
+      os.unlink(tmp)
+    except OSError:
+      pass
+    raise
+  os.close(fd)
+  os.replace(tmp, path)
+  dir_fd = os.open(directory, os.O_RDONLY)
+  try:
+    os.fsync(dir_fd)
+  finally:
+    os.close(dir_fd)
+
+
+def load_seed() -> bytes | None:
+  """The key's 32-byte seed, or None when there's no usable key."""
+  saved = read_json(LEADERBOARD_KEY_FILE)
+  if not isinstance(saved, dict) or saved.get("version") != 1:
+    return None
+  seed = b64u_32(saved.get("seed"))
+  if seed is not None:
+    try:
+      if os.stat(LEADERBOARD_KEY_FILE).st_mode & 0o077:
+        os.chmod(LEADERBOARD_KEY_FILE, 0o600)
+    except OSError:
+      pass
+  return seed
+
+
+def new_seed(now_ms: int) -> bytes:
+  """A new key, saved before it signs anything; its counter starts again at 0."""
+  seed = os.urandom(32)
+  write_private_json(LEADERBOARD_KEY_FILE, {"version": 1, "seed": b64u(seed), "createdMs": now_ms})
+  write_private_json(LEADERBOARD_SEQ_FILE, {"version": 1, "keyId": key_id(public_x(private_key(seed))), "seq": 0})
+  return seed
+
+
+def last_seq(kid: str) -> int:
+  """The last seq this key signed; a counter left from another key (a crash mid-rotation) is 0."""
+  saved = read_json(LEADERBOARD_SEQ_FILE)
+  if not isinstance(saved, dict) or saved.get("keyId") != kid:
+    return 0
+  seq = saved.get("seq")
+  return seq if isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq <= LEADERBOARD_MAX_SEQ else 0
+
+
+class LeaderboardLock:
+  """One signing at a time, so two statements never share a seq."""
+
+  def __enter__(self):
+    import fcntl
+    os.makedirs(os.path.dirname(LEADERBOARD_LOCK_FILE), mode=0o700, exist_ok=True)
+    self.fd = os.open(LEADERBOARD_LOCK_FILE, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    fcntl.flock(self.fd, fcntl.LOCK_EX)
+    return self
+
+  def __exit__(self, *exc):
+    os.close(self.fd)  # releases the lock
+
+
+def registration_token(key, challenge: str, issued_ms: int) -> str:
+  x = public_x(key)
+  payload = {"v": 1, "challenge": challenge, "publicKey": x, "deviceHash": device_hash(device_identity()),
+             "issuedAtMs": issued_ms}
+  model = optional_text(read_param("HardwareModel"))
+  if model:
+    payload["model"] = model
+  version = runtime_version()
+  if version:
+    payload["runtimeVersion"] = version
+  return jws(key, {"alg": "EdDSA", "kid": key_id(x), "typ": "cv-lb-reg+jwt"}, payload)
+
+
+def statement_token(key, seq: int, issued_ms: int, days: list) -> str:
+  payload = {"v": 1, "seq": seq, "issuedAtMs": issued_ms, "days": days}
+  version = runtime_version()
+  if version:
+    payload["runtimeVersion"] = version
+  return jws(key, {"alg": "EdDSA", "kid": key_id(public_x(key)), "typ": "cv-lb-stats+jwt"}, payload)
+
+
+def leaderboard_register(challenge: str, rotate: bool, now_ms: int) -> dict:
+  """Signs the account service's challenge with this comma's key, made first if it has none (or
+  `rotate`): {ok, registration, keyId}."""
+  if b64u_32(challenge) is None:
+    raise LeaderboardError(EXIT_BAD_REQUEST, "challenge required")
+  require_crypto()
+  with LeaderboardLock():
+    seed = None if rotate else load_seed()
+    if seed is None:
+      seed = new_seed(now_ms)
+    key = private_key(seed)
+    return {"ok": True, "registration": registration_token(key, challenge, now_ms), "keyId": key_id(public_x(key))}
+
+
+def leaderboard_statement(now_ms: int) -> dict:
+  """This comma's drives by UTC day, signed with the next seq (saved before it's signed):
+  {ok, statement, keyId, seq}."""
+  with LeaderboardLock():
+    seed = load_seed()
+    if seed is None:
+      raise LeaderboardError(EXIT_NO_KEY, "no key")
+    key = private_key(seed)
+    kid = key_id(public_x(key))
+    seq = last_seq(kid) + 1
+    if seq > LEADERBOARD_MAX_SEQ:
+      raise LeaderboardError(1, "seq exhausted")
+    write_private_json(LEADERBOARD_SEQ_FILE, {"version": 1, "keyId": kid, "seq": seq})
+    days = drive_days(DriveLedger(read_json(DRIVES_FILE)).drives, now_ms)
+    return {"ok": True, "statement": statement_token(key, seq, now_ms, days), "keyId": kid, "seq": seq}
+
+
+def leaderboard_main(run) -> int:
+  """One JSON line on stdout for the control service; failures say only what went wrong, never a key."""
+  try:
+    answer, code = run(), 0
+  except LeaderboardError as e:
+    answer, code = {"ok": False, "error": e.error}, e.code
+  except Exception as e:
+    log(f"leaderboard: {type(e).__name__}")
+    answer, code = {"ok": False, "error": "leaderboard failed"}, 1
+  sys.stdout.write(json.dumps(answer, separators=(",", ":")) + "\n")
+  sys.stdout.flush()
+  return code
+
+
 # ---------------------------------------------------------------- Entry
 
 def main(argv=None) -> int:
@@ -352,9 +642,17 @@ def main(argv=None) -> int:
   sub.add_parser("totals")
   pos = sub.add_parser("position")
   pos.add_argument("--route", required=True)
+  register = sub.add_parser("leaderboard-register")
+  register.add_argument("--challenge", required=True)
+  register.add_argument("--rotate", action="store_true")
+  sub.add_parser("leaderboard-statement")
   args = parser.parse_args(argv)
 
   now_ms = int(time.time() * 1000)
+  if args.mode == "leaderboard-register":
+    return leaderboard_main(lambda: leaderboard_register(args.challenge, args.rotate, now_ms))
+  if args.mode == "leaderboard-statement":
+    return leaderboard_main(lambda: leaderboard_statement(now_ms))
   if args.mode == "after-drive":
     after_drive(args.route, args.start_ms, args.end_ms, args.duration_s, now_ms)
     refresh_totals(now_ms)

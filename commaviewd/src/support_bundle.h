@@ -15,6 +15,9 @@ struct RedactionSecrets {
   std::string api_token;
   std::string dongle_id;
   std::string hardware_serial;
+  // The leaderboard key's seed (data/leaderboard-key.json). The bundle never reads that file; this
+  // takes the seed out of anything that does end up holding it.
+  std::string leaderboard_seed;
 };
 
 // An identifier masked the way the app's shared diagnostics mask one: only its last six
@@ -27,8 +30,8 @@ std::string mask_identifier(const std::string& id);
 //  - the dongle id and hardware serial (masked to their last six, verbatim or as a value)
 //  - Wi-Fi SSIDs (any *ssid* value, nmcli's GENERAL.CONNECTION) and MAC addresses / BSSIDs
 //  - IP addresses outside private, loopback and link-local ranges (IPv4 and IPv6)
-//  - credentials: the API token verbatim, any value whose key names a token, password, secret,
-//    key or cookie, bearer tokens, JWTs and user:password@ in URLs
+//  - credentials: the API token and the leaderboard key's seed verbatim, any value whose key names a
+//    token, password, secret, key, seed or cookie, bearer tokens, JWTs and user:password@ in URLs
 // Control characters other than newline and tab become spaces so the text embeds in JSON.
 // Linear in the input.
 std::string redact_support_text(const std::string& text, const RedactionSecrets& secrets);

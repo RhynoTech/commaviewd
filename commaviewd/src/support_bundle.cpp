@@ -109,7 +109,7 @@ KeyKind classify_key(const std::string& raw_key) {
     if (leaf == id) return KeyKind::kDeviceId;
   }
   for (const char* secret : {"token", "password", "passwd", "secret", "apikey", "api_key", "api-key", "authorization",
-                             "cookie", "private_key", "privatekey", "credential"}) {
+                             "cookie", "private_key", "privatekey", "credential", "seed"}) {
     if (leaf.find(secret) != std::string::npos) return KeyKind::kSecret;
   }
   return KeyKind::kNone;
@@ -509,6 +509,7 @@ std::string redact_support_text(const std::string& in, const RedactionSecrets& s
     if (value.size() >= 6) literals.emplace_back(value, std::move(replacement));
   };
   add_literal(secrets.api_token, "redacted-token");
+  add_literal(secrets.leaderboard_seed, "redacted-secret");
   add_literal(secrets.dongle_id, mask_identifier(secrets.dongle_id));
   add_literal(secrets.hardware_serial, mask_identifier(secrets.hardware_serial));
   // Longest first, so a value holding another is replaced whole.

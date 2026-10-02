@@ -109,6 +109,18 @@ void redaction() {
   expect("{\"password\": \"hunter2\", \"tokenRequired\": false, \"keyframeWaitDropCount\": 3}",
          "{\"password\": \"redacted-secret\", \"tokenRequired\": false, \"keyframeWaitDropCount\": 3}");
 
+  // The leaderboard key: its file's contents, the seed by key name, and the seed verbatim anywhere.
+  RedactionSecrets with_key;
+  with_key.leaderboard_seed = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+  expect("{\"version\":1,\"seed\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA\",\"createdMs\":1790899200000}",
+         "{\"version\":1,\"seed\":\"redacted-secret\",\"createdMs\":1790899200000}");
+  expect("seed=_-z9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa next", "seed=redacted-secret next");
+  expect("oops AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA in a log", "oops redacted-secret in a log", with_key);
+  expect("x=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA", "x=redacted-secret", with_key);
+  // The public key and counter are not secrets.
+  expect("{\"publicKey\":\"ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ\",\"seq\":3}",
+         "{\"publicKey\":\"ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ\",\"seq\":3}", with_key);
+
   // Everything else is untouched, and control characters can't break the JSON it's embedded in.
   expect("plain log line: started bridge on port 5001\n", "plain log line: started bridge on port 5001\n");
   expect(std::string("color \x1b[31mred\x07\n"), "color  [31mred \n");

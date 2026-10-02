@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +19,7 @@
 #include <iomanip>
 #include <cmath>
 #include <fcntl.h>
+#include <poll.h>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -76,11 +78,14 @@ struct SupportLogFileSpec {
 
 std::string msgq_dir();
 std::string swaglog_dir();
+std::string leaderboard_seed_for_redaction();
 
 std::vector<SupportLogFileSpec> support_log_files() {
   // Put the small structured snapshots first. Large rolling logs can consume the
   // total response cap, but a support bundle must always retain the current
   // bounded counters and effective configuration needed to diagnose the run.
+  // Nothing from data/: the drive list is private, and data/leaderboard-key.json is
+  // this comma's private key (its seed is also redacted wherever it might appear).
   std::vector<SupportLogFileSpec> files = {
       {"telemetry-stats.json", "/data/commaview/run/telemetry-stats.json", false},
       {"runtime-debug-effective.json", "/data/commaview/run/runtime-debug-effective.json", false},
@@ -397,7 +402,8 @@ const char* support_log_source_name(SupportLogSource source) {
 // and redacted (GPS, VIN, dongle id and serial, Wi-Fi SSIDs, public IPs, tokens) before it leaves
 // the comma.
 std::string support_logs_response_json(const std::string& api_token) {
-  const commaview::support::RedactionSecrets secrets{api_token, device_dongle_id(), device_hardware_serial()};
+  const commaview::support::RedactionSecrets secrets{api_token, device_dongle_id(), device_hardware_serial(),
+                                                     leaderboard_seed_for_redaction()};
   std::ostringstream out;
   size_t total = 0;
   out << "{\"ok\":true,";
@@ -1248,55 +1254,139 @@ std::string python_path() {
   return "/usr/bin/python3";
 }
 
-// openpilot's own Python at the lowest priority, so the script reads the fork's logs and identity.
-// Everything is prepared before fork: the child of this threaded process only makes async-signal-
-// safe calls before exec.
-pid_t spawn_drive_script(const std::vector<std::string>& args) {
+// The script's command line, environment, log and working directory, all prepared before fork: the
+// child of this threaded process only makes async-signal-safe calls before exec.
+struct DriveScriptCommand {
   std::vector<std::string> argv;
+  std::vector<std::string> env;
+  std::vector<char*> argv_ptrs;
+  std::vector<char*> env_ptrs;
+  std::string log_path;
+  const char* workdir = nullptr;
+};
+
+// openpilot's own Python, so the script reads the fork's logs and identity.
+void prepare_drive_script(const std::vector<std::string>& args, DriveScriptCommand* cmd) {
   bool test_script = false;
 #if !defined(__aarch64__)
   if (const char* script = std::getenv("COMMAVIEWD_TEST_DRIVE_SCRIPT")) {
-    argv.push_back(script);
+    cmd->argv.push_back(script);
     test_script = true;
   }
 #endif
   if (!test_script) {
-    argv.push_back(python_path());
-    argv.push_back(std::string(kInstallDir) + "/src/commaview_drive_stats.py");
+    cmd->argv.push_back(python_path());
+    cmd->argv.push_back(std::string(kInstallDir) + "/src/commaview_drive_stats.py");
   }
-  argv.insert(argv.end(), args.begin(), args.end());
-  std::vector<char*> argv_ptrs;
-  for (auto& a : argv) argv_ptrs.push_back(const_cast<char*>(a.c_str()));
-  argv_ptrs.push_back(nullptr);
+  cmd->argv.insert(cmd->argv.end(), args.begin(), args.end());
+  for (auto& a : cmd->argv) cmd->argv_ptrs.push_back(const_cast<char*>(a.c_str()));
+  cmd->argv_ptrs.push_back(nullptr);
 
-  std::vector<std::string> env;
   for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
     if (!test_script && std::strncmp(*e, "PYTHONPATH=", 11) == 0) continue;
-    env.emplace_back(*e);
+    cmd->env.emplace_back(*e);
   }
-  if (!test_script) env.emplace_back("PYTHONPATH=/data/openpilot");
-  std::vector<char*> env_ptrs;
-  for (auto& e : env) env_ptrs.push_back(const_cast<char*>(e.c_str()));
-  env_ptrs.push_back(nullptr);
+  if (!test_script) cmd->env.emplace_back("PYTHONPATH=/data/openpilot");
+  for (auto& e : cmd->env) cmd->env_ptrs.push_back(const_cast<char*>(e.c_str()));
+  cmd->env_ptrs.push_back(nullptr);
 
-  const std::string log_path = drivelog_path("logs/commaview-drive-stats.log");
-  const char* workdir = test_script ? nullptr : "/data/openpilot";
+  cmd->log_path = drivelog_path("logs/commaview-drive-stats.log");
+  cmd->workdir = test_script ? nullptr : "/data/openpilot";
+}
 
-  const pid_t pid = fork();
-  if (pid != 0) return pid;  // the parent, or -1
-  setsid();
-  const int log_fd = open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+// In the child, after its own stdout is set up: the script's log, its directory, the lowest
+// priority, then the script. Never returns.
+[[noreturn]] void exec_drive_script(const DriveScriptCommand& cmd, bool log_stdout) {
+  const int log_fd = open(cmd.log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
   if (log_fd >= 0) {
-    dup2(log_fd, STDOUT_FILENO);
+    if (log_stdout) dup2(log_fd, STDOUT_FILENO);
     dup2(log_fd, STDERR_FILENO);
     close(log_fd);
   }
-  if (workdir != nullptr && chdir(workdir) != 0) _exit(126);
+  if (cmd.workdir != nullptr && chdir(cmd.workdir) != 0) _exit(126);
   if (nice(19) == -1) {
     // Normal priority still beats not running.
   }
-  execve(argv_ptrs[0], argv_ptrs.data(), env_ptrs.data());
+  execve(cmd.argv_ptrs[0], cmd.argv_ptrs.data(), cmd.env_ptrs.data());
   _exit(127);
+}
+
+// A run in the background (after a drive, comma's totals, the position fallback).
+pid_t spawn_drive_script(const std::vector<std::string>& args) {
+  DriveScriptCommand cmd;
+  prepare_drive_script(args, &cmd);
+  const pid_t pid = fork();
+  if (pid != 0) return pid;  // the parent, or -1
+  setsid();
+  exec_drive_script(cmd, true);
+}
+
+// A run the caller waits for, at most timeout_sec, reading its one-line answer from stdout (its log
+// lines still go to its log). False when it couldn't start or ran too long (it's killed then).
+bool run_drive_script_for_answer(const std::vector<std::string>& args, int timeout_sec, int* exit_code,
+                                 std::string* answer) {
+  constexpr size_t kAnswerCapBytes = 64 * 1024;
+  DriveScriptCommand cmd;
+  prepare_drive_script(args, &cmd);
+  int out_pipe[2];
+  if (pipe2(out_pipe, O_CLOEXEC) != 0) return false;
+  const pid_t pid = fork();
+  if (pid < 0) {
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    return false;
+  }
+  if (pid == 0) {
+    dup2(out_pipe[1], STDOUT_FILENO);  // the copy isn't close-on-exec
+    exec_drive_script(cmd, false);
+  }
+  close(out_pipe[1]);
+
+  const auto deadline = SteadyClock::now() + std::chrono::seconds(timeout_sec);
+  const auto ms_left = [&deadline] {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(deadline - SteadyClock::now()).count();
+  };
+  bool timed_out = false;
+  std::array<char, 4096> buf{};
+  answer->clear();
+  while (true) {
+    const auto left = ms_left();
+    if (left <= 0) {
+      timed_out = true;
+      break;
+    }
+    pollfd pfd{out_pipe[0], POLLIN, 0};
+    const int ready = poll(&pfd, 1, static_cast<int>(left));
+    if (ready < 0 && errno == EINTR) continue;
+    if (ready == 0) {
+      timed_out = true;
+      break;
+    }
+    if (ready < 0) break;
+    const ssize_t n = read(out_pipe[0], buf.data(), buf.size());
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) break;  // the script closed its stdout: done
+    answer->append(buf.data(), std::min(static_cast<size_t>(n), kAnswerCapBytes - std::min(kAnswerCapBytes, answer->size())));
+  }
+  close(out_pipe[0]);
+
+  int status = 0;
+  pid_t done = 0;
+  while (!timed_out && (done = waitpid(pid, &status, WNOHANG)) == 0) {
+    if (ms_left() <= 0) {
+      timed_out = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (timed_out) {
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    return false;
+  }
+  if (done < 0) return false;
+  *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+  return true;
 }
 
 // Caller holds g_drive_mutex.
@@ -1496,6 +1586,86 @@ std::string location_set_response(const std::string& body) {
   return std::string("{\"ok\":true,\"enabled\":") + (enabled ? "true" : "false") + "}";
 }
 
+// ---- The leaderboard (docs/plans/leaderboard.md in RhynoTech/commaview-web, "The contract"): this
+// comma's own Ed25519 key, kept by the drive stats script in data/leaderboard-key.json (0600), signs a
+// registration or a statement of its drives by UTC day for the paired phone to relay. It signs only
+// when asked here: nothing runs in the background. The key never passes through this process except
+// to be redacted from support bundles.
+
+constexpr const char* kLeaderboardKeyFile = "data/leaderboard-key.json";
+constexpr int kLeaderboardScriptTimeoutSec = 20;
+// The script's exit codes (commaview_drive_stats.py, EXIT_*).
+constexpr int kLeaderboardExitBadRequest = 3;
+constexpr int kLeaderboardExitNoKey = 4;
+constexpr int kLeaderboardExitNoCrypto = 5;
+constexpr const char* kLeaderboardChallengeRequiredJson = "{\"ok\":false,\"error\":\"challenge required\"}";
+constexpr const char* kLeaderboardNoKeyJson = "{\"ok\":false,\"error\":\"no key\"}";
+constexpr const char* kLeaderboardNoCryptoJson = "{\"ok\":false,\"error\":\"crypto unavailable\"}";
+constexpr const char* kLeaderboardFailedJson = "{\"ok\":false,\"error\":\"leaderboard failed\"}";
+
+std::mutex g_leaderboard_mutex;
+
+commaview::api::HttpResponse make_json(int code, const std::string& body);
+
+// The account service's challenge: 32 bytes as base64url without padding (43 characters).
+bool leaderboard_challenge_valid(const std::string& challenge) {
+  if (challenge.size() != 43) return false;
+  for (char c : challenge) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') return false;
+  }
+  return true;
+}
+
+// The key's seed, read only so a support bundle can take it out wherever it might appear.
+std::string leaderboard_seed_for_redaction() {
+  std::string seed;
+  extract_raw_string_field(read_file_raw(drivelog_path(kLeaderboardKeyFile)), "seed", &seed);
+  return seed;
+}
+
+// Runs the script's leaderboard mode and answers with what it signed, or the contract's errors.
+commaview::api::HttpResponse leaderboard_script_response(const std::vector<std::string>& args) {
+  std::lock_guard<std::mutex> lk(g_leaderboard_mutex);
+  int rc = 0;
+  std::string answer;
+  if (!run_drive_script_for_answer(args, kLeaderboardScriptTimeoutSec, &rc, &answer)) {
+    return make_json(500, kLeaderboardFailedJson);
+  }
+  answer = trim_copy(answer);
+  if (rc == 0 && answer.rfind("{\"ok\":true,", 0) == 0 && answer.back() == '}' &&
+      answer.find('\n') == std::string::npos) {
+    return make_json(200, answer);
+  }
+  switch (rc) {
+    case kLeaderboardExitBadRequest: return make_json(400, kLeaderboardChallengeRequiredJson);
+    case kLeaderboardExitNoKey: return make_json(409, kLeaderboardNoKeyJson);
+    case kLeaderboardExitNoCrypto:
+    case 126:  // openpilot's directory is missing
+    case 127:  // no python3 to run it
+      return make_json(503, kLeaderboardNoCryptoJson);
+    default: return make_json(500, kLeaderboardFailedJson);
+  }
+}
+
+// POST /commaview/leaderboard/register {challenge, rotate?} -> {ok, registration, keyId}
+commaview::api::HttpResponse leaderboard_register_response(const std::string& body) {
+  std::string challenge;
+  if (!extract_raw_string_field(body, "challenge", &challenge) || !leaderboard_challenge_valid(challenge)) {
+    return make_json(400, kLeaderboardChallengeRequiredJson);
+  }
+  bool rotate = false;
+  extract_bool_field(body, "rotate", &rotate);
+  // One argument with '=': a challenge may start with '-'.
+  std::vector<std::string> args = {"leaderboard-register", "--challenge=" + challenge};
+  if (rotate) args.emplace_back("--rotate");
+  return leaderboard_script_response(args);
+}
+
+// POST /commaview/leaderboard/statement {} -> {ok, statement, keyId, seq}
+commaview::api::HttpResponse leaderboard_statement_response() {
+  return leaderboard_script_response({"leaderboard-statement"});
+}
+
 bool extract_pair_code(const std::string& body, std::string* code_out) {
   return extract_raw_string_field(body, "pairCode", code_out) ||
          extract_raw_string_field(body, "code", code_out);
@@ -1683,6 +1853,15 @@ commaview::api::HttpResponse handle_post(const commaview::api::HttpRequest& req,
     }
     const std::string body = location_set_response(req.body);
     return make_json(body.find("\"ok\":true") != std::string::npos ? 200 : 400, body);
+  }
+
+  if (req.path == "/commaview/leaderboard/register" || req.path == "/commaview/leaderboard/statement") {
+    // This comma's key signs only for its paired phone.
+    if (api_token.empty() || !is_authorized(req, api_token)) {
+      return make_json(401, kUnauthorizedJson);
+    }
+    return req.path == "/commaview/leaderboard/register" ? leaderboard_register_response(req.body)
+                                                         : leaderboard_statement_response();
   }
 
   if (req.path == "/commaview/wifi/power-save") {
