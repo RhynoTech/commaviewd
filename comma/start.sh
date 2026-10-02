@@ -40,8 +40,19 @@ if [ $? -ne 0 ]; then
   echo "WARN: invalid runtime debug config JSON; bridge/control will fall back to safe defaults" >> "$LOG_DIR/commaviewd-control.log"
 fi
 
+read_start_param() {
+  cat "/data/params/d/$1" 2>/dev/null | tr -d "\000\r\n"
+}
+
+# openpilot and sunnypilot publish IsOffroad; upstream no longer has an IsOnroad
+# param, so reading only IsOnroad always looked offroad - even while driving -
+# and let startup repair rewrite openpilot's UI files and kill its UI mid-drive.
 read_is_onroad() {
-  cat /data/params/d/IsOnroad 2>/dev/null | tr -d "\000\r\n" || echo 0
+  case "$(read_start_param IsOffroad)" in
+    0) echo 1 ;;
+    1) echo 0 ;;
+    *) if [ "$(read_start_param IsOnroad)" = "1" ]; then echo 1; else echo 0; fi ;;
+  esac
 }
 
 restart_openpilot_ui_if_pending() {

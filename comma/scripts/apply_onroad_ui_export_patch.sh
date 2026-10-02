@@ -22,6 +22,17 @@ read_param() {
   tr -d '\000\r\n' < "$path" 2>/dev/null || true
 }
 
+# openpilot and sunnypilot publish IsOffroad; upstream no longer has an IsOnroad
+# param, so reading only IsOnroad always looked offroad - even while driving.
+# IsOnroad stays a fallback for older builds and bench rigs. Prints 1 when onroad.
+read_is_onroad() {
+  case "$(read_param IsOffroad)" in
+    0) echo 1 ;;
+    1) echo 0 ;;
+    *) if [ "$(read_param IsOnroad)" = "1" ]; then echo 1; else echo 0; fi ;;
+  esac
+}
+
 write_param() {
   mkdir -p "$PARAMS_DIR"
   printf '%s' "$2" > "$PARAMS_DIR/$1"
@@ -46,7 +57,7 @@ restart_openpilot_ui_if_offroad() {
     return 0
   fi
 
-  is_onroad="$(read_param IsOnroad)"
+  is_onroad="$(read_is_onroad)"
   if [ "$is_onroad" = "1" ]; then
     request_openpilot_ui_restart
     echo "WARN: deferring openpilot UI restart while onroad" >&2
@@ -80,7 +91,7 @@ wait_until_offroad() {
   local elapsed=0
   local is_onroad=""
   while [ "$elapsed" -lt "$timeout_sec" ]; do
-    is_onroad="$(read_param IsOnroad)"
+    is_onroad="$(read_is_onroad)"
     if [ "$is_onroad" != "1" ]; then
       return 0
     fi
@@ -92,7 +103,7 @@ wait_until_offroad() {
 
 ensure_offroad_ready() {
   local is_onroad
-  is_onroad="$(read_param IsOnroad)"
+  is_onroad="$(read_is_onroad)"
   if [ "$is_onroad" != "1" ]; then
     return 0
   fi
