@@ -214,6 +214,40 @@ def _monitoring_policy(value):
     return None
 
 
+# driverMonitoringState distraction causes as one bitmask: pose 1, eye 2, phone 4, sleep 8.
+_DM_DISTRACTED_BITS = (("pose", 1), ("eye", 2), ("phone", 4), ("sleep", 8))
+
+
+def _monitoring_distracted_types(driver_monitoring, vision_policy) -> int:
+  types = _attr(vision_policy, "distractedTypes")
+  if types is not None:
+    return sum(bit for name, bit in _DM_DISTRACTED_BITS if bool(getattr(types, name, False)))
+  # Older schemas: distractedType's POSE (1 << 0) and BLINK (1 << 1) bits; E2E has no cause to show.
+  return _safe_int(getattr(driver_monitoring, "distractedType", 0)) & 3
+
+
+def _monitoring_alert_level(driver_monitoring, active_policy, awareness: float) -> int:
+  # driverMonitoringState.alertLevel: 0 none, 1 warning, 2 prompt, 3 terminal. Older schemas have no level,
+  # so derive it from awarenessStatus with dmonitoringd's pre/prompt thresholds (seconds till terminal over
+  # the total: 8 and 6 of 11 watching the driver, 15 and 6 of 30 on wheel touch).
+  level = getattr(driver_monitoring, "alertLevel", None)
+  if level is not None and not isinstance(level, bool):
+    name = _enum_text(level)
+    if name in ("none", "one", "two", "three"):
+      return ("none", "one", "two", "three").index(name)
+    try:
+      return max(0, min(3, int(getattr(level, "raw", level))))
+    except (TypeError, ValueError):
+      pass
+  vision = active_policy == 1 if active_policy is not None else bool(getattr(driver_monitoring, "isActiveMode", False))
+  pre, prompt = (8. / 11., 6. / 11.) if vision else (15. / 30., 6. / 30.)
+  if awareness <= 0.:
+    return 3
+  if awareness <= prompt:
+    return 2
+  return 1 if awareness <= pre else 0
+
+
 def _projection_caller_layout() -> str:
   # set_onroad_projection is called from the device UI's augmented_road_view. The comma four (mici) UI builds
   # its model transform in content coordinates; the comma 3/3X (big) UI includes the content rect origin.
@@ -1144,6 +1178,9 @@ class _CommaViewSocketExporter:
       "isActiveMode": False,
       "activePolicy": -1,
       "awarenessPercent": 100,
+      "attentionPercent": -1,
+      "alertLevel": -1,
+      "distractedTypes": 0,
       "posePitch": 0.0,
       "poseYaw": 0.0,
       "logMonoTime": self._service_log_mono(ui_state, "driverMonitoringState"),
@@ -1175,6 +1212,19 @@ class _CommaViewSocketExporter:
         "poseYawValidCount": _safe_int(getattr(driver_monitoring, "poseYawValidCount", getattr(yaw_calib, "calibratedPercent", 0))),
         "posePitchValidCount": _safe_int(getattr(driver_monitoring, "posePitchValidCount", getattr(pitch_calib, "calibratedPercent", 0))),
         "isLowStd": bool(getattr(driver_monitoring, "isLowStd", False)),
+      })
+      # The active policy's awareness (the vision or wheel-touch one; awarenessStatus on older schemas), how
+      # far dmonitoringd has escalated, and why the driver counts as distracted.
+      if active_policy is not None:
+        policy_state = vision_policy if active_policy == 1 else getattr(driver_monitoring, "wheeltouchPolicyState", None)
+        attention = _safe_int(getattr(policy_state, "awarenessPercent", 100)) / 100.
+      else:
+        attention = _safe_float(getattr(driver_monitoring, "awarenessStatus", 1.0))
+      attention = max(0., min(1., attention))
+      payload.update({
+        "attentionPercent": int(round(attention * 100)),
+        "alertLevel": _monitoring_alert_level(driver_monitoring, active_policy, attention),
+        "distractedTypes": _monitoring_distracted_types(driver_monitoring, vision_policy),
       })
     return payload
 
