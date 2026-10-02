@@ -480,3 +480,471 @@ def test_car_params_are_offered_once_when_the_car_is_known_and_again_only_when_i
   time.sleep(module.COMMAVIEW_MIN_EXPORT_INTERVAL_SEC)
   exporter.publish(ui_state)
   assert exporter._pending_payload(module.COMMAVIEW_CAR_PARAMS_SERVICE_INDEX)["carFingerprint"] == "KIA_EV6"
+
+class CountingParams:
+  def __init__(self, values):
+    self.values = values
+    self.reads = []
+
+  def get_bool(self, key):
+    self.reads.append(key)
+    return bool(self.values.get(key, False))
+
+  def get(self, key, return_default=False):
+    self.reads.append(key)
+    return self.values.get(key)
+
+
+def started_ui_state(values, **attrs):
+  ui_state = FakeUiState(values)
+  ui_state.started = True
+  ui_state.ignition = True
+  ui_state.status = "engaged"
+  ui_state.is_metric = True
+  ui_state.started_time = 12.5
+  ui_state.params = CountingParams({})
+  for name, value in attrs.items():
+    setattr(ui_state, name, value)
+  return ui_state
+
+
+def union(which, **members):
+  return types.SimpleNamespace(which=lambda: which, **members)
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_radar_lead_presence_reads_present_on_current_schema_and_status_on_release(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  current = started_ui_state({"radarState": types.SimpleNamespace(
+    leadOne=types.SimpleNamespace(dRel=20.0, yRel=0.5, vRel=-1.0, aRel=0.0, present=True),
+    leadTwo=types.SimpleNamespace(dRel=0.0, yRel=0.0, vRel=0.0, aRel=0.0, present=False),
+  )})
+  release = started_ui_state({"radarState": types.SimpleNamespace(
+    leadOne=types.SimpleNamespace(dRel=20.0, yRel=0.5, vRel=-1.0, aRel=0.0, status=True),
+    leadTwo=types.SimpleNamespace(dRel=0.0, yRel=0.0, vRel=0.0, aRel=0.0, status=False),
+  )})
+
+  for ui_state in (current, release):
+    payload = exporter._radar_state_payload(ui_state)
+    assert payload["leadOne"]["present"] is True
+    assert payload["leadOne"]["status"] is True
+    assert payload["leadTwo"]["present"] is False
+    assert payload["leadTwo"]["status"] is False
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_driver_monitoring_exports_active_policy_awareness_and_pose(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  driver_monitoring = types.SimpleNamespace(
+    isRHD=False,
+    activePolicy="vision",
+    visionPolicyState=types.SimpleNamespace(
+      faceDetected=True,
+      isDistracted=False,
+      awarenessPercent=62,
+      pose=types.SimpleNamespace(
+        pitch=0.12, yaw=-0.25,
+        pitchCalib=types.SimpleNamespace(offset=0.01, calibratedPercent=88),
+        yawCalib=types.SimpleNamespace(offset=-0.02, calibratedPercent=77),
+      ),
+    ),
+  )
+  payload = exporter._driver_monitoring_state_payload(started_ui_state({"driverMonitoringState": driver_monitoring}))
+
+  assert payload["activePolicy"] == 1
+  assert payload["isActiveMode"] is True
+  assert payload["awarenessPercent"] == 62
+  assert payload["posePitch"] == pytest.approx(0.12)
+  assert payload["poseYaw"] == pytest.approx(-0.25)
+  # The calibration offsets are still exported under their old names.
+  assert payload["poseYawOffset"] == pytest.approx(-0.02)
+
+  driver_monitoring.activePolicy = types.SimpleNamespace(raw=0)
+  payload = exporter._driver_monitoring_state_payload(started_ui_state({"driverMonitoringState": driver_monitoring}))
+  assert payload["activePolicy"] == 0
+  assert payload["isActiveMode"] is False
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_driver_monitoring_without_active_policy_keeps_legacy_flag_and_marks_policy_unknown(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  legacy = types.SimpleNamespace(faceDetected=True, isRHD=False, isActiveMode=True)
+  payload = exporter._driver_monitoring_state_payload(started_ui_state({"driverMonitoringState": legacy}))
+
+  assert payload["activePolicy"] == -1
+  assert payload["isActiveMode"] is True
+  assert payload["awarenessPercent"] == 100
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_controls_state_set_speed_reads_deprecated_group_and_dev_ui_steering(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  values = alias_values(current=True)
+  values.update({
+    "controlsState": types.SimpleNamespace(
+      lateralControlState=union("angleState", angleState=types.SimpleNamespace(steeringAngleDeg=-12.5)),
+      curvature=0.0, desiredCurvature=0.0,
+      deprecated=types.SimpleNamespace(vCruise=88.0),
+    ),
+    "carState": types.SimpleNamespace(vEgo=0.0),
+    "carControl": types.SimpleNamespace(latActive=False),
+    "carOutput": types.SimpleNamespace(actuatorsOutput=types.SimpleNamespace(torque=0.0)),
+  })
+  payload = exporter._controls_state_payload(started_ui_state(values))
+
+  assert payload["vCruise"] == 88.0
+  assert payload["vCruiseDEPRECATED"] == 88.0
+  assert payload["angleStateSteeringAngleDeg"] == -12.5
+  assert payload["pidStateSteeringAngleDesiredDeg"] == 0.0
+
+  values["controlsState"] = types.SimpleNamespace(
+    lateralControlState=union("pidState", pidState=types.SimpleNamespace(steeringAngleDesiredDeg=4.25)),
+    curvature=0.0, desiredCurvature=0.0, vCruiseDEPRECATED=55.0,
+  )
+  payload = exporter._controls_state_payload(started_ui_state(values))
+  assert payload["vCruise"] == 55.0
+  assert payload["pidStateSteeringAngleDesiredDeg"] == 4.25
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_speed_limit_pre_active_arrow_falls_back_to_controls_deprecated_v_cruise(template, flavor):
+  module = load_exporter(template)
+  values = {
+    "longitudinalPlanSP": types.SimpleNamespace(speedLimit=types.SimpleNamespace(
+      assist=types.SimpleNamespace(state="preActive"),
+      resolver=types.SimpleNamespace(speedLimitFinalLast=25.0),  # 90 km/h
+    )),
+    "carState": types.SimpleNamespace(vCruiseCluster=0.0),
+    "controlsState": types.SimpleNamespace(deprecated=types.SimpleNamespace(vCruise=100.0)),
+  }
+  pre_active, icon = module._speed_limit_pre_active_state(started_ui_state(values))
+
+  assert pre_active is True
+  assert icon == "down"
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_torque_bar_uses_lateral_accel_for_curvature_state(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  values = alias_values(current=True)
+  values.update({
+    "controlsState": types.SimpleNamespace(lateralControlState=union("curvatureState"), curvature=0.02, desiredCurvature=0.03),
+    "carState": types.SimpleNamespace(vEgo=10.0),
+    "carControl": types.SimpleNamespace(latActive=True),
+  })
+
+  assert module._torque_bar_value(FakeUiState(values), exporter._service_resolver) == pytest.approx(0.795625, abs=1e-4)
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_car_state_and_car_control_export_the_hud_inputs(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  car_state = types.SimpleNamespace(
+    vEgo=10.0, vEgoCluster=10.2, vCruiseCluster=255.0, standstill=False, steeringAngleDeg=1.0, steeringPressed=False,
+    leftBlinker=False, rightBlinker=True, leftBlindspot=True, rightBlindspot=False,
+    aEgo=-1.25, steeringTorqueEps=-42.0, brakePressed=True, gasPressed=False,
+    cruiseState=types.SimpleNamespace(enabled=True, available=True, speed=27.0, speedCluster=27.5),
+  )
+  car_control = types.SimpleNamespace(
+    enabled=True, latActive=True, longActive=False,
+    cruiseControl=types.SimpleNamespace(override=True, cancel=False, resume=False),
+    hudControl=types.SimpleNamespace(setSpeed=70.83, speedVisible=True),
+  )
+  ui_state = started_ui_state({"carState": car_state, "carControl": car_control})
+
+  car = exporter._car_state_payload(ui_state)
+  assert car["aEgo"] == -1.25
+  assert car["steeringTorqueEps"] == -42.0
+  assert car["brakePressed"] is True
+  assert car["gasPressed"] is False
+  assert car["vCruiseCluster"] == 255.0
+  assert car["cruiseState"] == {"speedCluster": 27.5}
+
+  control = exporter._car_control_payload(ui_state)
+  assert control["enabled"] is True
+  assert control["cruiseControl"] == {"override": True}
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_longitudinal_plan_carries_plan_source_and_sunnypilot_planner_and_map(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  plan_sp = types.SimpleNamespace(
+    longitudinalPlanSource="sccVision",
+    speedLimit=types.SimpleNamespace(
+      resolver=types.SimpleNamespace(
+        speedLimit=22.2, speedLimitLast=22.2, speedLimitFinal=23.0, speedLimitFinalLast=23.0, speedLimitOffset=0.8,
+        speedLimitValid=True, speedLimitLastValid=True, distToSpeedLimit=120.0, source="map",
+      ),
+      assist=types.SimpleNamespace(state="preActive", enabled=True, active=False),
+    ),
+    smartCruiseControl=types.SimpleNamespace(
+      vision=types.SimpleNamespace(state="entering", enabled=True, active=True),
+      map=types.SimpleNamespace(state="disabled", enabled=False, active=False),
+    ),
+    e2eAlerts=types.SimpleNamespace(greenLightAlert=True, leadDepartAlert=False),
+  )
+  map_data = types.SimpleNamespace(
+    speedLimitValid=True, speedLimit=22.2, speedLimitAheadValid=True, speedLimitAhead=13.9,
+    speedLimitAheadDistance=340.0, roadName="Main Street",
+  )
+  ui_state = started_ui_state({
+    "longitudinalPlan": types.SimpleNamespace(allowThrottle=True, longitudinalPlanSource="e2e"),
+    "longitudinalPlanSP": plan_sp,
+    "liveMapDataSP": map_data,
+  })
+
+  payload = exporter._longitudinal_plan_payload(ui_state)
+
+  assert payload["longitudinalPlanSource"] == "e2e"
+  assert payload["logMonoTime"] == max(ui_state.sm.logMonoTime.values())
+  sp = payload["longitudinalPlanSP"]
+  assert sp["speedLimit"]["resolver"] == {
+    "speedLimit": 22.2, "speedLimitLast": 22.2, "speedLimitFinalLast": 23.0, "speedLimitOffset": 0.8,
+    "speedLimitValid": True, "speedLimitLastValid": True, "source": "map",
+  }
+  assert sp["speedLimit"]["assist"] == {"state": "preActive", "active": False}
+  assert sp["smartCruiseControl"]["vision"] == {"enabled": True, "active": True}
+  assert sp["e2eAlerts"] == {"greenLightAlert": True, "leadDepartAlert": False}
+  assert payload["liveMapDataSP"]["roadName"] == "Main Street"
+  assert payload["liveMapDataSP"]["speedLimitAheadDistance"] == 340.0
+  json.dumps(payload)
+
+  openpilot_like = started_ui_state({"longitudinalPlan": types.SimpleNamespace(allowThrottle=False, longitudinalPlanSource="cruise")})
+  payload = exporter._longitudinal_plan_payload(openpilot_like)
+  assert payload["longitudinalPlanSource"] == "cruise"
+  assert "longitudinalPlanSP" not in payload
+  assert "liveMapDataSP" not in payload
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_selfdrive_state_carries_mads_only_when_sunnypilot_publishes_it(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  selfdrive_state = types.SimpleNamespace(
+    enabled=False, active=False, engageable=True, alertText1="", alertText2="", alertType="", alertStatus=0,
+    alertSize=0, alertHudVisual=0, experimentalMode=False,
+  )
+  mads = types.SimpleNamespace(state="paused", enabled=True, active=False, available=True)
+  payload = exporter._selfdrive_state_payload(started_ui_state({
+    "selfdriveState": selfdrive_state, "selfdriveStateSP": types.SimpleNamespace(mads=mads),
+  }))
+  assert payload["mads"] == {"state": "paused", "enabled": True, "active": False, "available": True}
+
+  payload = exporter._selfdrive_state_payload(started_ui_state({"selfdriveState": selfdrive_state}))
+  assert "mads" not in payload
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_model_v2_exports_leads_v3(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  lead = types.SimpleNamespace(prob=0.9, probTime=0.0, x=[30.0, 31.0], y=[0.4, 0.5], v=[20.0, 20.5], a=[0.1, 0.2])
+  model = types.SimpleNamespace(
+    frameId=1, frameIdExtra=1, frameAge=0, frameDropPerc=0.0, timestampEof=1,
+    position=types.SimpleNamespace(x=[0.0], y=[0.0], z=[0.0]), laneLines=[], roadEdges=[],
+    leadsV3=[lead, lead, lead, lead],
+  )
+  payload = exporter._model_v2_payload(started_ui_state({"modelV2": model}))
+
+  # Only what the lead bar reads: the first two leads at t=0.
+  assert len(payload["leadsV3"]) == module.COMMAVIEW_MAX_MODEL_LEADS == 2
+  assert payload["leadsV3"][0] == {"prob": 0.9, "x": [30.0], "y": [0.4], "v": [20.0], "a": [0.1]}
+
+
+@pytest.mark.parametrize("current", (False, True))
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_live_parameters_export_validity_and_optional_torque_parameters(template, flavor, current):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  values = alias_values(current=current)
+  vehicle_parameters = "vehicleParameters" if current else "liveParameters"
+  values[vehicle_parameters].valid = True
+  if current:
+    values["lateralTorqueParameters"] = types.SimpleNamespace(valid=True, frictionCoefficientFiltered=0.12, latAccelFactorFiltered=2.3)
+  else:
+    values["liveTorqueParameters"] = types.SimpleNamespace(liveValid=True, frictionCoefficientFiltered=0.12, latAccelFactorFiltered=2.3)
+  ui_state = started_ui_state(values)
+  ui_state.sm.valid[vehicle_parameters] = False
+
+  payload = exporter._live_parameters_payload(ui_state)
+
+  assert payload["roll"] == 0.125
+  assert payload["valid"] is True
+  assert payload["serviceValid"] is False
+  assert payload["torqueParameters"]["frictionCoefficientFiltered"] == pytest.approx(0.12)
+  assert payload["torqueParameters"]["latAccelFactorFiltered"] == pytest.approx(2.3)
+  assert payload["torqueParameters"]["liveValid"] is True
+  assert payload["torqueParameters"]["serviceValid"] is True
+
+  # openpilot subscribes to neither torque service: the payload and publish() must still work.
+  plain = started_ui_state(alias_values(current=current))
+  assert "torqueParameters" not in exporter._live_parameters_payload(plain)
+  exporter.publish(plain)
+  assert exporter._pending_payload(module.COMMAVIEW_LIVE_PARAMETERS_SERVICE_INDEX) is not None
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_car_params_export_pcm_cruise_speed_with_upstream_default(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  ui_state = started_ui_state({})
+  assert exporter._car_params_payload(ui_state)["pcmCruiseSpeed"] is True
+  ui_state.CP_SP = types.SimpleNamespace(pcmCruiseSpeed=False)
+  assert exporter._car_params_payload(ui_state)["pcmCruiseSpeed"] is False
+
+
+SUNNYPILOT_UI_ATTRS = {
+  "blindspot": True, "turn_signals": True, "torque_bar": True, "developer_ui": 3, "hide_v_ego_ui": False,
+  "true_v_ego_ui": True, "road_name_toggle": True, "rocket_fuel": False, "standstill_timer": True,
+  "chevron_metrics": 2, "speed_limit_mode": 3, "rainbow_path": True, "enforce_torque_control": True,
+  "custom_torque_params": True, "torque_override_enabled": False, "torque_override_friction": 0.15,
+  "torque_override_lat_accel_factor": 2.1,
+}
+
+
+def ui_state_for_params(module, param_values, **attrs):
+  values = alias_values(current=True)
+  values.update({
+    "deviceState": types.SimpleNamespace(started=True, deviceType="tizi"),
+    "selfdriveState": types.SimpleNamespace(experimentalMode=False),
+    "carState": types.SimpleNamespace(vEgo=0.0),
+  })
+  ui_state = started_ui_state(values, **attrs)
+  ui_state.params = CountingParams(param_values)
+  return ui_state
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_car_params_carry_sunnypilot_params_only_for_sunnypilot(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  ui_state = ui_state_for_params(module, {"CameraOffset": 0.12}, active_bundle={"name": "custom"}, always_on_dm=True, **SUNNYPILOT_UI_ATTRS)
+
+  onroad = exporter._ui_state_onroad_payload(ui_state)
+  car_params = exporter._car_params_payload(ui_state)
+
+  assert onroad["startedTime"] == 12.5
+  assert onroad["alwaysOnDm"] is True
+  assert "spParams" not in onroad
+  assert car_params["upstreamServices"] == {}  # nothing resolved yet: publish() resolves before building
+  if flavor == "OPENPILOT":
+    assert "spParams" not in car_params
+    assert onroad["rainbowPathEnabled"] is False
+    assert ui_state.params.reads == []
+    return
+  assert onroad["rainbowPathEnabled"] is True
+  assert car_params["spParams"] == {
+    "BlindSpot": True, "ShowTurnSignals": True, "TorqueBar": True, "DevUIInfo": 3, "HideVEgoUI": False,
+    "TrueVEgoUI": True, "RoadNameToggle": True, "RocketFuel": False, "StandstillTimer": True, "ChevronInfo": 2,
+    "SpeedLimitMode": 3, "RainbowMode": True, "EnforceTorqueControl": True, "CustomTorqueParams": True,
+    "TorqueParamsOverrideEnabled": False, "TorqueParamsOverrideFriction": 0.15,
+    "TorqueParamsOverrideLatAccelFactor": 2.1, "CameraOffset": 0.12,
+  }
+  json.dumps(car_params)
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_sunnypilot_params_default_like_params_keys_and_camera_offset_needs_a_model_bundle(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter("SUNNYPILOT", start_worker=False)
+  # Before the sunnypilot param thread's first pass, ChevronInfo/SpeedLimitMode are None and the
+  # torque override floats are not set at all.
+  ui_state = ui_state_for_params(module, {"CameraOffset": 0.2}, active_bundle=None, chevron_metrics=None, speed_limit_mode=None)
+
+  params = exporter._car_params_payload(ui_state)["spParams"]
+
+  assert params["ChevronInfo"] == 4
+  assert params["SpeedLimitMode"] == 1
+  assert params["TorqueParamsOverrideFriction"] == 0.1
+  assert params["CameraOffset"] == 0.0
+  assert ui_state.params.reads == []  # no model bundle: the CameraOffset file is not read either
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_sunnypilot_params_are_offered_only_when_they_change_and_read_no_files_per_frame(template, flavor, monkeypatch):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter("SUNNYPILOT", start_worker=False)
+  ui_state = ui_state_for_params(module, {"CameraOffset": 0.1}, active_bundle={"x": 1}, always_on_dm=False, **SUNNYPILOT_UI_ATTRS)
+  ui_state.CP = types.SimpleNamespace(carFingerprint="KIA_EV6", carName="hyundai", carVin="", openpilotLongitudinalControl=True, maxLateralAccel=2.5)
+  clock = [100.0]
+  monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+
+  def publish_frame():
+    clock[0] += module.COMMAVIEW_MIN_EXPORT_INTERVAL_SEC
+    for service in ("deviceState", "selfdriveState", "carState"):
+      ui_state.sm.recv_frame[service] += 1
+    exporter.publish(ui_state)
+    payload = exporter._pending_payload(module.COMMAVIEW_CAR_PARAMS_SERVICE_INDEX)
+    exporter._pending.clear()
+    return payload
+
+  assert publish_frame()["spParams"]["CameraOffset"] == 0.1
+  # Frames where nothing changed offer nothing, and the only file read is the CameraOffset param at the
+  # model renderer's own 3 s cadence.
+  for _ in range(40):
+    assert publish_frame() is None
+  assert ui_state.params.reads == ["CameraOffset"]
+
+  ui_state.torque_bar = False  # the sunnypilot param thread picked up a toggle
+  assert publish_frame()["spParams"]["TorqueBar"] is False
+
+  ui_state.params.values["CameraOffset"] = -0.05
+  clock[0] += module.COMMAVIEW_PARAMS_REFRESH_SEC
+  assert publish_frame()["spParams"]["CameraOffset"] == -0.05
+  assert ui_state.params.reads == ["CameraOffset", "CameraOffset"]
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_projection_reports_whether_model_transform_includes_the_content_origin(template, flavor):
+  module = load_exporter(template)
+  values = alias_values(current=True)
+  values.update({
+    "wideRoadCameraState": types.SimpleNamespace(frameId=5, timestampEof=6),
+    "modelV2": types.SimpleNamespace(frameId=7, timestampEof=8),
+  })
+  caller = "def call(exporter, ui_state, rect):\n  exporter.set_onroad_projection(ui_state, 'road', rect, [1.0] * 9, [1.0] * 9)\n"
+  expected = {
+    "/data/openpilot/selfdrive/ui/mici/onroad/augmented_road_view.py": ("mici", "content"),
+    "/data/openpilot/selfdrive/ui/onroad/augmented_road_view.py": ("big", "screen"),
+    "/somewhere/else.py": ("", ""),
+  }
+  for filename, (layout, origin) in expected.items():
+    exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+    namespace = {}
+    exec(compile(caller, filename, "exec"), namespace)
+    namespace["call"](exporter, FakeUiState(values), types.SimpleNamespace(x=30, y=30, width=2100, height=1020))
+    payload = exporter._pending_payload(module.COMMAVIEW_ONROAD_PROJECTION_SERVICE_INDEX)
+    assert (payload["layout"], payload["transformOrigin"]) == (layout, origin), filename
+
+
+@pytest.mark.parametrize("template,flavor", TEMPLATES)
+def test_full_publish_of_a_sunnypilot_shaped_state_offers_every_payload(template, flavor):
+  module = load_exporter(template)
+  exporter = module._CommaViewSocketExporter(flavor, start_worker=False)
+  ui_state = ui_state_for_params(module, {}, active_bundle=None, **SUNNYPILOT_UI_ATTRS)
+  ui_state.sm.values.update({
+    "longitudinalPlan": types.SimpleNamespace(allowThrottle=True, longitudinalPlanSource="cruise"),
+    "selfdriveStateSP": types.SimpleNamespace(mads=types.SimpleNamespace(state="enabled", enabled=True, active=True, available=True)),
+    "longitudinalPlanSP": types.SimpleNamespace(),
+    "liveMapDataSP": types.SimpleNamespace(roadName="A1"),
+  })
+  for service in ("longitudinalPlan", "selfdriveStateSP", "longitudinalPlanSP", "liveMapDataSP"):
+    ui_state.sm.recv_frame[service] = 10
+    ui_state.sm.logMonoTime[service] = 5000
+  exporter.publish(ui_state)
+
+  plan = exporter._pending_payload(module.COMMAVIEW_LONGITUDINAL_PLAN_SERVICE_INDEX)
+  assert plan["liveMapDataSP"]["roadName"] == "A1"
+  assert plan["longitudinalPlanSP"]["speedLimit"]["assist"]["state"] == ""
+  json.dumps(plan)
+  car_params = exporter._pending_payload(module.COMMAVIEW_CAR_PARAMS_SERVICE_INDEX)
+  assert car_params["upstreamServices"]["calibration"] == "extrinsicsCalibration"
+  assert ("spParams" in car_params) == (flavor == "SUNNYPILOT")
+  assert "spParams" not in exporter._pending_payload(module.COMMAVIEW_UI_STATE_ONROAD_SERVICE_INDEX)

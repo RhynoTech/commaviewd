@@ -162,14 +162,14 @@ for template in "$OPENPILOT_TEMPLATE" "$SUNNYPILOT_TEMPLATE"; do
     grep -Fq "$marker" "$template" || fail "$template missing risk-field marker: $marker"
   done
 
-  if [[ "$template" == *'.sunnypilot.py' ]]; then
-    grep -Fq '"rainbowPathEnabled": bool(getattr(ui_state, "rainbow_path", ui_state.params.get_bool("RainbowMode")))' "$template" || fail "$template missing truthful sunnypilot rainbow export"
-    grep -Fq '"speedLimitPreActive": speed_limit_pre_active' "$template" || fail "$template missing sunnypilot speed-limit pre-active export"
-    grep -Fq '"speedLimitPreActiveIcon": speed_limit_pre_active_icon' "$template" || fail "$template missing sunnypilot speed-limit pre-active icon export"
-    grep -Fq 'speed_limit_final_last = ui_state.sm["longitudinalPlanSP"].speedLimit.resolver.speedLimitFinalLast' "$template" || fail "$template missing sunnypilot speed-limit target source"
-  else
-    grep -Fq '"rainbowPathEnabled": False' "$template" || fail "$template should pin rainbowPathEnabled false for openpilot"
-  fi
+  # Both templates share every line but the flavor constant: sunnypilot params are exported only for the
+  # SUNNYPILOT flavor (rainbowPathEnabled stays false on openpilot) and sunnypilot services are optional.
+  grep -Fq '"rainbowPathEnabled": self._flavor == "SUNNYPILOT" and bool(getattr(ui_state, "rainbow_path", False))' "$template" || fail "$template missing truthful rainbow export"
+  grep -Fq '("RainbowMode", "rainbow_path", "bool", False)' "$template" || fail "$template missing sunnypilot rainbow param source"
+  grep -Fq 'if self._flavor != "SUNNYPILOT":' "$template" || fail "$template must gate sunnypilot params on the runtime flavor"
+  grep -Fq '"speedLimitPreActive": speed_limit_pre_active' "$template" || fail "$template missing sunnypilot speed-limit pre-active export"
+  grep -Fq '"speedLimitPreActiveIcon": speed_limit_pre_active_icon' "$template" || fail "$template missing sunnypilot speed-limit pre-active icon export"
+  grep -Fq 'speed_limit_final_last = ui_state.sm["longitudinalPlanSP"].speedLimit.resolver.speedLimitFinalLast' "$template" || fail "$template missing sunnypilot speed-limit target source"
 
   for marker in "${legacy_markers[@]}"; do
     ! grep -Fq "$marker" "$template" || fail "$template still contains legacy marker: $marker"

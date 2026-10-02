@@ -216,11 +216,9 @@ PY
     grep -Fq "$marker" "$helper_path" || fail "risk-field marker missing for ${label}: $marker"
   done
 
-  if [[ "$expected_runtime_flavor" == 'SUNNYPILOT' ]]; then
-    grep -Fq '"rainbowPathEnabled": bool(getattr(ui_state, "rainbow_path", ui_state.params.get_bool("RainbowMode")))' "$helper_path" || fail "$label missing truthful sunnypilot rainbow export"
-  else
-    grep -Fq '"rainbowPathEnabled": False' "$helper_path" || fail "$label should pin rainbowPathEnabled false for openpilot"
-  fi
+  # Sunnypilot params (rainbow included) are exported only for the SUNNYPILOT flavor; openpilot exports false.
+  grep -Fq '"rainbowPathEnabled": self._flavor == "SUNNYPILOT" and bool(getattr(ui_state, "rainbow_path", False))' "$helper_path" || fail "$label missing truthful rainbow export"
+  grep -Fq 'if self._flavor != "SUNNYPILOT":' "$helper_path" || fail "$label must gate sunnypilot params on the runtime flavor"
 
   for marker in "${legacy_markers[@]}"; do
     ! grep -Fq "$marker" "$helper_path" || fail "legacy marker still present for ${label}: $marker"
