@@ -1,13 +1,14 @@
 name: commaviewd-ci
 
 # CI is the last check before a change lands, not the way to test it: run scripts/ci-local.sh
-# while you work. A pull request runs once it's ready for review (drafts don't); master runs on
+# while you work. A pull request runs once it's ready for review (drafts don't); main runs on
 # every push. The targets are in ci/targets.json; the checks, in commaviewd-verify.yml, skip
 # whatever already passed for the same content (a merged pull request's commit, for one).
 # For branch protection, require "verify / result": it reports on every run.
 on:
   push:
-    branches: [master]
+    # main (master until the default branch is renamed; drop it after).
+    branches: [main, master]
     paths:
       - 'commaviewd/**'
       - 'comma/**'

@@ -38,10 +38,10 @@ assert_contains "compareRuntimeTags" "$PROMOTE" "promotion script should compare
 assert_contains "Refusing to promote older runtime tag" "$PROMOTE" "promotion script should fail closed on runtime downgrades"
 assert_contains "allow-runtime-downgrade" "$PROMOTE" "promotion script should require an explicit downgrade override if ever needed"
 assert_contains 'args["allow-runtime-downgrade"] !== "true"' "$PROMOTE" "runtime downgrade override should be explicit"
-assert_contains "Checkout release control-plane scripts" "$WORKFLOW" "promotion should checkout guarded updater from master after release-tag checkout"
-assert_contains "path: release-control" "$WORKFLOW" "promotion should keep master control scripts separate from release tag workspace"
-assert_contains "node release-control/scripts/publish-current-release.mjs" "$WORKFLOW" "promotion should run guarded updater from master, not old release tag"
-assert_contains "ref: master" "$WORKFLOW" "promotion control checkout should pin to master"
+assert_contains "Checkout release control-plane scripts" "$WORKFLOW" "promotion should checkout guarded updater from main after release-tag checkout"
+assert_contains "path: release-control" "$WORKFLOW" "promotion should keep main control scripts separate from release tag workspace"
+assert_contains "node release-control/scripts/publish-current-release.mjs" "$WORKFLOW" "promotion should run guarded updater from main, not old release tag"
+assert_contains 'ref: ${{ github.event.repository.default_branch }}' "$WORKFLOW" "promotion control checkout should pin to the default branch (main)"
 assert_contains '--publish-url "$ACCOUNT_SERVICE_URLS"' "$WORKFLOW" "promotion should also publish to the account service"
 assert_contains "publishToAccountServices" "$PROMOTE" "promotion should publish to the account services"
 assert_contains "id-token: write" "$WORKFLOW" "promotion should sign in to Google Cloud keylessly"
@@ -120,3 +120,8 @@ if (( release_gate_line >= verification_line || verification_line >= build_line 
 fi
 
 printf 'PASS: release workflow contract validates transformer gate before packaging\n'
+
+# Commas install from commaview.com (the public runtime releases bucket), not GitHub's releases.
+assert_contains "tools/release/publish-release-files.sh" "$WORKFLOW" "the release should publish its files on commaview.com"
+assert_contains "--shim comma4/install.sh" "$WORKFLOW" "the release should publish the installer shim"
+echo "PASS: release workflow publishes the release on commaview.com"

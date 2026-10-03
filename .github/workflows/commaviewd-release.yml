@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: 'alpha: the next v<version>-alpha.<n> from master. beta: the version''s beta, from its newest alpha (or from)'
+        description: 'alpha: the next v<version>-alpha.<n> from main. beta: the version''s beta, from its newest alpha (or from)'
         required: false
         default: alpha
         type: choice
@@ -56,14 +56,14 @@ jobs:
     steps:
       # A manual run with no tag cuts a release (docs: RhynoTech/CommaView docs/release/README.md):
       # scripts/release-version.mjs names it from the tags already made, the next
-      # v<version>-alpha.<n> from master's head, or v<version>-beta from the chosen alpha's commit,
+      # v<version>-alpha.<n> from main's head, or v<version>-beta from the chosen alpha's commit,
       # and the tag is created here. Tags made with the workflow's token start no other workflow,
       # so this run does the release itself.
-      - name: Check out master to cut a release
+      - name: Check out main to cut a release
         if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
         uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
       - name: Cut release tag
@@ -255,24 +255,40 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
-
-      - name: Checkout release control-plane scripts
-        if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true
-        uses: actions/checkout@v6
-        with:
-          ref: master
-          path: release-control
-
       # No key: GitHub's OIDC token signs in as the release account (RhynoTech/commaview-web,
-      # account/terraform/releases.tf), which may only get ID tokens for the account services.
+      # account/terraform/releases.tf), which may publish runtime releases and get ID tokens for
+      # the account services.
       - name: Sign in to Google Cloud (release account)
         id: gcp
-        if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/263004041190/locations/global/workloadIdentityPools/commaview-github/providers/commaview-releases
           service_account: commaview-release@commaview.iam.gserviceaccount.com
           token_format: access_token
+
+      # Where commas install from: commaview.com/commaviewd/<tag>/ (the install.sh in this release
+      # fetches its tarball and companions there, not from GitHub). A tag's files never change.
+      - name: Publish the release on commaview.com
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.gcp.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.vars.outputs.tag }}'
+          tools/release/publish-release-files.sh "$TAG" \
+            "release/${TAG}/commaview-comma-${TAG}.tar.gz" \
+            "release/${TAG}/commaview-comma-${TAG}.tar.gz.sha256" \
+            --shim comma4/install.sh
+          # Public (commaview.com serves the bucket; Cloudflare's bot challenge stops GitHub's
+          # runners at commaview.com itself).
+          curl -fsS -o /dev/null "https://storage.googleapis.com/commaview-runtime-releases/${TAG}/commaview-comma-${TAG}.tar.gz.sha256"
+
+
+      - name: Checkout release control-plane scripts
+        if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: release-control
 
       - name: Promote current runtime release
         if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true

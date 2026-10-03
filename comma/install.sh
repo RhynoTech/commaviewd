@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # CommaView installer for comma devices (AGNOS/openpilot/sunnypilot)
-# Installs prebuilt C++ commaviewd bundle from pinned GitHub release.
+# Installs a prebuilt C++ commaviewd bundle from a pinned release, published at
+# commaview.com/commaviewd/<tag>/ (another release repository's come from its GitHub releases).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
@@ -12,6 +13,12 @@ RELEASES_API_URL="${COMMAVIEWD_RELEASES_API_URL:-https://api.github.com/repos/${
 CURRENT_RELEASE_URL="${COMMAVIEWD_CURRENT_RELEASE_URL:-}"
 if [ -z "$CURRENT_RELEASE_URL" ] && [ "$GITHUB_REPO" = "RhynoTech/commaviewd" ]; then
   CURRENT_RELEASE_URL="https://commaview.com/api/current-release"
+fi
+# Where RhynoTech/commaviewd's releases are published: <origin>/<tag>/ holds the tarball, its
+# .sha256 and the installer's companions (comma/). Not GitHub, so the repository can be private.
+RELEASES_ORIGIN=""
+if [ "$GITHUB_REPO" = "RhynoTech/commaviewd" ]; then
+  RELEASES_ORIGIN="${COMMAVIEWD_RELEASES_ORIGIN:-https://commaview.com/commaviewd}"
 fi
 
 resolve_latest_release_tag() {
@@ -68,11 +75,21 @@ resolve_release_inputs() {
   VERSION="${COMMAVIEWD_VERSION:-${VERSION:-${RELEASE_TAG#v}}}"
   ASSET_NAME="${COMMAVIEWD_ASSET_NAME:-commaview-comma-${RELEASE_TAG}.tar.gz}"
   ASSET_SHA_NAME="${ASSET_NAME}.sha256"
-  BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
   # Keep installer companions pinned to the same resolved release by default.
-  # Falling back to master here mixes release assets with moving companion scripts.
+  # Falling back to a branch here mixes release assets with moving companion scripts.
   INSTALLER_REF="${COMMAVIEWD_INSTALLER_REF:-$RELEASE_TAG}"
-  INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma}"
+  if [ -n "$RELEASES_ORIGIN" ]; then
+    BASE_URL="${COMMAVIEWD_BASE_URL:-${RELEASES_ORIGIN}/${RELEASE_TAG}}"
+  else
+    BASE_URL="${COMMAVIEWD_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}}"
+  fi
+  # A release's companions are published with it; another ref (a branch, while developing) is
+  # read from the repository.
+  if [ -n "$RELEASES_ORIGIN" ] && [[ "$INSTALLER_REF" == v* ]]; then
+    INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-${RELEASES_ORIGIN}/${INSTALLER_REF}/comma}"
+  else
+    INSTALLER_RAW_BASE="${COMMAVIEWD_INSTALLER_RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma}"
+  fi
 }
 
 # --tag and --current pick the release while the arguments are parsed, so only look up the

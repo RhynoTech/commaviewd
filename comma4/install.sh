@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Backwards-compatible raw installer shim for app versions that still fetch
-# /comma4/install.sh. Keep this file small so old apps can reach the generic
-# comma-device installer after the companion tree moved to /comma.
+# The installer shim: commaview.com/commaviewd/install.sh serves it (the newest release
+# publishes it), and app versions that still fetch /comma4/install.sh reach it too. It runs the
+# asked-for release's own installer (--tag), else the current CommaView release's runtime's.
+# Keep it small.
 shim_ref="${COMMAVIEWD_INSTALLER_REF:-${COMMAVIEWD_REF:-}}"
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -24,9 +25,21 @@ if [[ -z "$SCRIPT_URL" ]]; then
   if [[ -n "${COMMAVIEWD_INSTALLER_RAW_BASE:-}" ]]; then
     SCRIPT_URL="${COMMAVIEWD_INSTALLER_RAW_BASE%/}/install.sh"
   else
-    INSTALLER_REF="${shim_ref:-master}"
     GITHUB_REPO="${COMMAVIEWD_GITHUB_REPO:-RhynoTech/commaviewd}"
-    SCRIPT_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF}/comma/install.sh"
+    RELEASES_ORIGIN="${COMMAVIEWD_RELEASES_ORIGIN:-https://commaview.com/commaviewd}"
+    INSTALLER_REF="$shim_ref"
+    # No release asked for: the runtime the current CommaView release uses.
+    if [[ -z "$INSTALLER_REF" && "$GITHUB_REPO" == "RhynoTech/commaviewd" ]]; then
+      INSTALLER_REF="$(curl -fsL --max-time 10 --retry 2 "${COMMAVIEWD_CURRENT_RELEASE_URL:-https://commaview.com/api/current-release}" \
+        | tr -d '\r\n' | sed -nE 's/.*"runtimeTag"[[:space:]]*:[[:space:]]*"(v[^"]+)".*/\1/p' || true)"
+    fi
+    if [[ "$GITHUB_REPO" == "RhynoTech/commaviewd" && "$INSTALLER_REF" == v* ]]; then
+      # A release's installer, published with it on commaview.com.
+      SCRIPT_URL="${RELEASES_ORIGIN%/}/${INSTALLER_REF}/comma/install.sh"
+    else
+      # A branch while developing, or another repository's release.
+      SCRIPT_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALLER_REF:-main}/comma/install.sh"
+    fi
   fi
 fi
 
