@@ -2,8 +2,8 @@
 
 ## Branches
 
-- Never commit to `master` or push it. Start every change on its own branch from an up-to-date
-  `master` (`git fetch origin master && git switch -c <topic> origin/master`), one topic per
+- Never commit to `main` or push it. Start every change on its own branch from an up-to-date
+  `main` (`git fetch origin main && git switch -c <topic> origin/main`), one topic per
   branch, and land it through a pull request.
 - Don't push tags: the release workflow makes them.
 

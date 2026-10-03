@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: 'alpha: the next v<version>-alpha.<n> from master. beta: the version''s beta, from its newest alpha (or from)'
+        description: 'alpha: the next v<version>-alpha.<n> from main. beta: the version''s beta, from its newest alpha (or from)'
         required: false
         default: alpha
         type: choice
@@ -56,14 +56,14 @@ jobs:
     steps:
       # A manual run with no tag cuts a release (docs: RhynoTech/CommaView docs/release/README.md):
       # scripts/release-version.mjs names it from the tags already made, the next
-      # v<version>-alpha.<n> from master's head, or v<version>-beta from the chosen alpha's commit,
+      # v<version>-alpha.<n> from main's head, or v<version>-beta from the chosen alpha's commit,
       # and the tag is created here. Tags made with the workflow's token start no other workflow,
       # so this run does the release itself.
-      - name: Check out master to cut a release
+      - name: Check out main to cut a release
         if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
         uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
       - name: Cut release tag
@@ -260,7 +260,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true
         uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ github.event.repository.default_branch }}
           path: release-control
 
       # No key: GitHub's OIDC token signs in as the release account (RhynoTech/commaview-web,
