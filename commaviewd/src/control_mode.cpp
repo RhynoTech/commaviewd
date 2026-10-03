@@ -2059,8 +2059,10 @@ commaview::api::HttpResponse handle_source_recording_get(const commaview::api::H
     }
     return source_recording_current_response(read_param("CurrentRoute"));
   }
-  if (is_onroad()) {
-    return make_json(403, "{\"ok\":false,\"error\":\"offroad required\"}");
+  // Finished drives are served offroad, or parked (in Park, at a standstill, not engaged): the app
+  // only asks for segments the comma has finished writing. Never while the car is being driven.
+  if (being_driven()) {
+    return make_json(403, "{\"ok\":false,\"error\":\"parked or offroad required\"}");
   }
   return source_recording_archive_response(req.path);
 }

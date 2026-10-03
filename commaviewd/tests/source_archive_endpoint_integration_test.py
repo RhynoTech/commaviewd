@@ -43,9 +43,12 @@ def main():
     env = os.environ.copy()
     params = temp / "params"
     params.mkdir()
+    msgq = temp / "shm"
+    msgq.mkdir()
     (params / "IsOffroad").write_text("1", encoding="ascii")
     env.update(COMMAVIEWD_API_TOKEN="source-test-token",
                COMMAVIEWD_TEST_PARAMS_DIR=str(params),
+               COMMAVIEWD_TEST_MSGQ_DIR=str(msgq),
                COMMAVIEWD_SOURCE_ARCHIVE_ROOT=str(temp / "realdata"),
                COMMAVIEWD_RECIPE_DIR=str(recipes))
     process = subprocess.Popen([str(binary), "control", "--port", str(port)], env=env,
@@ -79,6 +82,23 @@ def main():
       assert request(snapshot, "source-test-token")[:2] == (200, b"snapshot")
       assert request(media.replace("length=4", "length=262145"), "source-test-token")[0] == 400
       print("PASS: authenticated source archive HTTP range and recipe")
+
+      # Onroad, a finished drive is served only while parked: never while the car is driven.
+      (params / "IsOffroad").write_text("0", encoding="ascii")
+      status, body, _ = request(manifest, "source-test-token")
+      assert status == 403 and b"parked or offroad required" in body, (status, body)
+      road_tool = os.environ.get("COMMAVIEWD_ROAD_QUEUE_TOOL")
+      if road_tool:
+        def phase(gear, standstill, enabled):
+          subprocess.run([road_tool, "--write-road-queues", str(msgq), gear, standstill, enabled, "0"], check=True)
+        phase("park", "1", "0")
+        assert request(manifest, "source-test-token")[0] == 200
+        assert request(media, "source-test-token")[:2] == (200, b"2345")
+        phase("drive", "0", "1")
+        assert request(manifest, "source-test-token")[0] == 403
+        print("PASS: source archive served offroad and parked, refused while driving")
+      else:
+        print("SKIP: parked source archive (set COMMAVIEWD_ROAD_QUEUE_TOOL)")
     finally:
       process.terminate()
       process.wait(timeout=5)
