@@ -61,16 +61,18 @@ Runtime env used by installed scripts:
 Recommended install/update from a workstation:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma/install.sh \
+curl -fsSL https://commaview.com/commaviewd/install.sh \
   | ssh comma@<comma-ip> bash
 ```
 
 Without `--tag`, the installer installs the runtime paired with the current CommaView app release, from `https://commaview.com/api/current-release`. A runtime that's tagged but not yet paired with an app release isn't installed this way. If that lookup fails, the installer falls back to the newest GitHub release.
 
+Releases are published at `https://commaview.com/commaviewd/<tag>/` (the tarball, its `.sha256` and the installer's `comma/` scripts; `commaviewd-release` uploads them to the public `commaview-runtime-releases` bucket, which commaview.com serves), and installs and updates fetch them there rather than from GitHub. `https://commaview.com/commaviewd/install.sh` is the installer shim: it runs the asked-for release's installer.
+
 Install/update a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RhynoTech/commaviewd/master/comma/install.sh \
+curl -fsSL https://commaview.com/commaviewd/install.sh \
   | ssh comma@<comma-ip> bash -s -- --tag vX.Y.Z
 ```
 
@@ -113,7 +115,7 @@ it.
 
 | Flag/env | Purpose |
 | --- | --- |
-| `--tag <release-tag>` | Install/update to a specific GitHub release tag. |
+| `--tag <release-tag>` | Install/update to a specific release tag. |
 | `--current` | Reinstall the currently installed release from `/data/commaview/version.env`. |
 | `--force-offroad` | While driving, queue the install until the car is parked or offroad (exit 75) instead of refusing it (exit 42). Never sets `OffroadMode`. |
 | `-h`, `--help` | Print installer usage. |
@@ -122,7 +124,8 @@ it.
 | `COMMAVIEWD_DEFAULT_TAG` | Tag to install when none is given, before any lookup. |
 | `COMMAVIEWD_CURRENT_RELEASE_URL` | Override the current-release lookup used when no tag is given. Defaults to `https://commaview.com/api/current-release` for `RhynoTech/commaviewd`; other release repos skip it. |
 | `COMMAVIEWD_RELEASES_API_URL` | Override the GitHub releases API used for the newest-release fallback. |
-| `COMMAVIEWD_INSTALLER_REF` | Pin companion scripts to a ref; defaults to resolved release tag. |
+| `COMMAVIEWD_RELEASES_ORIGIN` | Where `RhynoTech/commaviewd` releases are published; default `https://commaview.com/commaviewd`. |
+| `COMMAVIEWD_INSTALLER_REF` | Pin companion scripts to a ref; defaults to resolved release tag (a release's are published with it; another ref is read from GitHub). |
 | `COMMAVIEWD_ASSET_NAME` | Override release asset filename. |
 | `COMMAVIEWD_BASE_URL` | Override release asset base URL. |
 | `COMMAVIEWD_INSTALLER_RAW_BASE` | Override raw companion file base URL. |
@@ -298,7 +301,7 @@ commaviewd/scripts/run-verification.sh
    tools/release/comma-build-bundle.sh <tag>
    ```
 
-4. Push `master`, then tag with runtime format `v*`.
+4. Push `main`, then tag with runtime format `v*`.
 5. Confirm GitHub Actions release publishes:
    - `commaview-comma-<tag>.tar.gz`
    - `commaview-comma-<tag>.tar.gz.sha256`

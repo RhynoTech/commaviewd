@@ -120,3 +120,8 @@ if (( release_gate_line >= verification_line || verification_line >= build_line 
 fi
 
 printf 'PASS: release workflow contract validates transformer gate before packaging\n'
+
+# Commas install from commaview.com (the public runtime releases bucket), not GitHub's releases.
+assert_contains "tools/release/publish-release-files.sh" "$WORKFLOW" "the release should publish its files on commaview.com"
+assert_contains "--shim comma4/install.sh" "$WORKFLOW" "the release should publish the installer shim"
+echo "PASS: release workflow publishes the release on commaview.com"

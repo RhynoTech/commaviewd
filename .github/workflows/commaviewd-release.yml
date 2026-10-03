@@ -255,6 +255,33 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
+      # No key: GitHub's OIDC token signs in as the release account (RhynoTech/commaview-web,
+      # account/terraform/releases.tf), which may publish runtime releases and get ID tokens for
+      # the account services.
+      - name: Sign in to Google Cloud (release account)
+        id: gcp
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/263004041190/locations/global/workloadIdentityPools/commaview-github/providers/commaview-releases
+          service_account: commaview-release@commaview.iam.gserviceaccount.com
+          token_format: access_token
+
+      # Where commas install from: commaview.com/commaviewd/<tag>/ (the install.sh in this release
+      # fetches its tarball and companions there, not from GitHub). A tag's files never change.
+      - name: Publish the release on commaview.com
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.gcp.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.vars.outputs.tag }}'
+          tools/release/publish-release-files.sh "$TAG" \
+            "release/${TAG}/commaview-comma-${TAG}.tar.gz" \
+            "release/${TAG}/commaview-comma-${TAG}.tar.gz.sha256" \
+            --shim comma4/install.sh
+          # Public (commaview.com serves the bucket; Cloudflare's bot challenge stops GitHub's
+          # runners at commaview.com itself).
+          curl -fsS -o /dev/null "https://storage.googleapis.com/commaview-runtime-releases/${TAG}/commaview-comma-${TAG}.tar.gz.sha256"
+
 
       - name: Checkout release control-plane scripts
         if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true
@@ -262,17 +289,6 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: release-control
-
-      # No key: GitHub's OIDC token signs in as the release account (RhynoTech/commaview-web,
-      # account/terraform/releases.tf), which may only get ID tokens for the account services.
-      - name: Sign in to Google Cloud (release account)
-        id: gcp
-        if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: projects/263004041190/locations/global/workloadIdentityPools/commaview-github/providers/commaview-releases
-          service_account: commaview-release@commaview.iam.gserviceaccount.com
-          token_format: access_token
 
       - name: Promote current runtime release
         if: github.event_name == 'workflow_dispatch' && inputs.promote_current == true

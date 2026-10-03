@@ -200,5 +200,6 @@ COMMAVIEWD_MANAGER_STATE_QUEUE_TOOL="$TMP/test_manager_state_peek" python3 "$ROO
 "$REPO_ROOT/comma/tests/runtime_process_supervisor_contract_test.sh"
 "$REPO_ROOT/comma/tests/runtime_support_logs_contract_test.sh"
 "$REPO_ROOT/comma/tests/install_release_resolution_contract_test.sh"
+"$REPO_ROOT/comma/tests/install_release_origin_contract_test.sh"
 python3 -m pytest "$REPO_ROOT/comma/tests" -q
 echo "PASS: commaviewd unit tests passed"
