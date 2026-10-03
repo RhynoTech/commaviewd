@@ -14,7 +14,8 @@ set -euo pipefail
 
 BUCKET="${RUNTIME_RELEASES_BUCKET:-commaview-runtime-releases}"
 PUBLIC="${RUNTIME_RELEASES_PUBLIC:-https://storage.googleapis.com/${BUCKET}}"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# The checkout of the tag whose comma/ scripts are published (this one, unless backfilling).
+REPO_ROOT="${RELEASE_CHECKOUT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 tag="${1:?tag}"
 tarball="${2:?tarball}"
