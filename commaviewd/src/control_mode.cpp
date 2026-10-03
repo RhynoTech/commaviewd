@@ -357,13 +357,14 @@ SupportLogEntry support_swaglog_entry(const commaview::support::RedactionSecrets
   entry.exists = scan.dir_exists;
   entry.truncated = scan.truncated;
   std::ostringstream out;
-  out << "# openpilot swaglog lines matching process_not_running, \"is dead with\" or killing\n";
+  out << "# openpilot swaglog lines about processes stopping, starting, retrying or failing"
+         " (process_not_running, manager, retries, micd/soundd errors)\n";
   if (!scan.dir_exists) {
     out << "# unavailable: no swaglog directory at " << dir << "\n";
   } else {
-    out << "# scanned the newest " << scan.files_scanned << " of " << scan.files_seen << " swaglog files ("
-        << scan.bytes_scanned << " bytes); " << scan.lines_matched << " matching lines"
-        << (scan.truncated ? ", capped" : "") << "\n";
+    out << "# scanned the newest " << scan.files_scanned << " of " << scan.files_recent
+        << " swaglog files modified in the last 24 h (" << scan.files_seen << " in all; " << scan.bytes_scanned
+        << " bytes); " << scan.lines_matched << " matching lines" << (scan.truncated ? ", capped" : "") << "\n";
   }
   entry.content = out.str() + scan.text;
   return entry;
