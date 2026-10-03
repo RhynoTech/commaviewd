@@ -611,9 +611,73 @@ json="$(
   UI_RELOAD_PENDING="$ui_reload_pending" \
   UI_RELOAD_ACTION="$ui_reload_action" \
   UI_RELOAD_REASON="$ui_reload_reason" \
+  CAR_OP_ROOT="$OP_ROOT" \
+  CAR_PARAMS_DIR="${COMMAVIEWD_TEST_PARAMS_DIR:-/data/params/d}" \
+  CAR_IDENTITY_CACHE="$INSTALL_DIR/run/car-identity.json" \
   python3 - <<'PYJSON'
 import json
 import os
+
+def car_identity() -> dict:
+    """The car openpilot last identified, from its CarParamsPersistent param: there offroad too, so the
+    app can name the car and fetch its picture without a drive. Decoded with the checkout's own
+    car.capnp (carFingerprint @1 and carVin @38 in every schema), cached until the param changes."""
+    params_dir = os.environ.get("CAR_PARAMS_DIR", "")
+    cache_path = os.environ.get("CAR_IDENTITY_CACHE", "")
+    op_root = os.environ.get("CAR_OP_ROOT", "")
+    for key in ("CarParamsPersistent", "CarParamsCache"):
+        path = os.path.join(params_dir, key)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        stamp = f"{key}:{st.st_mtime_ns}:{st.st_size}"
+        try:
+            with open(cache_path, encoding="utf-8") as cached:
+                saved = json.load(cached)
+            if saved.get("stamp") == stamp:
+                return saved.get("identity", {})
+        except (OSError, ValueError):
+            pass
+        try:
+            with open(path, "rb") as source:
+                data = source.read()
+            identity = decode_car_params(data, op_root)
+        except Exception:
+            identity = {}
+        if identity.get("carFingerprint"):
+            try:
+                with open(cache_path + ".tmp", "w", encoding="utf-8") as out:
+                    json.dump({"stamp": stamp, "identity": identity}, out)
+                os.replace(cache_path + ".tmp", cache_path)
+            except OSError:
+                pass
+            return identity
+    return {}
+
+def decode_car_params(data: bytes, op_root: str) -> dict:
+    import capnp
+    capnp.remove_import_hook()
+    for rel in ("opendbc_repo/opendbc/car/car.capnp", "opendbc/car/car.capnp", "cereal/car.capnp"):
+        schema_path = os.path.join(op_root, rel)
+        if not os.path.isfile(schema_path):
+            continue
+        schema = capnp.load(schema_path, imports=[os.path.dirname(schema_path)])
+        reader = schema.CarParams.from_bytes(data)
+        if hasattr(reader, "__enter__"):
+            with reader as cp:
+                return car_fields(cp)
+        return car_fields(reader)
+    return {}
+
+def car_fields(cp) -> dict:
+    def text(name: str) -> str:
+        try:
+            value = getattr(cp, name)
+        except (AttributeError, Exception):
+            return ""
+        return value if isinstance(value, str) else ""
+    return {"carFingerprint": text("carFingerprint"), "carName": text("carName"), "carVin": text("carVin")}
 
 def env_bool(name: str) -> bool:
     return os.environ.get(name, "false") == "true"
@@ -675,6 +739,7 @@ payload = {
     "uiReloadAction": os.environ.get("UI_RELOAD_ACTION", ""),
     "uiReloadReason": os.environ.get("UI_RELOAD_REASON", ""),
 }
+payload.update(car_identity())
 print(json.dumps(payload, separators=(",", ":")))
 PYJSON
 )"

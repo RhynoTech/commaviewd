@@ -11,6 +11,8 @@ import types
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRANSFORMER = REPO_ROOT / "comma" / "scripts" / "transform_onroad_ui_export.py"
 SMOKE_SCRIPT = REPO_ROOT / "comma" / "scripts" / "smoke_onroad_ui_export_helper.py"
@@ -1365,3 +1367,49 @@ def test_flavor_templates_differ_only_by_known_flavor_hunks():
     assert openpilot_only == EXPECTED_OPENPILOT_ONLY_LINES
     assert sunnypilot_only == EXPECTED_SUNNYPILOT_ONLY_LINES
     assert len(opcodes) == 1
+
+
+def write_car_schema(op_root: Path) -> Path:
+    # The fields the status reads, at their numbers in every openpilot schema (carFingerprint @1, carVin @38).
+    fields = ["  brand @0 :Text;", "  carFingerprint @1 :Text;"]
+    fields += [f"  unused{n} @{n} :Bool;" for n in range(2, 38)]
+    fields += ["  carVin @38 :Text;"]
+    schema = op_root / "opendbc_repo" / "opendbc" / "car" / "car.capnp"
+    schema.parent.mkdir(parents=True, exist_ok=True)
+    schema.write_text("@0xd3c6d7a2f3b5e8a1;\nstruct CarParams {\n" + "\n".join(fields) + "\n}\n")
+    return schema
+
+
+def test_verify_reports_the_car_from_car_params_persistent(tmp_path):
+    capnp = pytest.importorskip("capnp")
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    (install_dir / "run").mkdir(exist_ok=True)
+    schema = write_car_schema(op_root)
+    capnp.remove_import_hook()
+    car = capnp.load(str(schema))
+    params = tmp_path / "params"
+    params.mkdir()
+    (params / "CarParamsPersistent").write_bytes(
+        car.CarParams.new_message(brand="toyota", carFingerprint="TOYOTA_RAV4_TSS2", carVin="2T3ZZZ").to_bytes())
+    verify = REPO_ROOT / "comma" / "scripts" / "verify_onroad_ui_export_patch.sh"
+
+    status = json.loads(run_lifecycle_script(verify, install_dir, op_root, "--json", COMMAVIEWD_TEST_PARAMS_DIR=str(params)).stdout)
+
+    assert status["carFingerprint"] == "TOYOTA_RAV4_TSS2"
+    assert status["carVin"] == "2T3ZZZ"
+    # Cached until the param changes, then read again.
+    assert json.loads((install_dir / "run" / "car-identity.json").read_text())["identity"]["carFingerprint"] == "TOYOTA_RAV4_TSS2"
+    (params / "CarParamsPersistent").write_bytes(car.CarParams.new_message(carFingerprint="HONDA_CIVIC_BOSCH").to_bytes() + b"\0" * 8)
+    status = json.loads(run_lifecycle_script(verify, install_dir, op_root, "--json", COMMAVIEWD_TEST_PARAMS_DIR=str(params)).stdout)
+    assert status["carFingerprint"] == "HONDA_CIVIC_BOSCH"
+
+
+def test_verify_without_car_params_reports_no_car(tmp_path):
+    op_root = write_full_augmented_tree(tmp_path)
+    init_git_repo(op_root)
+    install_dir = prepare_lifecycle_install_dir(tmp_path, op_root)
+    verify = REPO_ROOT / "comma" / "scripts" / "verify_onroad_ui_export_patch.sh"
+    status = json.loads(run_lifecycle_script(verify, install_dir, op_root, "--json", COMMAVIEWD_TEST_PARAMS_DIR=str(tmp_path / "none")).stdout)
+    assert "carFingerprint" not in status
